@@ -45,12 +45,12 @@ var (
 	`))
 
 	query = sqlt.Must(t.New("query").Parse(`
-		SELECT 
-			{{ Int64 Dest.ID "id" }}
-			{{ String Dest.Title ", title" }}
-			{{ Time Dest.CreatedAt ", created_at" }}
-		FROM books 
-		WHERE instr(title, {{ .Search }}) > 0
+        SELECT 
+            {{ Int64 Dest.ID "id" }}
+            {{ String Dest.Title ", title" }}
+            {{ Time Dest.CreatedAt ", created_at" }}
+        FROM books 
+        WHERE instr(title, {{ .Search }}) > 0
 	`))
 )
 
