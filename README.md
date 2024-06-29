@@ -4,6 +4,14 @@ This module (ab)uses Go's template engine to create a SQL builder and ORM.
 Just take a look at the code and let me know what you think of this approach.  
 Might be dumb, but it surprisingly works pretty well.  
 
+## Quick Notes
+
+- prevents SQL injection by replacing values with placeholders
+- you can use sqlt.ParseFS oder sqlt.ParseFiles to load templates from the file system
+- own scanners can be implemented by adding a template function with the return type sqlt.Scanner
+
+## Example
+
 ```go
 package main
 
@@ -27,23 +35,26 @@ type Book struct {
 var (
 	t = sqlt.New("db", "?", false).Funcs(sprig.TxtFuncMap())
 
-	insert = t.New("insert").MustParse(`
+	insert = sqlt.Must(t.New("insert").Parse(`
 		INSERT INTO books (title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
 			({{ $t }}, {{ now }})
 		{{ end }}
 		RETURNING id;
 		{{ Int64 Dest }}
-	`)
+	`))
 
-	query = t.New("query").MustParse(`
+	query = sqlt.Must(t.New("query").Parse(`
 		SELECT 
 			id, 		{{ Int64 Dest.ID }}
 			title, 		{{ String Dest.Title }}
 			created_at 	{{ Time Dest.CreatedAt }}
+
+			tags 		{{ SplitString "," Dest.Tags }},
+			content 	{{ JsonMap Dest.Content }}
 		FROM books 
 		WHERE instr(title, {{ .Search }}) > 0
-	`)
+	`))
 )
 
 func main() {

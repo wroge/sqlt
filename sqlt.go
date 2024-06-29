@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"strings"
 	"text/template"
 	"text/template/parse"
@@ -181,111 +182,162 @@ type Scanner struct {
 
 type Raw string
 
-func New(name string, placeholder string, positional bool) *Template {
-	return &Template{
-		text: template.New(name).Funcs(template.FuncMap{
-			"Raw": func(sql string) Raw {
-				return Raw(sql)
-			},
-			"Dest": func() any {
+var DefaultFuncs = template.FuncMap{
+	"Raw": func(sql string) Raw {
+		return Raw(sql)
+	},
+	"Dest": func() any {
+		return nil
+	},
+	"Scanner": func(dest sql.Scanner) Scanner {
+		return Scanner{
+			Dest: dest,
+		}
+	},
+	"ByteSlice": func(dest *[]byte) Scanner {
+		return Scanner{
+			Dest: dest,
+		}
+	},
+	"String": func(dest *string) Scanner {
+		return Scanner{
+			Dest: dest,
+		}
+	},
+	"Int16": func(dest *int16) Scanner {
+		return Scanner{
+			Dest: dest,
+		}
+	},
+	"Int32": func(dest *int32) Scanner {
+		return Scanner{
+			Dest: dest,
+		}
+	},
+	"Int64": func(dest *int64) Scanner {
+		return Scanner{
+			Dest: dest,
+		}
+	},
+	"Float32": func(dest *float32) Scanner {
+		return Scanner{
+			Dest: dest,
+		}
+	},
+	"Float64": func(dest *float64) Scanner {
+		return Scanner{
+			Dest: dest,
+		}
+	},
+	"Bool": func(dest *bool) Scanner {
+		return Scanner{
+			Dest: dest,
+		}
+	},
+	"Time": func(dest *time.Time) Scanner {
+		return Scanner{
+			Dest: dest,
+		}
+	},
+	"ParseTime": func(layout string, dest *time.Time) Scanner {
+		var data string
+
+		return Scanner{
+			Dest: &data,
+			Map: func() error {
+				v, err := time.Parse(layout, data)
+				if err != nil {
+					return err
+				}
+
+				*dest = v
+
 				return nil
 			},
-			"Scanner": func(dest sql.Scanner) Scanner {
-				return Scanner{
-					Dest: dest,
-				}
-			},
-			"ByteSlice": func(dest *[]byte) Scanner {
-				return Scanner{
-					Dest: dest,
-				}
-			},
-			"String": func(dest *string) Scanner {
-				return Scanner{
-					Dest: dest,
-				}
-			},
-			"Int32": func(dest *int32) Scanner {
-				return Scanner{
-					Dest: dest,
-				}
-			},
-			"Int64": func(dest *int64) Scanner {
-				return Scanner{
-					Dest: dest,
-				}
-			},
-			"Bool": func(dest *bool) Scanner {
-				return Scanner{
-					Dest: dest,
-				}
-			},
-			"Time": func(dest *time.Time) Scanner {
-				return Scanner{
-					Dest: dest,
-				}
-			},
-			"ParseTime": func(layout string, dest *time.Time) Scanner {
-				var data string
+		}
+	},
+	"JsonRaw": func(dest *json.RawMessage) Scanner {
+		var data []byte
 
-				return Scanner{
-					Dest: &data,
-					Map: func() error {
-						v, err := time.Parse(layout, data)
-						if err != nil {
-							return err
-						}
-
-						*dest = v
-
-						return nil
-					},
-				}
+		return Scanner{
+			Dest: &data,
+			Map: func() error {
+				return json.Unmarshal(data, dest)
 			},
-			"JsonRaw": func(dest *json.RawMessage) Scanner {
-				var data []byte
+		}
+	},
+	"JsonMap": func(dest *map[string]any) Scanner {
+		var data []byte
 
-				return Scanner{
-					Dest: &data,
-					Map: func() error {
-						return json.Unmarshal(data, dest)
-					},
+		return Scanner{
+			Dest: &data,
+			Map: func() error {
+				var m map[string]any
+
+				if err := json.Unmarshal(data, &m); err != nil {
+					return err
 				}
+
+				*dest = m
+
+				return nil
 			},
-			"JsonMap": func(dest *map[string]any) Scanner {
-				var data []byte
+		}
+	},
+	"SplitString": func(sep string, dest *[]string) Scanner {
+		var data string
 
-				return Scanner{
-					Dest: &data,
-					Map: func() error {
-						var m map[string]any
+		return Scanner{
+			Dest: &data,
+			Map: func() error {
+				*dest = strings.Split(sep, data)
 
-						if err := json.Unmarshal(data, &m); err != nil {
-							return err
-						}
-
-						*dest = m
-
-						return nil
-					},
-				}
+				return nil
 			},
-			"SplitString": func(sep string, dest *[]string) Scanner {
-				var data string
+		}
+	},
+}
 
-				return Scanner{
-					Dest: &data,
-					Map: func() error {
-						*dest = strings.Split(sep, data)
+func Must(t *Template, err error) *Template {
+	if err != nil {
+		panic(err)
+	}
 
-						return nil
-					},
-				}
-			},
-		}),
+	return t
+}
+
+func New(name string, placeholder string, positional bool) *Template {
+	return &Template{
+		text:        template.New(name).Funcs(DefaultFuncs),
 		placeholder: placeholder,
 		positional:  positional,
 	}
+}
+
+func ParseFS(placeholder string, positional bool, fsys fs.FS, patterns ...string) (*Template, error) {
+	text, err := template.ParseFS(fsys, patterns...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Template{
+		text:        escape(text.Funcs(DefaultFuncs)),
+		placeholder: placeholder,
+		positional:  positional,
+	}, nil
+}
+
+func ParseFiles(placeholder string, positional bool, filenames ...string) (*Template, error) {
+	text, err := template.ParseFiles(filenames...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Template{
+		text:        escape(text.Funcs(DefaultFuncs)),
+		placeholder: placeholder,
+		positional:  positional,
+	}, nil
 }
 
 type Template struct {
@@ -321,17 +373,55 @@ func (t *Template) Parse(sql string) (*Template, error) {
 	}, nil
 }
 
-func (t *Template) MustParse(sql string) *Template {
-	n, err := t.Parse(sql)
+func (t *Template) ParseFS(fsys fs.FS, patterns ...string) (*Template, error) {
+	text, err := t.text.ParseFS(fsys, patterns...)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	return n
+	return &Template{
+		text:        escape(text),
+		placeholder: t.placeholder,
+		positional:  t.positional,
+	}, nil
+}
+
+func (t *Template) ParseFiles(filenames ...string) (*Template, error) {
+	text, err := t.text.ParseFiles(filenames...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Template{
+		text:        escape(text),
+		placeholder: t.placeholder,
+		positional:  t.positional,
+	}, nil
+}
+
+func (t *Template) Clone() (*Template, error) {
+	text, err := t.text.Clone()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Template{
+		text:        text,
+		placeholder: t.placeholder,
+		positional:  t.positional,
+	}, nil
+}
+
+func (t *Template) Delims(left, right string) *Template {
+	t.text.Delims(left, right)
+
+	return t
 }
 
 func (t *Template) Funcs(fm template.FuncMap) *Template {
 	t.text.Funcs(fm)
+
+	t.text.Clone()
 
 	return t
 }
