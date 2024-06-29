@@ -71,7 +71,7 @@ func main() {
 	// INSERT INTO books (title, created_at) VALUES (?, ?) , (?, ?) , (?, ?) , (?, ?) RETURNING id;
 
 	fmt.Println(ids)
-	// [1 2 3, 4]
+	// [1 2 3 4]
 
 	books, err := sqlt.QueryAll[Book](ctx, db, query, map[string]any{
 		"Search": "Bitcoin",
