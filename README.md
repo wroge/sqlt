@@ -38,17 +38,16 @@ var (
 	insert = sqlt.Must(t.New("insert").Parse(`
 		INSERT INTO books (title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
-			({{ $t }}, {{ now }})
+			{{ Expr "(?, ?)" $t now }}
 		{{ end }}
-		RETURNING id;
-		{{ Int64 Dest }}
+		RETURNING {{ Int64 Dest "id" }};
 	`))
 
 	query = sqlt.Must(t.New("query").Parse(`
 		SELECT 
-			id, 		{{ Int64 Dest.ID }}
-			title, 		{{ String Dest.Title }}
-			created_at 	{{ Time Dest.CreatedAt }}
+			{{ Int64 Dest.ID "id" }}
+			{{ String Dest.Title ", title" }}
+			{{ Time Dest.CreatedAt ", created_at" }}
 		FROM books 
 		WHERE instr(title, {{ .Search }}) > 0
 	`))

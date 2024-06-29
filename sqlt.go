@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -79,16 +80,19 @@ func QueryAll[Dest any](ctx context.Context, db DB, t *Template, params any) ([]
 		"Dest": func() any {
 			return value
 		},
-	}).ToSQL(params, func(arg any) (string, bool) {
+	}).ToSQL(params, func(arg any) any {
 		switch a := arg.(type) {
 		case Scanner:
 			dest = append(dest, a.Dest)
 			mapper = append(mapper, a.Map)
 
-			return "", true
+			return Expression{
+				SQL:  a.SQL,
+				Args: a.Args,
+			}
 		}
 
-		return "", false
+		return arg
 	})
 	if err != nil {
 		return nil, err
@@ -141,16 +145,19 @@ func QueryFirst[Dest any](ctx context.Context, db DB, t *Template, params any) (
 		"Dest": func() any {
 			return value
 		},
-	}).ToSQL(params, func(arg any) (string, bool) {
+	}).ToSQL(params, func(arg any) any {
 		switch a := arg.(type) {
 		case Scanner:
 			dest = append(dest, a.Dest)
 			mapper = append(mapper, a.Map)
 
-			return "", true
+			return Expression{
+				SQL:  a.SQL,
+				Args: a.Args,
+			}
 		}
 
-		return "", false
+		return arg
 	})
 	if err != nil {
 		return *value, err
@@ -176,73 +183,108 @@ func QueryFirst[Dest any](ctx context.Context, db DB, t *Template, params any) (
 }
 
 type Scanner struct {
+	SQL  string
+	Args []any
 	Dest any
 	Map  func() error
 }
 
 type Raw string
 
+type Expression struct {
+	SQL  string
+	Args []any
+}
+
 var DefaultFuncs = template.FuncMap{
 	"Raw": func(sql string) Raw {
 		return Raw(sql)
 	},
+	"Expr": func(sql string, args ...any) Expression {
+		return Expression{
+			SQL:  sql,
+			Args: args,
+		}
+	},
 	"Dest": func() any {
 		return nil
 	},
-	"Scanner": func(dest sql.Scanner) Scanner {
+	"Scanner": func(dest sql.Scanner, sql string, args ...any) Scanner {
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: dest,
 		}
 	},
-	"ByteSlice": func(dest *[]byte) Scanner {
+	"ByteSlice": func(dest *[]byte, sql string, args ...any) Scanner {
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: dest,
 		}
 	},
-	"String": func(dest *string) Scanner {
+	"String": func(dest *string, sql string, args ...any) Scanner {
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: dest,
 		}
 	},
-	"Int16": func(dest *int16) Scanner {
+	"Int16": func(dest *int16, sql string, args ...any) Scanner {
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: dest,
 		}
 	},
-	"Int32": func(dest *int32) Scanner {
+	"Int32": func(dest *int32, sql string, args ...any) Scanner {
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: dest,
 		}
 	},
-	"Int64": func(dest *int64) Scanner {
+	"Int64": func(dest *int64, sql string, args ...any) Scanner {
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: dest,
 		}
 	},
-	"Float32": func(dest *float32) Scanner {
+	"Float32": func(dest *float32, sql string, args ...any) Scanner {
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: dest,
 		}
 	},
-	"Float64": func(dest *float64) Scanner {
+	"Float64": func(dest *float64, sql string, args ...any) Scanner {
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: dest,
 		}
 	},
-	"Bool": func(dest *bool) Scanner {
+	"Bool": func(dest *bool, sql string, args ...any) Scanner {
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: dest,
 		}
 	},
-	"Time": func(dest *time.Time) Scanner {
+	"Time": func(dest *time.Time, sql string, args ...any) Scanner {
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: dest,
 		}
 	},
-	"ParseTime": func(layout string, dest *time.Time) Scanner {
+	"ParseTime": func(layout string, dest *time.Time, sql string, args ...any) Scanner {
 		var data string
 
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: &data,
 			Map: func() error {
 				v, err := time.Parse(layout, data)
@@ -256,20 +298,24 @@ var DefaultFuncs = template.FuncMap{
 			},
 		}
 	},
-	"JsonRaw": func(dest *json.RawMessage) Scanner {
+	"JsonRaw": func(dest *json.RawMessage, sql string, args ...any) Scanner {
 		var data []byte
 
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: &data,
 			Map: func() error {
 				return json.Unmarshal(data, dest)
 			},
 		}
 	},
-	"JsonMap": func(dest *map[string]any) Scanner {
+	"JsonMap": func(dest *map[string]any, sql string, args ...any) Scanner {
 		var data []byte
 
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: &data,
 			Map: func() error {
 				var m map[string]any
@@ -284,10 +330,12 @@ var DefaultFuncs = template.FuncMap{
 			},
 		}
 	},
-	"SplitString": func(sep string, dest *[]string) Scanner {
+	"SplitString": func(sep string, dest *[]string, sql string, args ...any) Scanner {
 		var data string
 
 		return Scanner{
+			SQL:  sql,
+			Args: args,
 			Dest: &data,
 			Map: func() error {
 				*dest = strings.Split(sep, data)
@@ -439,34 +487,62 @@ func (t *Template) Lookup(name string) *Template {
 	}
 }
 
-func (t *Template) ToSQL(params any, inject ...func(arg any) (string, bool)) (string, []any, error) {
+func (t *Template) ToSQL(params any, inject ...func(arg any) any) (string, []any, error) {
 	var (
 		buf  strings.Builder
 		args []any
 	)
 
 	t.text.Funcs(template.FuncMap{
-		ident: func(arg any) string {
+		ident: func(arg any) (string, error) {
 			for _, inj := range inject {
-				if sql, ok := inj(arg); ok {
-					return sql
-				}
+				arg = inj(arg)
 			}
 
 			switch a := arg.(type) {
 			case Raw:
-				return string(a)
-			case Scanner:
-				return ""
+				return string(a), nil
+			case Expression:
+				for {
+					index := strings.IndexByte(a.SQL, '?')
+					if index < 0 {
+						buf.WriteString(a.SQL)
+
+						return "", nil
+					}
+
+					if index < len(a.SQL)-1 && a.SQL[index+1] == '?' {
+						buf.WriteString(a.SQL[:index+1])
+						a.SQL = a.SQL[index+2:]
+
+						continue
+					}
+
+					if len(a.Args) == 0 {
+						return "", errors.New("invalid numer of arguments")
+					}
+
+					buf.WriteString(a.SQL[:index])
+					args = append(args, a.Args[0])
+
+					if t.positional {
+						buf.WriteString(fmt.Sprintf("%s%d", t.placeholder, len(args)))
+					} else {
+						buf.WriteString(t.placeholder)
+					}
+
+					a.Args = a.Args[1:]
+					a.SQL = a.SQL[index+1:]
+				}
 			}
 
 			args = append(args, arg)
 
 			if t.positional {
-				return fmt.Sprintf("%s%d", t.placeholder, len(args))
+				return fmt.Sprintf("%s%d", t.placeholder, len(args)), nil
 			}
 
-			return t.placeholder
+			return t.placeholder, nil
 		},
 	})
 
