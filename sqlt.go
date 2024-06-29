@@ -205,7 +205,7 @@ var DefaultFuncs = template.FuncMap{
 	},
 }
 
-func Dest[Dest any](t *Template[any]) *Template[Dest] {
+func Dest[Dest, Src any](t *Template[Src]) *Template[Dest] {
 	return &Template[Dest]{
 		text:        t.text,
 		placeholder: t.placeholder,
@@ -213,7 +213,7 @@ func Dest[Dest any](t *Template[any]) *Template[Dest] {
 	}
 }
 
-func MustDest[Dest any](t *Template[any], err error) *Template[Dest] {
+func Must[Dest, Src any](t *Template[Src], err error) *Template[Dest] {
 	if err != nil {
 		panic(err)
 	}
@@ -223,14 +223,6 @@ func MustDest[Dest any](t *Template[any], err error) *Template[Dest] {
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}
-}
-
-func Must[Dest any](t *Template[Dest], err error) *Template[Dest] {
-	if err != nil {
-		panic(err)
-	}
-
-	return t
 }
 
 func New(name string, placeholder string, positional bool) *Template[any] {

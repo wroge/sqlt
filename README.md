@@ -36,7 +36,7 @@ type Book struct {
 var (
 	t = sqlt.New("db", "?", false).Funcs(sprig.TxtFuncMap())
 
-	insert = sqlt.MustDest[int64](t.New("insert").Parse(`
+	insert = sqlt.Must[int64](t.New("insert").Parse(`
 		INSERT INTO books (title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
 			{{ Expr "(?, ?)" $t now }}
@@ -44,7 +44,7 @@ var (
 		RETURNING {{ Int64 Dest "id" }};
 	`))
 
-	query = sqlt.MustDest[Book](t.New("query").Parse(`
+	query = sqlt.Must[Book](t.New("query").Parse(`
 		SELECT 
 			{{ Int64 Dest.ID "id" }}
 			{{ String Dest.Title ", title" }}
