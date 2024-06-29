@@ -6,9 +6,9 @@ Might be dumb, but it surprisingly works pretty well.
 
 ## Quick Notes
 
-- it prevents SQL injection by replacing values with placeholders,
-- use sqlt.ParseFS oder sqlt.ParseFiles to load templates from the file system,
-- implement own scanner by adding a template function with the return type sqlt.Scanner,
+- It prevents SQL injection by replacing values with placeholders.
+- Use sqlt.ParseFS oder sqlt.ParseFiles to load templates from the file system.
+- Implement own scanner by adding a template function with the return type sqlt.Scanner.
 - Expr function can be used for better readability - '?' is replaced at execution time with the correct placeholder.
 
 ## Example
