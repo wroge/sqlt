@@ -205,23 +205,27 @@ var DefaultFuncs = template.FuncMap{
 	},
 }
 
-func Dest[Dest any](t *Template) *DestTemplate[Dest] {
-	return &DestTemplate[Dest]{
-		Template: t,
+func Dest[Dest any](t *Template[any]) *Template[Dest] {
+	return &Template[Dest]{
+		text:        t.text,
+		placeholder: t.placeholder,
+		positional:  t.positional,
 	}
 }
 
-func MustDest[Dest any](t *Template, err error) *DestTemplate[Dest] {
+func MustDest[Dest any](t *Template[any], err error) *Template[Dest] {
 	if err != nil {
 		panic(err)
 	}
 
-	return &DestTemplate[Dest]{
-		Template: t,
+	return &Template[Dest]{
+		text:        t.text,
+		placeholder: t.placeholder,
+		positional:  t.positional,
 	}
 }
 
-func Must(t *Template, err error) *Template {
+func Must[Dest any](t *Template[Dest], err error) *Template[Dest] {
 	if err != nil {
 		panic(err)
 	}
@@ -229,126 +233,119 @@ func Must(t *Template, err error) *Template {
 	return t
 }
 
-func New(name string, placeholder string, positional bool) *Template {
-	return &Template{
+func New(name string, placeholder string, positional bool) *Template[any] {
+	return &Template[any]{
 		text:        template.New(name).Funcs(DefaultFuncs),
 		placeholder: placeholder,
 		positional:  positional,
 	}
 }
 
-func ParseFS(placeholder string, positional bool, fsys fs.FS, patterns ...string) (*Template, error) {
+func ParseFS(placeholder string, positional bool, fsys fs.FS, patterns ...string) (*Template[any], error) {
 	text, err := template.ParseFS(fsys, patterns...)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template{
+	return &Template[any]{
 		text:        escape(text.Funcs(DefaultFuncs)),
 		placeholder: placeholder,
 		positional:  positional,
 	}, nil
 }
 
-func ParseFiles(placeholder string, positional bool, filenames ...string) (*Template, error) {
+func ParseFiles(placeholder string, positional bool, filenames ...string) (*Template[any], error) {
 	text, err := template.ParseFiles(filenames...)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template{
+	return &Template[any]{
 		text:        escape(text.Funcs(DefaultFuncs)),
 		placeholder: placeholder,
 		positional:  positional,
 	}, nil
 }
 
-type Template struct {
+type Template[Dest any] struct {
 	text        *template.Template
 	placeholder string
 	positional  bool
-	stub        any
 }
 
-func (t *Template) Stub(stub any) *Template {
-	t.stub = stub
-
-	return t
-}
-
-func (t *Template) New(name string) *Template {
-	return &Template{
+func (t *Template[Dest]) New(name string) *Template[Dest] {
+	return &Template[Dest]{
 		text:        t.text.New(name),
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}
 }
 
-func (t *Template) Option(opt ...string) *Template {
+func (t *Template[Dest]) Option(opt ...string) *Template[Dest] {
 	t.text.Option(opt...)
 
 	return t
 }
 
-func (t *Template) Parse(sql string) (*Template, error) {
+func (t *Template[Dest]) Parse(sql string) (*Template[Dest], error) {
 	text, err := t.text.Parse(sql)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template{
+	return &Template[Dest]{
 		text:        escape(text),
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}, nil
 }
 
-func (t *Template) ParseFS(fsys fs.FS, patterns ...string) (*Template, error) {
+func (t *Template[Dest]) ParseFS(fsys fs.FS, patterns ...string) (*Template[Dest], error) {
 	text, err := t.text.ParseFS(fsys, patterns...)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template{
+	return &Template[Dest]{
 		text:        escape(text),
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}, nil
 }
 
-func (t *Template) ParseFiles(filenames ...string) (*Template, error) {
+func (t *Template[Dest]) ParseFiles(filenames ...string) (*Template[Dest], error) {
 	text, err := t.text.ParseFiles(filenames...)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template{
+	return &Template[Dest]{
 		text:        escape(text),
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}, nil
 }
 
-func (t *Template) Clone() (*Template, error) {
+func (t *Template[Dest]) Clone() (*Template[Dest], error) {
 	text, err := t.text.Clone()
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template{
+	return &Template[Dest]{
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}, nil
 }
 
-func (t *Template) Delims(left, right string) *Template {
+func (t *Template[Dest]) Delims(left, right string) *Template[Dest] {
 	t.text.Delims(left, right)
 
 	return t
 }
 
-func (t *Template) Funcs(fm template.FuncMap) *Template {
+func (t *Template[Dest]) Funcs(fm template.FuncMap) *Template[Dest] {
 	t.text.Funcs(fm)
 
 	t.text.Clone()
@@ -356,35 +353,37 @@ func (t *Template) Funcs(fm template.FuncMap) *Template {
 	return t
 }
 
-func (t *Template) Lookup(name string) *Template {
+func (t *Template[Dest]) Lookup(name string) *Template[Dest] {
 	text := t.text.Lookup(name)
 	if text == nil {
 		return nil
 	}
 
-	return &Template{
+	return &Template[Dest]{
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}
 }
 
-func (t *Template) ToExec(params any) Exec {
+func (t *Template[Dest]) Run(params any) Runner[Dest] {
 	var (
-		buf  strings.Builder
-		args []any
+		buf    strings.Builder
+		args   []any
+		value  = new(Dest)
+		dest   []any
+		mapper []func() error
 	)
 
 	t.text.Funcs(template.FuncMap{
 		"Dest": func() any {
-			if t.stub != nil {
-				return t.stub
-			}
-
-			return map[string]any{}
+			return value
 		},
 		ident: func(arg any) (string, error) {
 			if s, ok := arg.(Scanner); ok {
+				dest = append(dest, s.Dest)
+				mapper = append(mapper, s.Map)
+
 				arg = Expression{
 					SQL:  s.SQL,
 					Args: s.Args,
@@ -439,141 +438,12 @@ func (t *Template) ToExec(params any) Exec {
 	})
 
 	if err := t.text.Execute(&buf, params); err != nil {
-		return Exec{
+		return Runner[Dest]{
 			Err: err,
 		}
 	}
 
-	return Exec{
-		SQL:  buf.String(),
-		Args: args,
-	}
-}
-
-func (t *Template) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
-	return t.ToExec(params).Exec(ctx, db)
-}
-
-func (t *Template) Query(ctx context.Context, db DB, params any) (*sql.Rows, error) {
-	return t.ToExec(params).Query(ctx, db)
-}
-
-func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, error) {
-	return t.ToExec(params).QueryRow(ctx, db)
-}
-
-type Exec struct {
-	SQL  string
-	Args []any
-	Err  error
-}
-
-func (e Exec) Exec(ctx context.Context, db DB) (sql.Result, error) {
-	if e.Err != nil {
-		return nil, e.Err
-	}
-
-	return db.ExecContext(ctx, e.SQL, e.Args...)
-}
-
-func (e Exec) Query(ctx context.Context, db DB) (*sql.Rows, error) {
-	if e.Err != nil {
-		return nil, e.Err
-	}
-
-	return db.QueryContext(ctx, e.SQL, e.Args...)
-}
-
-func (e Exec) QueryRow(ctx context.Context, db DB) (*sql.Row, error) {
-	if e.Err != nil {
-		return nil, e.Err
-	}
-
-	return db.QueryRowContext(ctx, e.SQL, e.Args...), nil
-}
-
-type DestTemplate[Dest any] struct {
-	Template *Template
-}
-
-func (t *DestTemplate[Dest]) ToQuery(params any) Query[Dest] {
-	var (
-		buf    strings.Builder
-		args   []any
-		dest   []any
-		mapper []func() error
-		value  = new(Dest)
-	)
-
-	t.Template.text.Funcs(template.FuncMap{
-		"Dest": func() any {
-			return value
-		},
-		ident: func(arg any) (string, error) {
-			if s, ok := arg.(Scanner); ok {
-				dest = append(dest, s.Dest)
-				mapper = append(mapper, s.Map)
-
-				arg = Expression{
-					SQL:  s.SQL,
-					Args: s.Args,
-				}
-			}
-
-			switch a := arg.(type) {
-			case Raw:
-				return string(a), nil
-			case Expression:
-				for {
-					index := strings.IndexByte(a.SQL, '?')
-					if index < 0 {
-						buf.WriteString(a.SQL)
-
-						return "", nil
-					}
-
-					if index < len(a.SQL)-1 && a.SQL[index+1] == '?' {
-						buf.WriteString(a.SQL[:index+1])
-						a.SQL = a.SQL[index+2:]
-
-						continue
-					}
-
-					if len(a.Args) == 0 {
-						return "", errors.New("invalid numer of arguments")
-					}
-
-					buf.WriteString(a.SQL[:index])
-					args = append(args, a.Args[0])
-
-					if t.Template.positional {
-						buf.WriteString(fmt.Sprintf("%s%d", t.Template.placeholder, len(args)))
-					} else {
-						buf.WriteString(t.Template.placeholder)
-					}
-
-					a.Args = a.Args[1:]
-					a.SQL = a.SQL[index+1:]
-				}
-			}
-
-			args = append(args, arg)
-
-			if t.Template.positional {
-				return fmt.Sprintf("%s%d", t.Template.placeholder, len(args)), nil
-			}
-
-			return t.Template.placeholder, nil
-		},
-	})
-
-	if err := t.Template.text.Execute(&buf, params); err != nil {
-		return Query[Dest]{
-			Err: err,
-		}
-	}
-
-	return Query[Dest]{
+	return Runner[Dest]{
 		SQL:   buf.String(),
 		Args:  args,
 		Value: value,
@@ -582,15 +452,27 @@ func (t *DestTemplate[Dest]) ToQuery(params any) Query[Dest] {
 	}
 }
 
-func (t *DestTemplate[Dest]) QueryAll(ctx context.Context, db DB, params any) ([]Dest, error) {
-	return t.ToQuery(params).QueryAll(ctx, db)
+func (t *Template[Dest]) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
+	return t.Run(params).Exec(ctx, db)
 }
 
-func (t *DestTemplate[Dest]) QueryFirst(ctx context.Context, db DB, params any) (Dest, error) {
-	return t.ToQuery(params).QueryFirst(ctx, db)
+func (t *Template[Dest]) Query(ctx context.Context, db DB, params any) (*sql.Rows, error) {
+	return t.Run(params).Query(ctx, db)
 }
 
-type Query[Dest any] struct {
+func (t *Template[Dest]) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, error) {
+	return t.Run(params).QueryRow(ctx, db)
+}
+
+func (t *Template[Dest]) QueryAll(ctx context.Context, db DB, params any) ([]Dest, error) {
+	return t.Run(params).QueryAll(ctx, db)
+}
+
+func (t *Template[Dest]) QueryFirst(ctx context.Context, db DB, params any) (Dest, error) {
+	return t.Run(params).QueryFirst(ctx, db)
+}
+
+type Runner[Dest any] struct {
 	SQL   string
 	Args  []any
 	Err   error
@@ -599,9 +481,33 @@ type Query[Dest any] struct {
 	Map   []func() error
 }
 
-func (q Query[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
-	if q.Err != nil {
-		return nil, q.Err
+func (r Runner[Dest]) Exec(ctx context.Context, db DB) (sql.Result, error) {
+	if r.Err != nil {
+		return nil, r.Err
+	}
+
+	return db.ExecContext(ctx, r.SQL, r.Args...)
+}
+
+func (r Runner[Dest]) Query(ctx context.Context, db DB) (*sql.Rows, error) {
+	if r.Err != nil {
+		return nil, r.Err
+	}
+
+	return db.QueryContext(ctx, r.SQL, r.Args...)
+}
+
+func (r Runner[Dest]) QueryRow(ctx context.Context, db DB) (*sql.Row, error) {
+	if r.Err != nil {
+		return nil, r.Err
+	}
+
+	return db.QueryRowContext(ctx, r.SQL, r.Args...), nil
+}
+
+func (r Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
+	if r.Err != nil {
+		return nil, r.Err
 	}
 
 	var (
@@ -609,7 +515,7 @@ func (q Query[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
 		err    error
 	)
 
-	rows, err := db.QueryContext(ctx, q.SQL, q.Args...)
+	rows, err := db.QueryContext(ctx, r.SQL, r.Args...)
 	if err != nil {
 		return nil, err
 	}
@@ -617,11 +523,11 @@ func (q Query[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
 	defer rows.Close()
 
 	for rows.Next() {
-		if err = rows.Scan(q.Dest...); err != nil {
+		if err = rows.Scan(r.Dest...); err != nil {
 			return nil, err
 		}
 
-		for _, m := range q.Map {
+		for _, m := range r.Map {
 			if m == nil {
 				continue
 			}
@@ -631,7 +537,7 @@ func (q Query[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
 			}
 		}
 
-		values = append(values, *q.Value)
+		values = append(values, *r.Value)
 	}
 
 	if err = rows.Err(); err != nil {
@@ -645,23 +551,23 @@ func (q Query[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
 	return values, nil
 }
 
-func (q Query[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
+func (r Runner[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
 	var (
 		err   error
 		value = new(Dest)
 	)
 
-	if q.Err != nil {
-		return *q.Value, q.Err
+	if r.Err != nil {
+		return *r.Value, r.Err
 	}
 
-	row := db.QueryRowContext(ctx, q.SQL, q.Args...)
+	row := db.QueryRowContext(ctx, r.SQL, r.Args...)
 
-	if err = row.Scan(q.Dest...); err != nil {
+	if err = row.Scan(r.Dest...); err != nil {
 		return *value, err
 	}
 
-	for _, m := range q.Map {
+	for _, m := range r.Map {
 		if m == nil {
 			continue
 		}
