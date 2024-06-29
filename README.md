@@ -9,6 +9,7 @@ Might be dumb, but it surprisingly works pretty well.
 - prevents SQL injection by replacing values with placeholders
 - you can use sqlt.ParseFS oder sqlt.ParseFiles to load templates from the file system
 - own scanners can be implemented by adding a template function with the return type sqlt.Scanner
+- Expr function can be used for better readability - '?' is replaced at execution time with the correct placeholder
 
 ## Example
 
@@ -36,11 +37,11 @@ var (
 	t = sqlt.New("db", "?", false).Funcs(sprig.TxtFuncMap())
 
 	insert = sqlt.Must(t.New("insert").Parse(`
-		INSERT INTO books (title, created_at) VALUES
-		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
-			{{ Expr "(?, ?)" $t now }}
-		{{ end }}
-		RETURNING {{ Int64 Dest "id" }};
+    INSERT INTO books (title, created_at) VALUES
+    {{ range $i, $t := . }} {{ if $i }}, {{ end }}
+        {{ Expr "(?, ?)" $t now }}
+    {{ end }}
+    RETURNING {{ Int64 Dest "id" }};
 	`))
 
 	query = sqlt.Must(t.New("query").Parse(`
