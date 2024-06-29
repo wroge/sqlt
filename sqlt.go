@@ -41,137 +41,6 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 	return do(tx)
 }
 
-func Exec(ctx context.Context, db DB, t *Template, params any) (sql.Result, error) {
-	sql, args, err := t.ToSQL(params)
-	if err != nil {
-		return nil, err
-	}
-
-	return db.ExecContext(ctx, sql, args...)
-}
-
-func Query(ctx context.Context, db DB, t *Template, params any) (*sql.Rows, error) {
-	sql, args, err := t.ToSQL(params)
-	if err != nil {
-		return nil, err
-	}
-
-	return db.QueryContext(ctx, sql, args...)
-}
-
-func QueryRow(ctx context.Context, db DB, t *Template, params any) (*sql.Row, error) {
-	sql, args, err := t.ToSQL(params)
-	if err != nil {
-		return nil, err
-	}
-
-	return db.QueryRowContext(ctx, sql, args...), nil
-}
-
-func QueryAll[Dest any](ctx context.Context, db DB, t *Template, params any) ([]Dest, error) {
-	var (
-		dest   []any
-		mapper []func() error
-		value  = new(Dest)
-		list   []Dest
-	)
-
-	sql, args, err := t.Funcs(template.FuncMap{
-		"Dest": func() any {
-			return value
-		},
-	}).ToSQL(params, func(arg any) any {
-		switch a := arg.(type) {
-		case Scanner:
-			dest = append(dest, a.Dest)
-			mapper = append(mapper, a.Map)
-		}
-
-		return arg
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := db.QueryContext(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	defer rows.Close()
-
-	for rows.Next() {
-		if err = rows.Scan(dest...); err != nil {
-			return nil, err
-		}
-
-		for _, m := range mapper {
-			if m == nil {
-				continue
-			}
-
-			if err = m(); err != nil {
-				return nil, err
-			}
-		}
-
-		list = append(list, *value)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-
-	if err = rows.Close(); err != nil {
-		return nil, err
-	}
-
-	return list, nil
-}
-
-func QueryFirst[Dest any](ctx context.Context, db DB, t *Template, params any) (Dest, error) {
-	var (
-		dest   []any
-		mapper []func() error
-		value  = new(Dest)
-	)
-
-	sql, args, err := t.Funcs(template.FuncMap{
-		"Dest": func() any {
-			return value
-		},
-	}).ToSQL(params, func(arg any) any {
-		switch a := arg.(type) {
-		case Scanner:
-			dest = append(dest, a.Dest)
-			mapper = append(mapper, a.Map)
-		}
-
-		return arg
-	})
-	if err != nil {
-		return *value, err
-	}
-
-	row := db.QueryRowContext(ctx, sql, args...)
-
-	if err = row.Scan(dest...); err != nil {
-		return *value, err
-	}
-
-	for _, m := range mapper {
-		if m == nil {
-			continue
-		}
-
-		if err = m(); err != nil {
-			return *value, err
-		}
-	}
-
-	return *value, nil
-}
-
 type Scanner struct {
 	SQL  string
 	Args []any
@@ -336,6 +205,22 @@ var DefaultFuncs = template.FuncMap{
 	},
 }
 
+func Dest[Dest any](t *Template) *DestTemplate[Dest] {
+	return &DestTemplate[Dest]{
+		Template: t,
+	}
+}
+
+func MustDest[Dest any](t *Template, err error) *DestTemplate[Dest] {
+	if err != nil {
+		panic(err)
+	}
+
+	return &DestTemplate[Dest]{
+		Template: t,
+	}
+}
+
 func Must(t *Template, err error) *Template {
 	if err != nil {
 		panic(err)
@@ -477,7 +362,7 @@ func (t *Template) Lookup(name string) *Template {
 	}
 }
 
-func (t *Template) ToSQL(params any, inject ...func(arg any) any) (string, []any, error) {
+func (t *Template) ToExec(params any) Exec {
 	var (
 		buf  strings.Builder
 		args []any
@@ -485,17 +370,6 @@ func (t *Template) ToSQL(params any, inject ...func(arg any) any) (string, []any
 
 	t.text.Funcs(template.FuncMap{
 		ident: func(arg any) (string, error) {
-			for _, inj := range inject {
-				arg = inj(arg)
-			}
-
-			if s, ok := arg.(Scanner); ok {
-				arg = Expression{
-					SQL:  s.SQL,
-					Args: s.Args,
-				}
-			}
-
 			switch a := arg.(type) {
 			case Raw:
 				return string(a), nil
@@ -544,10 +418,239 @@ func (t *Template) ToSQL(params any, inject ...func(arg any) any) (string, []any
 	})
 
 	if err := t.text.Execute(&buf, params); err != nil {
-		return "", nil, err
+		return Exec{
+			Err: err,
+		}
 	}
 
-	return buf.String(), args, nil
+	return Exec{
+		SQL:  buf.String(),
+		Args: args,
+	}
+}
+
+func (t *Template) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
+	return t.ToExec(params).Exec(ctx, db)
+}
+
+func (t *Template) Query(ctx context.Context, db DB, params any) (*sql.Rows, error) {
+	return t.ToExec(params).Query(ctx, db)
+}
+
+func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, error) {
+	return t.ToExec(params).QueryRow(ctx, db)
+}
+
+type Exec struct {
+	SQL  string
+	Args []any
+	Err  error
+}
+
+func (e Exec) Exec(ctx context.Context, db DB) (sql.Result, error) {
+	if e.Err != nil {
+		return nil, e.Err
+	}
+
+	return db.ExecContext(ctx, e.SQL, e.Args...)
+}
+
+func (e Exec) Query(ctx context.Context, db DB) (*sql.Rows, error) {
+	if e.Err != nil {
+		return nil, e.Err
+	}
+
+	return db.QueryContext(ctx, e.SQL, e.Args...)
+}
+
+func (e Exec) QueryRow(ctx context.Context, db DB) (*sql.Row, error) {
+	if e.Err != nil {
+		return nil, e.Err
+	}
+
+	return db.QueryRowContext(ctx, e.SQL, e.Args...), nil
+}
+
+type DestTemplate[Dest any] struct {
+	Template *Template
+}
+
+func (t *DestTemplate[Dest]) ToQuery(params any) Query[Dest] {
+	var (
+		buf    strings.Builder
+		args   []any
+		dest   []any
+		mapper []func() error
+		value  = new(Dest)
+	)
+
+	t.Template.text.Funcs(template.FuncMap{
+		"Dest": func() any {
+			return value
+		},
+		ident: func(arg any) (string, error) {
+			if s, ok := arg.(Scanner); ok {
+				dest = append(dest, s.Dest)
+				mapper = append(mapper, s.Map)
+
+				arg = Expression{
+					SQL:  s.SQL,
+					Args: s.Args,
+				}
+			}
+
+			switch a := arg.(type) {
+			case Raw:
+				return string(a), nil
+			case Expression:
+				for {
+					index := strings.IndexByte(a.SQL, '?')
+					if index < 0 {
+						buf.WriteString(a.SQL)
+
+						return "", nil
+					}
+
+					if index < len(a.SQL)-1 && a.SQL[index+1] == '?' {
+						buf.WriteString(a.SQL[:index+1])
+						a.SQL = a.SQL[index+2:]
+
+						continue
+					}
+
+					if len(a.Args) == 0 {
+						return "", errors.New("invalid numer of arguments")
+					}
+
+					buf.WriteString(a.SQL[:index])
+					args = append(args, a.Args[0])
+
+					if t.Template.positional {
+						buf.WriteString(fmt.Sprintf("%s%d", t.Template.placeholder, len(args)))
+					} else {
+						buf.WriteString(t.Template.placeholder)
+					}
+
+					a.Args = a.Args[1:]
+					a.SQL = a.SQL[index+1:]
+				}
+			}
+
+			args = append(args, arg)
+
+			if t.Template.positional {
+				return fmt.Sprintf("%s%d", t.Template.placeholder, len(args)), nil
+			}
+
+			return t.Template.placeholder, nil
+		},
+	})
+
+	if err := t.Template.text.Execute(&buf, params); err != nil {
+		return Query[Dest]{
+			Err: err,
+		}
+	}
+
+	return Query[Dest]{
+		SQL:   buf.String(),
+		Args:  args,
+		Value: value,
+		Dest:  dest,
+		Map:   mapper,
+	}
+}
+
+func (t *DestTemplate[Dest]) QueryAll(ctx context.Context, db DB, params any) ([]Dest, error) {
+	return t.ToQuery(params).QueryAll(ctx, db)
+}
+
+func (t *DestTemplate[Dest]) QueryFirst(ctx context.Context, db DB, params any) (Dest, error) {
+	return t.ToQuery(params).QueryFirst(ctx, db)
+}
+
+type Query[Dest any] struct {
+	SQL   string
+	Args  []any
+	Err   error
+	Value *Dest
+	Dest  []any
+	Map   []func() error
+}
+
+func (q Query[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
+	if q.Err != nil {
+		return nil, q.Err
+	}
+
+	var (
+		values []Dest
+		err    error
+	)
+
+	rows, err := db.QueryContext(ctx, q.SQL, q.Args...)
+	if err != nil {
+		return nil, err
+	}
+
+	defer rows.Close()
+
+	for rows.Next() {
+		if err = rows.Scan(q.Dest...); err != nil {
+			return nil, err
+		}
+
+		for _, m := range q.Map {
+			if m == nil {
+				continue
+			}
+
+			if err = m(); err != nil {
+				return nil, err
+			}
+		}
+
+		values = append(values, *q.Value)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+
+	return values, nil
+}
+
+func (q Query[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
+	var (
+		err   error
+		value = new(Dest)
+	)
+
+	if q.Err != nil {
+		return *q.Value, q.Err
+	}
+
+	row := db.QueryRowContext(ctx, q.SQL, q.Args...)
+
+	if err = row.Scan(q.Dest...); err != nil {
+		return *value, err
+	}
+
+	for _, m := range q.Map {
+		if m == nil {
+			continue
+		}
+
+		if err = m(); err != nil {
+			return *value, err
+		}
+	}
+
+	return *value, nil
 }
 
 var ident = "__sqlt__"
