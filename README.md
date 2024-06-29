@@ -1,15 +1,15 @@
 # sqlt - SQL Templates
 
-This module (ab)uses Go's template engine to create a SQL builder and ORM.  
+This module (ab)uses Go's template engine to create an SQL builder and ORM.  
 Just take a look at the code and let me know what you think of this approach.  
-Might be dumb, but it surprisingly works pretty well.  
+Might be dumb, but it surprisingly works pretty well.
 
 ## Quick Notes
 
-- prevents SQL injection by replacing values with placeholders
-- you can use sqlt.ParseFS oder sqlt.ParseFiles to load templates from the file system
-- own scanners can be implemented by adding a template function with the return type sqlt.Scanner
-- Expr function can be used for better readability - '?' is replaced at execution time with the correct placeholder
+- it prevents SQL injection by replacing values with placeholders,
+- use sqlt.ParseFS oder sqlt.ParseFiles to load templates from the file system,
+- implement own scanner by adding a template function with the return type sqlt.Scanner,
+- Expr function can be used for better readability - '?' is replaced at execution time with the correct placeholder.
 
 ## Example
 
