@@ -369,7 +369,17 @@ func (t *Template) ToExec(params any) Exec {
 	)
 
 	t.text.Funcs(template.FuncMap{
+		"Dest": func() any {
+			return map[string]any{}
+		},
 		ident: func(arg any) (string, error) {
+			if s, ok := arg.(Scanner); ok {
+				arg = Expression{
+					SQL:  s.SQL,
+					Args: s.Args,
+				}
+			}
+
 			switch a := arg.(type) {
 			case Raw:
 				return string(a), nil
