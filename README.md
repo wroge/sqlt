@@ -49,9 +49,6 @@ var (
 			id, 		{{ Int64 Dest.ID }}
 			title, 		{{ String Dest.Title }}
 			created_at 	{{ Time Dest.CreatedAt }}
-
-			tags 		{{ SplitString "," Dest.Tags }},
-			content 	{{ JsonMap Dest.Content }}
 		FROM books 
 		WHERE instr(title, {{ .Search }}) > 0
 	`))
