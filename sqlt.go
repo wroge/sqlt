@@ -267,6 +267,13 @@ type Template struct {
 	text        *template.Template
 	placeholder string
 	positional  bool
+	stub        any
+}
+
+func (t *Template) Stub(stub any) *Template {
+	t.stub = stub
+
+	return t
 }
 
 func (t *Template) New(name string) *Template {
@@ -370,6 +377,10 @@ func (t *Template) ToExec(params any) Exec {
 
 	t.text.Funcs(template.FuncMap{
 		"Dest": func() any {
+			if t.stub != nil {
+				return t.stub
+			}
+
 			return map[string]any{}
 		},
 		ident: func(arg any) (string, error) {
