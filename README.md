@@ -1,7 +1,7 @@
 # sqlt - SQL Templates
 
 This module (ab)uses Go's template engine to create a SQL builder and ORM.  
-Just take a look at it and let me know what you think of this approach.  
+Just take a look at the code and let me know what you think of this approach.  
 Might be dumb, but it surprisingly works pretty well.  
 
 ```go
