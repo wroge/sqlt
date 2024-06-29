@@ -1,0 +1,5 @@
+.DS_Store
+/cmd
+*.out
+coverage.txt
+main
