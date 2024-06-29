@@ -37,20 +37,20 @@ var (
 	t = sqlt.New("db", "?", false).Funcs(sprig.TxtFuncMap())
 
 	insert = sqlt.Must(t.New("insert").Parse(`
-        INSERT INTO books (title, created_at) VALUES
-        {{ range $i, $t := . }} {{ if $i }}, {{ end }}
-            {{ Expr "(?, ?)" $t now }}
-        {{ end }}
-        RETURNING {{ Int64 Dest "id" }};
+            INSERT INTO books (title, created_at) VALUES
+            {{ range $i, $t := . }} {{ if $i }}, {{ end }}
+                {{ Expr "(?, ?)" $t now }}
+            {{ end }}
+            RETURNING {{ Int64 Dest "id" }};
 	`))
 
 	query = sqlt.Must(t.New("query").Parse(`
-        SELECT 
-            {{ Int64 Dest.ID "id" }}
-            {{ String Dest.Title ", title" }}
-            {{ Time Dest.CreatedAt ", created_at" }}
-        FROM books 
-        WHERE instr(title, {{ .Search }}) > 0
+            SELECT 
+                {{ Int64 Dest.ID "id" }}
+                {{ String Dest.Title ", title" }}
+                {{ Time Dest.CreatedAt ", created_at" }}
+            FROM books 
+            WHERE instr(title, {{ .Search }}) > 0
 	`))
 )
 
