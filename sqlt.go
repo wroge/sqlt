@@ -85,11 +85,6 @@ func QueryAll[Dest any](ctx context.Context, db DB, t *Template, params any) ([]
 		case Scanner:
 			dest = append(dest, a.Dest)
 			mapper = append(mapper, a.Map)
-
-			return Expression{
-				SQL:  a.SQL,
-				Args: a.Args,
-			}
 		}
 
 		return arg
@@ -150,11 +145,6 @@ func QueryFirst[Dest any](ctx context.Context, db DB, t *Template, params any) (
 		case Scanner:
 			dest = append(dest, a.Dest)
 			mapper = append(mapper, a.Map)
-
-			return Expression{
-				SQL:  a.SQL,
-				Args: a.Args,
-			}
 		}
 
 		return arg
@@ -497,6 +487,13 @@ func (t *Template) ToSQL(params any, inject ...func(arg any) any) (string, []any
 		ident: func(arg any) (string, error) {
 			for _, inj := range inject {
 				arg = inj(arg)
+			}
+
+			if s, ok := arg.(Scanner); ok {
+				arg = Expression{
+					SQL:  s.SQL,
+					Args: s.Args,
+				}
 			}
 
 			switch a := arg.(type) {
