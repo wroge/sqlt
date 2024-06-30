@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"reflect"
 	"strings"
 	"text/template"
 	"text/template/parse"
@@ -68,77 +69,121 @@ var DefaultFuncs = template.FuncMap{
 	"Dest": func() any {
 		return nil
 	},
-	"Scanner": func(dest sql.Scanner, sql string, args ...any) Scanner {
+	"Scanner": func(dest sql.Scanner, sql string, args ...any) (Scanner, error) {
+		if reflect.ValueOf(dest).IsNil() {
+			return Scanner{}, fmt.Errorf("invalid sqlt.Scanner at '%s'", sql)
+		}
+
 		return Scanner{
 			SQL:  sql,
 			Args: args,
 			Dest: dest,
-		}
+		}, nil
 	},
-	"ByteSlice": func(dest *[]byte, sql string, args ...any) Scanner {
+	"ByteSlice": func(dest *[]byte, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.ByteSlice at '%s'", sql)
+		}
+
 		return Scanner{
 			SQL:  sql,
 			Args: args,
 			Dest: dest,
-		}
+		}, nil
 	},
-	"String": func(dest *string, sql string, args ...any) Scanner {
+	"String": func(dest *string, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.String at '%s'", sql)
+		}
+
 		return Scanner{
 			SQL:  sql,
 			Args: args,
 			Dest: dest,
-		}
+		}, nil
 	},
-	"Int16": func(dest *int16, sql string, args ...any) Scanner {
+	"Int16": func(dest *int16, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.Int16 at '%s'", sql)
+		}
+
 		return Scanner{
 			SQL:  sql,
 			Args: args,
 			Dest: dest,
-		}
+		}, nil
 	},
-	"Int32": func(dest *int32, sql string, args ...any) Scanner {
+	"Int32": func(dest *int32, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.Int32 at '%s'", sql)
+		}
+
 		return Scanner{
 			SQL:  sql,
 			Args: args,
 			Dest: dest,
-		}
+		}, nil
 	},
-	"Int64": func(dest *int64, sql string, args ...any) Scanner {
+	"Int64": func(dest *int64, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.Int64 at '%s'", sql)
+		}
+
 		return Scanner{
 			SQL:  sql,
 			Args: args,
 			Dest: dest,
-		}
+		}, nil
 	},
-	"Float32": func(dest *float32, sql string, args ...any) Scanner {
+	"Float32": func(dest *float32, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.Float32 at '%s'", sql)
+		}
+
 		return Scanner{
 			SQL:  sql,
 			Args: args,
 			Dest: dest,
-		}
+		}, nil
 	},
-	"Float64": func(dest *float64, sql string, args ...any) Scanner {
+	"Float64": func(dest *float64, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.Float64 at '%s'", sql)
+		}
+
 		return Scanner{
 			SQL:  sql,
 			Args: args,
 			Dest: dest,
-		}
+		}, nil
 	},
-	"Bool": func(dest *bool, sql string, args ...any) Scanner {
+	"Bool": func(dest *bool, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.Bool at '%s'", sql)
+		}
+
 		return Scanner{
 			SQL:  sql,
 			Args: args,
 			Dest: dest,
-		}
+		}, nil
 	},
-	"Time": func(dest *time.Time, sql string, args ...any) Scanner {
+	"Time": func(dest *time.Time, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.Time at '%s'", sql)
+		}
+
 		return Scanner{
 			SQL:  sql,
 			Args: args,
 			Dest: dest,
-		}
+		}, nil
 	},
-	"ParseTime": func(layout string, dest *time.Time, sql string, args ...any) Scanner {
+	"ParseTime": func(layout string, dest *time.Time, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.ParseTime at '%s'", sql)
+		}
+
 		var data string
 
 		return Scanner{
@@ -155,9 +200,13 @@ var DefaultFuncs = template.FuncMap{
 
 				return nil
 			},
-		}
+		}, nil
 	},
-	"JsonRaw": func(dest *json.RawMessage, sql string, args ...any) Scanner {
+	"JsonRaw": func(dest *json.RawMessage, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.JsonRaw at '%s'", sql)
+		}
+
 		var data []byte
 
 		return Scanner{
@@ -167,9 +216,13 @@ var DefaultFuncs = template.FuncMap{
 			Map: func() error {
 				return json.Unmarshal(data, dest)
 			},
-		}
+		}, nil
 	},
-	"JsonMap": func(dest *map[string]any, sql string, args ...any) Scanner {
+	"JsonMap": func(dest *map[string]any, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.JsonMap at '%s'", sql)
+		}
+
 		var data []byte
 
 		return Scanner{
@@ -187,9 +240,13 @@ var DefaultFuncs = template.FuncMap{
 
 				return nil
 			},
-		}
+		}, nil
 	},
-	"SplitString": func(sep string, dest *[]string, sql string, args ...any) Scanner {
+	"SplitString": func(sep string, dest *[]string, sql string, args ...any) (Scanner, error) {
+		if dest == nil {
+			return Scanner{}, fmt.Errorf("invalid sqlt.SplitString at '%s'", sql)
+		}
+
 		var data string
 
 		return Scanner{
@@ -201,7 +258,7 @@ var DefaultFuncs = template.FuncMap{
 
 				return nil
 			},
-		}
+		}, nil
 	},
 }
 
