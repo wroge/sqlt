@@ -292,6 +292,10 @@ func (t *Template[Dest]) Parse(sql string) (*Template[Dest], error) {
 	}, nil
 }
 
+func (t *Template[Dest]) MustParse(sql string) *Template[Dest] {
+	return Must[Dest](t.Parse(sql))
+}
+
 func (t *Template[Dest]) ParseFS(fsys fs.FS, patterns ...string) (*Template[Dest], error) {
 	text, err := t.text.ParseFS(fsys, patterns...)
 	if err != nil {
