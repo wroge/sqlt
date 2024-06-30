@@ -363,22 +363,19 @@ func (t *Template[Dest]) Lookup(name string) *Template[Dest] {
 }
 
 func (t *Template[Dest]) Run(params any) Runner[Dest] {
-	var (
-		buf    strings.Builder
-		args   []any
-		value  = new(Dest)
-		dest   []any
-		mapper []func() error
-	)
+	var runner = Runner[Dest]{
+		SQL:   strings.Builder{},
+		Value: new(Dest),
+	}
 
 	t.text.Funcs(template.FuncMap{
 		"Dest": func() any {
-			return value
+			return runner.Value
 		},
 		ident: func(arg any) (string, error) {
 			if s, ok := arg.(Scanner); ok {
-				dest = append(dest, s.Dest)
-				mapper = append(mapper, s.Map)
+				runner.Dest = append(runner.Dest, s.Dest)
+				runner.Map = append(runner.Map, s.Map)
 
 				arg = Expression{
 					SQL:  s.SQL,
@@ -393,13 +390,13 @@ func (t *Template[Dest]) Run(params any) Runner[Dest] {
 				for {
 					index := strings.IndexByte(a.SQL, '?')
 					if index < 0 {
-						buf.WriteString(a.SQL)
+						runner.SQL.WriteString(a.SQL)
 
 						return "", nil
 					}
 
 					if index < len(a.SQL)-1 && a.SQL[index+1] == '?' {
-						buf.WriteString(a.SQL[:index+1])
+						runner.SQL.WriteString(a.SQL[:index+1])
 						a.SQL = a.SQL[index+2:]
 
 						continue
@@ -409,13 +406,13 @@ func (t *Template[Dest]) Run(params any) Runner[Dest] {
 						return "", errors.New("invalid numer of arguments")
 					}
 
-					buf.WriteString(a.SQL[:index])
-					args = append(args, a.Args[0])
+					runner.SQL.WriteString(a.SQL[:index])
+					runner.Args = append(runner.Args, a.Args[0])
 
 					if t.positional {
-						buf.WriteString(fmt.Sprintf("%s%d", t.placeholder, len(args)))
+						runner.SQL.WriteString(fmt.Sprintf("%s%d", t.placeholder, len(runner.Args)))
 					} else {
-						buf.WriteString(t.placeholder)
+						runner.SQL.WriteString(t.placeholder)
 					}
 
 					a.Args = a.Args[1:]
@@ -423,29 +420,21 @@ func (t *Template[Dest]) Run(params any) Runner[Dest] {
 				}
 			}
 
-			args = append(args, arg)
+			runner.Args = append(runner.Args, arg)
 
 			if t.positional {
-				return fmt.Sprintf("%s%d", t.placeholder, len(args)), nil
+				return fmt.Sprintf("%s%d", t.placeholder, len(runner.Args)), nil
 			}
 
 			return t.placeholder, nil
 		},
 	})
 
-	if err := t.text.Execute(&buf, params); err != nil {
-		return Runner[Dest]{
-			Err: err,
-		}
+	if runner.Err = t.text.Execute(&runner.SQL, params); runner.Err != nil {
+		return runner
 	}
 
-	return Runner[Dest]{
-		SQL:   buf.String(),
-		Args:  args,
-		Value: value,
-		Dest:  dest,
-		Map:   mapper,
-	}
+	return runner
 }
 
 func (t *Template[Dest]) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
@@ -469,7 +458,7 @@ func (t *Template[Dest]) QueryFirst(ctx context.Context, db DB, params any) (Des
 }
 
 type Runner[Dest any] struct {
-	SQL   string
+	SQL   strings.Builder
 	Args  []any
 	Err   error
 	Value *Dest
@@ -482,7 +471,7 @@ func (r Runner[Dest]) Exec(ctx context.Context, db DB) (sql.Result, error) {
 		return nil, r.Err
 	}
 
-	return db.ExecContext(ctx, r.SQL, r.Args...)
+	return db.ExecContext(ctx, r.SQL.String(), r.Args...)
 }
 
 func (r Runner[Dest]) Query(ctx context.Context, db DB) (*sql.Rows, error) {
@@ -490,7 +479,7 @@ func (r Runner[Dest]) Query(ctx context.Context, db DB) (*sql.Rows, error) {
 		return nil, r.Err
 	}
 
-	return db.QueryContext(ctx, r.SQL, r.Args...)
+	return db.QueryContext(ctx, r.SQL.String(), r.Args...)
 }
 
 func (r Runner[Dest]) QueryRow(ctx context.Context, db DB) (*sql.Row, error) {
@@ -498,7 +487,7 @@ func (r Runner[Dest]) QueryRow(ctx context.Context, db DB) (*sql.Row, error) {
 		return nil, r.Err
 	}
 
-	return db.QueryRowContext(ctx, r.SQL, r.Args...), nil
+	return db.QueryRowContext(ctx, r.SQL.String(), r.Args...), nil
 }
 
 func (r Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
@@ -511,7 +500,7 @@ func (r Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
 		err    error
 	)
 
-	rows, err := db.QueryContext(ctx, r.SQL, r.Args...)
+	rows, err := db.QueryContext(ctx, r.SQL.String(), r.Args...)
 	if err != nil {
 		return nil, err
 	}
@@ -548,19 +537,14 @@ func (r Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
 }
 
 func (r Runner[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
-	var (
-		err   error
-		value = new(Dest)
-	)
-
 	if r.Err != nil {
 		return *r.Value, r.Err
 	}
 
-	row := db.QueryRowContext(ctx, r.SQL, r.Args...)
+	row := db.QueryRowContext(ctx, r.SQL.String(), r.Args...)
 
-	if err = row.Scan(r.Dest...); err != nil {
-		return *value, err
+	if r.Err = row.Scan(r.Dest...); r.Err != nil {
+		return *r.Value, r.Err
 	}
 
 	for _, m := range r.Map {
@@ -568,12 +552,12 @@ func (r Runner[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
 			continue
 		}
 
-		if err = m(); err != nil {
-			return *value, err
+		if r.Err = m(); r.Err != nil {
+			return *r.Value, r.Err
 		}
 	}
 
-	return *value, nil
+	return *r.Value, nil
 }
 
 var ident = "__sqlt__"
