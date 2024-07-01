@@ -3,26 +3,21 @@ package sqlt
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
-	"errors"
+	stdsql "database/sql"
 	"fmt"
 	"io/fs"
-	"reflect"
-	"strings"
 	"text/template"
-	"text/template/parse"
-	"time"
 )
 
 type DB interface {
-	QueryContext(ctx context.Context, sql string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, sql string, args ...any) *sql.Row
-	ExecContext(ctx context.Context, sql string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, sql string, args ...any) (*stdsql.Rows, error)
+	QueryRowContext(ctx context.Context, sql string, args ...any) *stdsql.Row
+	ExecContext(ctx context.Context, sql string, args ...any) (stdsql.Result, error)
 }
 
-func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) error) error {
+func InTx(ctx context.Context, opts *stdsql.TxOptions, db *stdsql.DB, do func(db DB) error) error {
 	var (
-		tx  *sql.Tx
+		tx  *stdsql.Tx
 		err error
 	)
 
@@ -56,213 +51,7 @@ type Expression struct {
 	Args []any
 }
 
-var DefaultFuncs = template.FuncMap{
-	"Raw": func(sql string) Raw {
-		return Raw(sql)
-	},
-	"Expr": func(sql string, args ...any) Expression {
-		return Expression{
-			SQL:  sql,
-			Args: args,
-		}
-	},
-	"Dest": func() any {
-		return nil
-	},
-	"Scanner": func(dest sql.Scanner, sql string, args ...any) (Scanner, error) {
-		if reflect.ValueOf(dest).IsNil() {
-			return Scanner{}, fmt.Errorf("invalid sqlt.Scanner at '%s'", sql)
-		}
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: dest,
-		}, nil
-	},
-	"ByteSlice": func(dest *[]byte, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.ByteSlice at '%s'", sql)
-		}
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: dest,
-		}, nil
-	},
-	"String": func(dest *string, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.String at '%s'", sql)
-		}
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: dest,
-		}, nil
-	},
-	"Int16": func(dest *int16, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.Int16 at '%s'", sql)
-		}
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: dest,
-		}, nil
-	},
-	"Int32": func(dest *int32, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.Int32 at '%s'", sql)
-		}
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: dest,
-		}, nil
-	},
-	"Int64": func(dest *int64, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.Int64 at '%s'", sql)
-		}
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: dest,
-		}, nil
-	},
-	"Float32": func(dest *float32, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.Float32 at '%s'", sql)
-		}
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: dest,
-		}, nil
-	},
-	"Float64": func(dest *float64, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.Float64 at '%s'", sql)
-		}
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: dest,
-		}, nil
-	},
-	"Bool": func(dest *bool, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.Bool at '%s'", sql)
-		}
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: dest,
-		}, nil
-	},
-	"Time": func(dest *time.Time, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.Time at '%s'", sql)
-		}
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: dest,
-		}, nil
-	},
-	"ParseTime": func(layout string, dest *time.Time, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.ParseTime at '%s'", sql)
-		}
-
-		var data string
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: &data,
-			Map: func() error {
-				v, err := time.Parse(layout, data)
-				if err != nil {
-					return err
-				}
-
-				*dest = v
-
-				return nil
-			},
-		}, nil
-	},
-	"JsonRaw": func(dest *json.RawMessage, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.JsonRaw at '%s'", sql)
-		}
-
-		var data []byte
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: &data,
-			Map: func() error {
-				return json.Unmarshal(data, dest)
-			},
-		}, nil
-	},
-	"JsonMap": func(dest *map[string]any, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.JsonMap at '%s'", sql)
-		}
-
-		var data []byte
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: &data,
-			Map: func() error {
-				var m map[string]any
-
-				if err := json.Unmarshal(data, &m); err != nil {
-					return err
-				}
-
-				*dest = m
-
-				return nil
-			},
-		}, nil
-	},
-	"SplitString": func(sep string, dest *[]string, sql string, args ...any) (Scanner, error) {
-		if dest == nil {
-			return Scanner{}, fmt.Errorf("invalid sqlt.SplitString at '%s'", sql)
-		}
-
-		var data string
-
-		return Scanner{
-			SQL:  sql,
-			Args: args,
-			Dest: &data,
-			Map: func() error {
-				*dest = strings.Split(sep, data)
-
-				return nil
-			},
-		}, nil
-	},
-}
-
-func Dest[Dest, Src any](t *Template[Src]) *Template[Dest] {
+func Dest[Dest, A any](t *Template[A]) *Template[Dest] {
 	return &Template[Dest]{
 		text:        t.text,
 		placeholder: t.placeholder,
@@ -270,7 +59,7 @@ func Dest[Dest, Src any](t *Template[Src]) *Template[Dest] {
 	}
 }
 
-func Must[Dest, Src any](t *Template[Src], err error) *Template[Dest] {
+func Must[Dest, A any](t *Template[A], err error) *Template[Dest] {
 	if err != nil {
 		panic(err)
 	}
@@ -284,36 +73,17 @@ func Must[Dest, Src any](t *Template[Src], err error) *Template[Dest] {
 
 func New(name string, placeholder string, positional bool) *Template[any] {
 	return &Template[any]{
-		text:        template.New(name).Funcs(DefaultFuncs),
+		text: template.New(name).Funcs(template.FuncMap{
+			"Dest": func() any {
+				return map[string]any{}
+			},
+			"sqlt": func() any {
+				return namespace{}
+			},
+		}),
 		placeholder: placeholder,
 		positional:  positional,
 	}
-}
-
-func ParseFS(placeholder string, positional bool, fsys fs.FS, patterns ...string) (*Template[any], error) {
-	text, err := template.ParseFS(fsys, patterns...)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Template[any]{
-		text:        escape(text.Funcs(DefaultFuncs)),
-		placeholder: placeholder,
-		positional:  positional,
-	}, nil
-}
-
-func ParseFiles(placeholder string, positional bool, filenames ...string) (*Template[any], error) {
-	text, err := template.ParseFiles(filenames...)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Template[any]{
-		text:        escape(text.Funcs(DefaultFuncs)),
-		placeholder: placeholder,
-		positional:  positional,
-	}, nil
 }
 
 type Template[Dest any] struct {
@@ -366,6 +136,10 @@ func (t *Template[Dest]) ParseFS(fsys fs.FS, patterns ...string) (*Template[Dest
 	}, nil
 }
 
+func (t *Template[Dest]) MustParseFS(fsys fs.FS, patterns ...string) *Template[Dest] {
+	return Must[Dest](t.ParseFS(fsys, patterns...))
+}
+
 func (t *Template[Dest]) ParseFiles(filenames ...string) (*Template[Dest], error) {
 	text, err := t.text.ParseFiles(filenames...)
 	if err != nil {
@@ -379,6 +153,10 @@ func (t *Template[Dest]) ParseFiles(filenames ...string) (*Template[Dest], error
 	}, nil
 }
 
+func (t *Template[Dest]) MustParseFiles(filenames ...string) *Template[Dest] {
+	return Must[Dest](t.ParseFiles(filenames...))
+}
+
 func (t *Template[Dest]) Clone() (*Template[Dest], error) {
 	text, err := t.text.Clone()
 	if err != nil {
@@ -390,6 +168,10 @@ func (t *Template[Dest]) Clone() (*Template[Dest], error) {
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}, nil
+}
+
+func (t *Template[Dest]) MustClone() *Template[Dest] {
+	return Must[Dest](t.Clone())
 }
 
 func (t *Template[Dest]) Delims(left, right string) *Template[Dest] {
@@ -406,92 +188,21 @@ func (t *Template[Dest]) Funcs(fm template.FuncMap) *Template[Dest] {
 	return t
 }
 
-func (t *Template[Dest]) Lookup(name string) *Template[Dest] {
+func (t *Template[Dest]) Lookup(name string) (*Template[Dest], error) {
 	text := t.text.Lookup(name)
 	if text == nil {
-		return nil
+		return nil, fmt.Errorf("template name '%s' not found", name)
 	}
 
 	return &Template[Dest]{
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
-	}
+	}, nil
 }
 
-func (t *Template[Dest]) Run(params any) Runner[Dest] {
-	var runner = Runner[Dest]{
-		SQL:   strings.Builder{},
-		Value: new(Dest),
-	}
-
-	t.text.Funcs(template.FuncMap{
-		"Dest": func() any {
-			return runner.Value
-		},
-		ident: func(arg any) (string, error) {
-			if s, ok := arg.(Scanner); ok {
-				runner.Dest = append(runner.Dest, s.Dest)
-				runner.Map = append(runner.Map, s.Map)
-
-				arg = Expression{
-					SQL:  s.SQL,
-					Args: s.Args,
-				}
-			}
-
-			switch a := arg.(type) {
-			case Raw:
-				return string(a), nil
-			case Expression:
-				for {
-					index := strings.IndexByte(a.SQL, '?')
-					if index < 0 {
-						runner.SQL.WriteString(a.SQL)
-
-						return "", nil
-					}
-
-					if index < len(a.SQL)-1 && a.SQL[index+1] == '?' {
-						runner.SQL.WriteString(a.SQL[:index+1])
-						a.SQL = a.SQL[index+2:]
-
-						continue
-					}
-
-					if len(a.Args) == 0 {
-						return "", errors.New("invalid numer of arguments")
-					}
-
-					runner.SQL.WriteString(a.SQL[:index])
-					runner.Args = append(runner.Args, a.Args[0])
-
-					if t.positional {
-						runner.SQL.WriteString(fmt.Sprintf("%s%d", t.placeholder, len(runner.Args)))
-					} else {
-						runner.SQL.WriteString(t.placeholder)
-					}
-
-					a.Args = a.Args[1:]
-					a.SQL = a.SQL[index+1:]
-				}
-			}
-
-			runner.Args = append(runner.Args, arg)
-
-			if t.positional {
-				return fmt.Sprintf("%s%d", t.placeholder, len(runner.Args)), nil
-			}
-
-			return t.placeholder, nil
-		},
-	})
-
-	if runner.Err = t.text.Execute(&runner.SQL, params); runner.Err != nil {
-		return runner
-	}
-
-	return runner
+func (t *Template[Dest]) MustLookup(name string) *Template[Dest] {
+	return Must[Dest](t.Lookup(name))
 }
 
 func (t *Template[Dest]) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
@@ -515,7 +226,7 @@ func (t *Template[Dest]) QueryFirst(ctx context.Context, db DB, params any) (Des
 }
 
 type Runner[Dest any] struct {
-	SQL   strings.Builder
+	SQL   string
 	Args  []any
 	Err   error
 	Value *Dest
@@ -528,7 +239,7 @@ func (r Runner[Dest]) Exec(ctx context.Context, db DB) (sql.Result, error) {
 		return nil, r.Err
 	}
 
-	return db.ExecContext(ctx, r.SQL.String(), r.Args...)
+	return db.ExecContext(ctx, r.SQL, r.Args...)
 }
 
 func (r Runner[Dest]) Query(ctx context.Context, db DB) (*sql.Rows, error) {
@@ -536,7 +247,7 @@ func (r Runner[Dest]) Query(ctx context.Context, db DB) (*sql.Rows, error) {
 		return nil, r.Err
 	}
 
-	return db.QueryContext(ctx, r.SQL.String(), r.Args...)
+	return db.QueryContext(ctx, r.SQL, r.Args...)
 }
 
 func (r Runner[Dest]) QueryRow(ctx context.Context, db DB) (*sql.Row, error) {
@@ -544,7 +255,7 @@ func (r Runner[Dest]) QueryRow(ctx context.Context, db DB) (*sql.Row, error) {
 		return nil, r.Err
 	}
 
-	return db.QueryRowContext(ctx, r.SQL.String(), r.Args...), nil
+	return db.QueryRowContext(ctx, r.SQL, r.Args...), nil
 }
 
 func (r Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
@@ -557,7 +268,7 @@ func (r Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
 		err    error
 	)
 
-	rows, err := db.QueryContext(ctx, r.SQL.String(), r.Args...)
+	rows, err := db.QueryContext(ctx, r.SQL, r.Args...)
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +309,7 @@ func (r Runner[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
 		return *r.Value, r.Err
 	}
 
-	row := db.QueryRowContext(ctx, r.SQL.String(), r.Args...)
+	row := db.QueryRowContext(ctx, r.SQL, r.Args...)
 
 	if r.Err = row.Scan(r.Dest...); r.Err != nil {
 		return *r.Value, r.Err
@@ -615,66 +326,4 @@ func (r Runner[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
 	}
 
 	return *r.Value, nil
-}
-
-var ident = "__sqlt__"
-
-// stolen from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
-func escape(text *template.Template) *template.Template {
-	for _, tpl := range text.Templates() {
-		escapeTree(tpl.Tree)
-	}
-
-	return text
-}
-
-func escapeTree(s *parse.Tree) *parse.Tree {
-	if s.Root == nil {
-		return s
-	}
-
-	escapeNode(s, s.Root)
-
-	return s
-}
-
-func escapeNode(s *parse.Tree, n parse.Node) {
-	switch v := n.(type) {
-	case *parse.ActionNode:
-		escapeNode(s, v.Pipe)
-	case *parse.IfNode:
-		escapeNode(s, v.List)
-		escapeNode(s, v.ElseList)
-	case *parse.ListNode:
-		if v == nil {
-			return
-		}
-		for _, n := range v.Nodes {
-			escapeNode(s, n)
-		}
-	case *parse.PipeNode:
-		if len(v.Decl) > 0 {
-			return
-		}
-
-		if len(v.Cmds) < 1 {
-			return
-		}
-
-		cmd := v.Cmds[len(v.Cmds)-1]
-		if len(cmd.Args) == 1 && cmd.Args[0].Type() == parse.NodeIdentifier && cmd.Args[0].(*parse.IdentifierNode).Ident == ident {
-			return
-		}
-
-		v.Cmds = append(v.Cmds, &parse.CommandNode{
-			NodeType: parse.NodeCommand,
-			Args:     []parse.Node{parse.NewIdentifier(ident).SetTree(s).SetPos(cmd.Pos)},
-		})
-	case *parse.RangeNode:
-		escapeNode(s, v.List)
-		escapeNode(s, v.ElseList)
-	case *parse.WithNode:
-		escapeNode(s, v.List)
-		escapeNode(s, v.ElseList)
-	}
 }
