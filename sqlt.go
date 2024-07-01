@@ -2,7 +2,6 @@ package sqlt
 
 import (
 	"context"
-	"database/sql"
 	stdsql "database/sql"
 	"fmt"
 	"io/fs"
@@ -205,15 +204,15 @@ func (t *Template[Dest]) MustLookup(name string) *Template[Dest] {
 	return Must[Dest](t.Lookup(name))
 }
 
-func (t *Template[Dest]) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
+func (t *Template[Dest]) Exec(ctx context.Context, db DB, params any) (stdsql.Result, error) {
 	return t.Run(params).Exec(ctx, db)
 }
 
-func (t *Template[Dest]) Query(ctx context.Context, db DB, params any) (*sql.Rows, error) {
+func (t *Template[Dest]) Query(ctx context.Context, db DB, params any) (*stdsql.Rows, error) {
 	return t.Run(params).Query(ctx, db)
 }
 
-func (t *Template[Dest]) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, error) {
+func (t *Template[Dest]) QueryRow(ctx context.Context, db DB, params any) (*stdsql.Row, error) {
 	return t.Run(params).QueryRow(ctx, db)
 }
 
@@ -234,7 +233,7 @@ type Runner[Dest any] struct {
 	Map   []func() error
 }
 
-func (r Runner[Dest]) Exec(ctx context.Context, db DB) (sql.Result, error) {
+func (r Runner[Dest]) Exec(ctx context.Context, db DB) (stdsql.Result, error) {
 	if r.Err != nil {
 		return nil, r.Err
 	}
@@ -242,7 +241,7 @@ func (r Runner[Dest]) Exec(ctx context.Context, db DB) (sql.Result, error) {
 	return db.ExecContext(ctx, r.SQL, r.Args...)
 }
 
-func (r Runner[Dest]) Query(ctx context.Context, db DB) (*sql.Rows, error) {
+func (r Runner[Dest]) Query(ctx context.Context, db DB) (*stdsql.Rows, error) {
 	if r.Err != nil {
 		return nil, r.Err
 	}
@@ -250,7 +249,7 @@ func (r Runner[Dest]) Query(ctx context.Context, db DB) (*sql.Rows, error) {
 	return db.QueryContext(ctx, r.SQL, r.Args...)
 }
 
-func (r Runner[Dest]) QueryRow(ctx context.Context, db DB) (*sql.Row, error) {
+func (r Runner[Dest]) QueryRow(ctx context.Context, db DB) (*stdsql.Row, error) {
 	if r.Err != nil {
 		return nil, r.Err
 	}
