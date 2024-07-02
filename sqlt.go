@@ -50,28 +50,8 @@ type Expression struct {
 	Args []any
 }
 
-func Dest[Dest, A any](t *Template[A]) *Template[Dest] {
-	return &Template[Dest]{
-		text:        t.text,
-		placeholder: t.placeholder,
-		positional:  t.positional,
-	}
-}
-
-func Must[Dest, A any](t *Template[A], err error) *Template[Dest] {
-	if err != nil {
-		panic(err)
-	}
-
-	return &Template[Dest]{
-		text:        t.text,
-		placeholder: t.placeholder,
-		positional:  t.positional,
-	}
-}
-
-func New(name string, placeholder string, positional bool) *Template[any] {
-	return &Template[any]{
+func New(name string, placeholder string, positional bool) *Template {
+	return &Template{
 		text: template.New(name).Funcs(template.FuncMap{
 			"Dest": func() any {
 				return map[string]any{}
@@ -85,101 +65,109 @@ func New(name string, placeholder string, positional bool) *Template[any] {
 	}
 }
 
-type Template[Dest any] struct {
+func Must(t *Template, err error) *Template {
+	if err != nil {
+		panic(err)
+	}
+
+	return t
+}
+
+type Template struct {
 	text        *template.Template
 	placeholder string
 	positional  bool
 }
 
-func (t *Template[Dest]) New(name string) *Template[Dest] {
-	return &Template[Dest]{
+func (t *Template) New(name string) *Template {
+	return &Template{
 		text:        t.text.New(name),
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}
 }
 
-func (t *Template[Dest]) Option(opt ...string) *Template[Dest] {
+func (t *Template) Option(opt ...string) *Template {
 	t.text.Option(opt...)
 
 	return t
 }
 
-func (t *Template[Dest]) Parse(sql string) (*Template[Dest], error) {
+func (t *Template) Parse(sql string) (*Template, error) {
 	text, err := t.text.Parse(sql)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template[Dest]{
+	return &Template{
 		text:        escape(text),
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}, nil
 }
 
-func (t *Template[Dest]) MustParse(sql string) *Template[Dest] {
-	return Must[Dest](t.Parse(sql))
+func (t *Template) MustParse(sql string) *Template {
+	return Must(t.Parse(sql))
 }
 
-func (t *Template[Dest]) ParseFS(fsys fs.FS, patterns ...string) (*Template[Dest], error) {
+func (t *Template) ParseFS(fsys fs.FS, patterns ...string) (*Template, error) {
 	text, err := t.text.ParseFS(fsys, patterns...)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template[Dest]{
+	return &Template{
 		text:        escape(text),
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}, nil
 }
 
-func (t *Template[Dest]) MustParseFS(fsys fs.FS, patterns ...string) *Template[Dest] {
-	return Must[Dest](t.ParseFS(fsys, patterns...))
+func (t *Template) MustParseFS(fsys fs.FS, patterns ...string) *Template {
+	return Must(t.ParseFS(fsys, patterns...))
 }
 
-func (t *Template[Dest]) ParseFiles(filenames ...string) (*Template[Dest], error) {
+func (t *Template) ParseFiles(filenames ...string) (*Template, error) {
 	text, err := t.text.ParseFiles(filenames...)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template[Dest]{
+	return &Template{
 		text:        escape(text),
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}, nil
 }
 
-func (t *Template[Dest]) MustParseFiles(filenames ...string) *Template[Dest] {
-	return Must[Dest](t.ParseFiles(filenames...))
+func (t *Template) MustParseFiles(filenames ...string) *Template {
+	return Must(t.ParseFiles(filenames...))
 }
 
-func (t *Template[Dest]) Clone() (*Template[Dest], error) {
+func (t *Template) Clone() (*Template, error) {
 	text, err := t.text.Clone()
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template[Dest]{
+	return &Template{
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}, nil
 }
 
-func (t *Template[Dest]) MustClone() *Template[Dest] {
-	return Must[Dest](t.Clone())
+func (t *Template) MustClone() *Template {
+	return Must(t.Clone())
 }
 
-func (t *Template[Dest]) Delims(left, right string) *Template[Dest] {
+func (t *Template) Delims(left, right string) *Template {
 	t.text.Delims(left, right)
 
 	return t
 }
 
-func (t *Template[Dest]) Funcs(fm template.FuncMap) *Template[Dest] {
+func (t *Template) Funcs(fm template.FuncMap) *Template {
 	t.text.Funcs(fm)
 
 	t.text.Clone()
@@ -187,41 +175,33 @@ func (t *Template[Dest]) Funcs(fm template.FuncMap) *Template[Dest] {
 	return t
 }
 
-func (t *Template[Dest]) Lookup(name string) (*Template[Dest], error) {
+func (t *Template) Lookup(name string) (*Template, error) {
 	text := t.text.Lookup(name)
 	if text == nil {
 		return nil, fmt.Errorf("template name '%s' not found", name)
 	}
 
-	return &Template[Dest]{
+	return &Template{
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
 	}, nil
 }
 
-func (t *Template[Dest]) MustLookup(name string) *Template[Dest] {
-	return Must[Dest](t.Lookup(name))
+func (t *Template) MustLookup(name string) *Template {
+	return Must(t.Lookup(name))
 }
 
-func (t *Template[Dest]) Exec(ctx context.Context, db DB, params any) (stdsql.Result, error) {
-	return t.Run(params).Exec(ctx, db)
+func (t *Template) Exec(ctx context.Context, db DB, params any) (stdsql.Result, error) {
+	return Run[any](t, params).Exec(ctx, db)
 }
 
-func (t *Template[Dest]) Query(ctx context.Context, db DB, params any) (*stdsql.Rows, error) {
-	return t.Run(params).Query(ctx, db)
+func (t *Template) Query(ctx context.Context, db DB, params any) (*stdsql.Rows, error) {
+	return Run[any](t, params).Query(ctx, db)
 }
 
-func (t *Template[Dest]) QueryRow(ctx context.Context, db DB, params any) (*stdsql.Row, error) {
-	return t.Run(params).QueryRow(ctx, db)
-}
-
-func (t *Template[Dest]) QueryAll(ctx context.Context, db DB, params any) ([]Dest, error) {
-	return t.Run(params).QueryAll(ctx, db)
-}
-
-func (t *Template[Dest]) QueryFirst(ctx context.Context, db DB, params any) (Dest, error) {
-	return t.Run(params).QueryFirst(ctx, db)
+func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*stdsql.Row, error) {
+	return Run[any](t, params).QueryRow(ctx, db)
 }
 
 type Runner[Dest any] struct {
@@ -325,4 +305,12 @@ func (r Runner[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
 	}
 
 	return *r.Value, nil
+}
+
+func QueryAll[Dest any](ctx context.Context, db DB, t *Template, params any) ([]Dest, error) {
+	return Run[Dest](t, params).QueryAll(ctx, db)
+}
+
+func QueryFirst[Dest any](ctx context.Context, db DB, t *Template, params any) (Dest, error) {
+	return Run[Dest](t, params).QueryFirst(ctx, db)
 }

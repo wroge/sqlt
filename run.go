@@ -8,7 +8,7 @@ import (
 	"text/template"
 )
 
-func (t *Template[Dest]) Run(params any) Runner[Dest] {
+func Run[Dest any](t *Template, params any) Runner[Dest] {
 	var (
 		buf bytes.Buffer
 

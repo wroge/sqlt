@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Masterminds/sprig"
+	"github.com/Masterminds/sprig/v3"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/wroge/sqlt"
 )
@@ -38,22 +38,22 @@ type Book struct {
 var (
 	t = sqlt.New("db", "?", false).Funcs(sprig.TxtFuncMap())
 
-	insert = sqlt.Must[int64](t.New("insert").Parse(`
+	insert = t.New("insert").MustParse(`
 		INSERT INTO books (title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
 			{{ sqlt.Expr "(?, ?)" $t now }}
 		{{ end }}
 		RETURNING {{ sqlt.Int64 Dest "id" }};
-	`))
+	`)
 
-	query = sqlt.Must[Book](t.New("query").Parse(`
+	query = t.New("query").MustParse(`
 		SELECT
 			{{ sqlt.Int64 Dest.ID "id" }}
 			{{ sqlt.String Dest.Title ", title" }}
 			{{ sqlt.Time Dest.CreatedAt ", created_at" }}
 		FROM books
 		WHERE instr(title, {{ .Search }}) > 0
-	`))
+	`)
 )
 
 func main() {
@@ -69,7 +69,7 @@ func main() {
 		panic(err)
 	}
 
-	ids, err := insert.QueryAll(ctx, db, []string{
+	ids, err := sqlt.QueryAll[int64](ctx, db, insert, []string{
 		"The Bitcoin Standard",
 		"Sapiens: A Brief History of Humankind",
 		"100 Go Mistakes and How to Avoid Them",
@@ -83,7 +83,7 @@ func main() {
 	fmt.Println(ids)
 	// [1 2 3 4]
 
-	books, err := query.QueryAll(ctx, db, map[string]any{
+	books, err := sqlt.QueryAll[Book](ctx, db, query, map[string]any{
 		"Search": "Bitcoin",
 	})
 	if err != nil {
@@ -92,7 +92,7 @@ func main() {
 	// SELECT id, title, created_at FROM books WHERE instr(title, ?) > 0
 
 	fmt.Println(books)
-	// [{1 The Bitcoin Standard 2024-07-01 10:25:34.112165 +0200 +0200} {4 Mastering Bitcoin 2024-07-01 10:25:34.112208 +0200 +0200}]
+	// [{1 The Bitcoin Standard 2024-07-02 08:54:16.807792 +0200 +0200} {4 Mastering Bitcoin 2024-07-02 08:54:16.807853 +0200 +0200}]
 }
 ```
 
