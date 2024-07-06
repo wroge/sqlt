@@ -2,17 +2,33 @@ package sqlt
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"text/template"
 )
 
-func Run[Dest any](t *Template, params any) Runner[Dest] {
+type Scanner struct {
+	SQL  string
+	Args []any
+	Dest any
+	Map  func() error
+}
+
+type Raw string
+
+type Expression struct {
+	SQL  string
+	Args []any
+}
+
+func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
 	var (
 		buf bytes.Buffer
 
-		runner = Runner[Dest]{
+		runner = &Runner[Dest]{
 			Value: new(Dest),
 		}
 	)
@@ -24,7 +40,20 @@ func Run[Dest any](t *Template, params any) Runner[Dest] {
 		ident: func(arg any) (string, error) {
 			if s, ok := arg.(Scanner); ok {
 				runner.Dest = append(runner.Dest, s.Dest)
-				runner.Map = append(runner.Map, s.Map)
+
+				if s.Map != nil {
+					m := runner.Map
+
+					runner.Map = func() error {
+						if m != nil {
+							if err := m(); err != nil {
+								return err
+							}
+						}
+
+						return s.Map()
+					}
+				}
 
 				arg = Expression{
 					SQL:  s.SQL,
@@ -79,11 +108,112 @@ func Run[Dest any](t *Template, params any) Runner[Dest] {
 		},
 	})
 
-	if runner.Err = t.text.Execute(&buf, params); runner.Err != nil {
-		return runner
+	if err := t.text.Execute(&buf, params); err != nil {
+		return nil, err
 	}
 
 	runner.SQL = buf.String()
 
-	return runner
+	return runner, nil
+}
+
+type Runner[Dest any] struct {
+	SQL   string
+	Args  []any
+	Value *Dest
+	Dest  []any
+	Map   func() error
+}
+
+func (r *Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
+	var (
+		values []Dest
+		err    error
+	)
+
+	rows, err := db.QueryContext(ctx, r.SQL, r.Args...)
+	if err != nil {
+		return nil, err
+	}
+
+	defer rows.Close()
+
+	for rows.Next() {
+		if err = rows.Scan(r.Dest...); err != nil {
+			return nil, err
+		}
+
+		if r.Map != nil {
+			if err = r.Map(); err != nil {
+				return nil, err
+			}
+		}
+
+		values = append(values, *r.Value)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+
+	return values, nil
+}
+
+var ErrTooManyRows = errors.New("sql: too many rows")
+
+func (r *Runner[Dest]) QueryOne(ctx context.Context, db DB) (Dest, error) {
+	rows, err := db.QueryContext(ctx, r.SQL, r.Args...)
+	if err != nil {
+		return *r.Value, err
+	}
+
+	defer rows.Close()
+
+	if !rows.Next() {
+		return *r.Value, sql.ErrNoRows
+	}
+
+	if err = rows.Scan(r.Dest...); err != nil {
+		return *r.Value, err
+	}
+
+	if r.Map != nil {
+		if err = r.Map(); err != nil {
+			return *r.Value, err
+		}
+	}
+
+	if rows.Next() {
+		return *r.Value, ErrTooManyRows
+	}
+
+	if err = rows.Err(); err != nil {
+		return *r.Value, err
+	}
+
+	if err = rows.Close(); err != nil {
+		return *r.Value, err
+	}
+
+	return *r.Value, nil
+}
+
+func (r *Runner[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
+	row := db.QueryRowContext(ctx, r.SQL, r.Args...)
+
+	if err := row.Scan(r.Dest...); err != nil {
+		return *r.Value, err
+	}
+
+	if r.Map != nil {
+		if err := r.Map(); err != nil {
+			return *r.Value, err
+		}
+	}
+
+	return *r.Value, nil
 }

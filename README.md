@@ -92,7 +92,7 @@ func main() {
 	// SELECT id, title, created_at FROM books WHERE instr(title, ?) > 0
 
 	fmt.Println(books)
-	// [{1 The Bitcoin Standard 2024-07-02 08:54:16.807792 +0200 +0200} {4 Mastering Bitcoin 2024-07-02 08:54:16.807853 +0200 +0200}]
+	// [{1 The Bitcoin Standard 2024-07-06 17:29:43.375399 +0200 +0200} {4 Mastering Bitcoin 2024-07-06 17:29:43.37544 +0200 +0200}]
 }
 ```
 
