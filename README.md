@@ -43,7 +43,7 @@ var (
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
 			{{ sqlt.Expr "(?, ?)" $t now }}
 		{{ end }}
-		RETURNING {{ sqlt.Int64 Dest "id" }};
+		RETURNING id;
 	`)
 
 	query = t.New("query").MustParse(`

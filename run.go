@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,7 +19,62 @@ type Scanner struct {
 	Map  func() error
 }
 
-type Raw string
+type Null[V any] sql.Null[V]
+
+func (n *Null[V]) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &n.V); err != nil {
+		n.Valid = false
+
+		return nil
+	}
+
+	n.Valid = true
+
+	return nil
+}
+
+func (n *Null[V]) MarshalJSON() ([]byte, error) {
+	if !n.Valid {
+		return []byte("null"), nil
+	}
+
+	return json.Marshal(n.V)
+}
+
+type JSON[V any] struct {
+	Data V
+}
+
+func (v *JSON[V]) Scan(value any) error {
+	switch t := value.(type) {
+	case string:
+		return v.UnmarshalJSON([]byte(t))
+	case []byte:
+		return v.UnmarshalJSON(t)
+	}
+
+	return errors.New("invalid scan value for json bytes")
+}
+
+func (v *JSON[V]) Value() (driver.Value, error) {
+	return json.Marshal(v.Data)
+}
+
+func (v *JSON[V]) UnmarshalJSON(data []byte) error {
+	var value V
+
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+
+	v.Data = value
+
+	return nil
+}
+
+func (v JSON[V]) MarshalJSON() ([]byte, error) {
+	return json.Marshal(v.Data)
+}
 
 type Expression struct {
 	SQL  string
@@ -31,7 +88,53 @@ func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
 		runner = &Runner[Dest]{
 			Value: new(Dest),
 		}
+
+		unwrap func(expr Expression) error
 	)
+
+	unwrap = func(expr Expression) error {
+		for {
+			index := strings.IndexByte(expr.SQL, '?')
+			if index < 0 {
+				buf.WriteString(expr.SQL)
+
+				return nil
+			}
+
+			if index < len(expr.SQL)-1 {
+				if expr.SQL[index+1] == '?' {
+					buf.WriteString(expr.SQL[:index+1])
+					expr.SQL = expr.SQL[index+2:]
+
+					continue
+				}
+			}
+
+			if len(expr.Args) == 0 {
+				return errors.New("invalid numer of arguments")
+			}
+
+			buf.WriteString(expr.SQL[:index])
+
+			switch e := expr.Args[0].(type) {
+			case Expression:
+				if err := unwrap(e); err != nil {
+					return err
+				}
+			default:
+				runner.Args = append(runner.Args, expr.Args[0])
+
+				if t.positional {
+					buf.WriteString(fmt.Sprintf("%s%d", t.placeholder, len(runner.Args)))
+				} else {
+					buf.WriteString(t.placeholder)
+				}
+			}
+
+			expr.Args = expr.Args[1:]
+			expr.SQL = expr.SQL[index+1:]
+		}
+	}
 
 	t.text.Funcs(template.FuncMap{
 		"Dest": func() any {
@@ -62,40 +165,8 @@ func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
 			}
 
 			switch a := arg.(type) {
-			case Raw:
-				return string(a), nil
 			case Expression:
-				for {
-					index := strings.IndexByte(a.SQL, '?')
-					if index < 0 {
-						buf.WriteString(a.SQL)
-
-						return "", nil
-					}
-
-					if index < len(a.SQL)-1 && a.SQL[index+1] == '?' {
-						buf.WriteString(a.SQL[:index+1])
-						a.SQL = a.SQL[index+2:]
-
-						continue
-					}
-
-					if len(a.Args) == 0 {
-						return "", errors.New("invalid numer of arguments")
-					}
-
-					buf.WriteString(a.SQL[:index])
-					runner.Args = append(runner.Args, a.Args[0])
-
-					if t.positional {
-						buf.WriteString(fmt.Sprintf("%s%d", t.placeholder, len(runner.Args)))
-					} else {
-						buf.WriteString(t.placeholder)
-					}
-
-					a.Args = a.Args[1:]
-					a.SQL = a.SQL[index+1:]
-				}
+				return "", unwrap(a)
 			}
 
 			runner.Args = append(runner.Args, arg)
@@ -126,6 +197,10 @@ type Runner[Dest any] struct {
 }
 
 func (r *Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
+	if len(r.Dest) == 0 {
+		r.Dest = []any{r.Value}
+	}
+
 	var (
 		values []Dest
 		err    error
@@ -166,6 +241,10 @@ func (r *Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
 var ErrTooManyRows = errors.New("sql: too many rows")
 
 func (r *Runner[Dest]) QueryOne(ctx context.Context, db DB) (Dest, error) {
+	if len(r.Dest) == 0 {
+		r.Dest = []any{r.Value}
+	}
+
 	rows, err := db.QueryContext(ctx, r.SQL, r.Args...)
 	if err != nil {
 		return *r.Value, err
@@ -203,6 +282,10 @@ func (r *Runner[Dest]) QueryOne(ctx context.Context, db DB) (Dest, error) {
 }
 
 func (r *Runner[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
+	if len(r.Dest) == 0 {
+		r.Dest = []any{r.Value}
+	}
+
 	row := db.QueryRowContext(ctx, r.SQL, r.Args...)
 
 	if err := row.Scan(r.Dest...); err != nil {
