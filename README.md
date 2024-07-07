@@ -1,6 +1,13 @@
-# sqlt - Go Template SQL Builder & ORM
+# Go Template SQL Builder & ORM
+
+[![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/wroge/sqlt)
+[![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/wroge/sqlt.svg?style=social)](https://github.com/wroge/sqlt/tags)
 
 This package uses Go’s template engine to create a flexible and powerful SQL builder and ORM.
+
+```go
+go get github.com/wroge/sqlt@latest
+```
 
 ## How does it work?
 
