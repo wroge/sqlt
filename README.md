@@ -103,6 +103,10 @@ func main() {
 }
 ```
 
+## Example API using huma and sqlt
+
+[https://github.com/wroge/vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture)
+
 ## Inspiration
 
 - [VauntDev/tqla](https://github.com/VauntDev/tqla)
