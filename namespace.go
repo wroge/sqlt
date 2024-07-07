@@ -1,7 +1,6 @@
 package sqlt
 
 import (
-	"database/sql"
 	stdsql "database/sql"
 	"errors"
 	"fmt"
@@ -43,7 +42,7 @@ func (namespace) Join(list any, sep string) (Expression, error) {
 	return Expression{}, errors.New("invalid value in sqlt.Join")
 }
 
-func (namespace) Scanner(dest sql.Scanner, sql string, args ...any) (Scanner, error) {
+func (namespace) Scanner(dest stdsql.Scanner, sql string, args ...any) (Scanner, error) {
 	if reflect.ValueOf(dest).IsNil() {
 		return Scanner{}, fmt.Errorf("invalid sqlt.Scanner at '%s'", sql)
 	}
