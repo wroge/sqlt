@@ -2,44 +2,15 @@ package sqlt
 
 import (
 	stdsql "database/sql"
-	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 )
 
 type namespace struct{}
 
-func (namespace) Expr(sql string, args ...any) Expression {
-	return Expression{
-		SQL:  sql,
-		Args: args,
-	}
-}
-
-func (namespace) Join(list any, sep string) (Expression, error) {
-	v := reflect.ValueOf(list)
-
-	switch v.Kind() {
-	case reflect.Slice, reflect.Array:
-		if v.Len() == 0 {
-			return Expression{}, errors.New("empty list")
-		}
-
-		args := make([]any, v.Len())
-
-		for i := range v.Len() {
-			args[i] = v.Index(i).Interface()
-		}
-
-		return Expression{
-			SQL:  strings.Repeat(",?", len(args))[1:],
-			Args: args,
-		}, nil
-	}
-
-	return Expression{}, errors.New("invalid value in sqlt.Join")
+func (namespace) Raw(sql string) Raw {
+	return Raw(sql)
 }
 
 func (namespace) Scanner(dest stdsql.Scanner, sql string, args ...any) (Scanner, error) {
@@ -49,7 +20,6 @@ func (namespace) Scanner(dest stdsql.Scanner, sql string, args ...any) (Scanner,
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: dest,
 	}, nil
 }
@@ -61,7 +31,6 @@ func (ns namespace) ByteSlice(dest *[]byte, sql string, args ...any) (Scanner, e
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: dest,
 	}, nil
 }
@@ -73,7 +42,6 @@ func (namespace) String(dest *string, sql string, args ...any) (Scanner, error) 
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: dest,
 	}, nil
 }
@@ -87,7 +55,6 @@ func (namespace) StringP(dest **string, sql string, args ...any) (Scanner, error
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: &data,
 		Map: func() error {
 			if data.Valid {
@@ -106,7 +73,6 @@ func (namespace) Int16(dest *int16, sql string, args ...any) (Scanner, error) {
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: dest,
 	}, nil
 }
@@ -120,7 +86,6 @@ func (namespace) Int16P(dest **int16, sql string, args ...any) (Scanner, error) 
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: &data,
 		Map: func() error {
 			if data.Valid {
@@ -139,7 +104,6 @@ func (namespace) Int32(dest *int32, sql string, args ...any) (Scanner, error) {
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: dest,
 	}, nil
 }
@@ -153,7 +117,6 @@ func (namespace) Int32P(dest **int32, sql string, args ...any) (Scanner, error) 
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: &data,
 		Map: func() error {
 			if data.Valid {
@@ -172,7 +135,6 @@ func (namespace) Int64(dest *int64, sql string, args ...any) (Scanner, error) {
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: dest,
 	}, nil
 }
@@ -186,7 +148,6 @@ func (namespace) Int64P(dest **int64, sql string, args ...any) (Scanner, error) 
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: &data,
 		Map: func() error {
 			if data.Valid {
@@ -205,7 +166,6 @@ func (namespace) Float32(dest *float32, sql string, args ...any) (Scanner, error
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: dest,
 	}, nil
 }
@@ -219,7 +179,6 @@ func (namespace) Float32P(dest **float32, sql string, args ...any) (Scanner, err
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: &data,
 		Map: func() error {
 			if data.Valid {
@@ -238,7 +197,6 @@ func (namespace) Float64(dest *float64, sql string, args ...any) (Scanner, error
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: dest,
 	}, nil
 }
@@ -252,7 +210,6 @@ func (namespace) Float64P(dest **float64, sql string, args ...any) (Scanner, err
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: &data,
 		Map: func() error {
 			if data.Valid {
@@ -271,7 +228,6 @@ func (namespace) Bool(dest *bool, sql string, args ...any) (Scanner, error) {
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: dest,
 	}, nil
 }
@@ -285,7 +241,6 @@ func (namespace) BoolP(dest **bool, sql string, args ...any) (Scanner, error) {
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: &data,
 		Map: func() error {
 			if data.Valid {
@@ -304,7 +259,6 @@ func (namespace) Time(dest *time.Time, sql string, args ...any) (Scanner, error)
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: dest,
 	}, nil
 }
@@ -318,7 +272,6 @@ func (namespace) TimeP(dest **time.Time, sql string, args ...any) (Scanner, erro
 
 	return Scanner{
 		SQL:  sql,
-		Args: args,
 		Dest: &data,
 		Map: func() error {
 			if data.Valid {

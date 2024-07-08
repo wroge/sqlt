@@ -12,7 +12,6 @@ go get github.com/wroge/sqlt@latest
 ## How does it work?
 
 - All input values are [escaped](https://github.com/wroge/sqlt/blob/main/escape.go) and [replaced](https://github.com/wroge/sqlt/blob/main/run.go) at execution time with the correct placeholders.
-- The 'sqlt.Expr' function makes queries more readable by replacing '?' with the correct placeholders.
 - Functions like 'sqlt.Int64' create 'sqlt.Scanner`s' that hold pointers to the destination and optionally a mapper.
 - These 'sqlt.Scanner`s' are collected at execution time.
 - The 'Dest' function is a stub, that gets replaced at execution time with the generic type.
@@ -48,7 +47,7 @@ var (
 	insert = t.New("insert").MustParse(`
 		INSERT INTO books (title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
-			{{ sqlt.Expr "(?, ?)" $t now }}
+			({{ $t }}, {{ now }})
 		{{ end }}
 		RETURNING id;
 	`)

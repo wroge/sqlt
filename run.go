@@ -8,13 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"text/template"
 )
 
 type Scanner struct {
 	SQL  string
-	Args []any
 	Dest any
 	Map  func() error
 }
@@ -76,10 +74,7 @@ func (v JSON[V]) MarshalJSON() ([]byte, error) {
 	return json.Marshal(v.Data)
 }
 
-type Expression struct {
-	SQL  string
-	Args []any
-}
+type Raw string
 
 func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
 	var (
@@ -88,59 +83,13 @@ func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
 		runner = &Runner[Dest]{
 			Value: new(Dest),
 		}
-
-		unwrap func(expr Expression) error
 	)
-
-	unwrap = func(expr Expression) error {
-		for {
-			index := strings.IndexByte(expr.SQL, '?')
-			if index < 0 {
-				buf.WriteString(expr.SQL)
-
-				return nil
-			}
-
-			if index < len(expr.SQL)-1 {
-				if expr.SQL[index+1] == '?' {
-					buf.WriteString(expr.SQL[:index+1])
-					expr.SQL = expr.SQL[index+2:]
-
-					continue
-				}
-			}
-
-			if len(expr.Args) == 0 {
-				return errors.New("invalid numer of arguments")
-			}
-
-			buf.WriteString(expr.SQL[:index])
-
-			switch e := expr.Args[0].(type) {
-			case Expression:
-				if err := unwrap(e); err != nil {
-					return err
-				}
-			default:
-				runner.Args = append(runner.Args, expr.Args[0])
-
-				if t.positional {
-					buf.WriteString(fmt.Sprintf("%s%d", t.placeholder, len(runner.Args)))
-				} else {
-					buf.WriteString(t.placeholder)
-				}
-			}
-
-			expr.Args = expr.Args[1:]
-			expr.SQL = expr.SQL[index+1:]
-		}
-	}
 
 	t.text.Funcs(template.FuncMap{
 		"Dest": func() any {
 			return runner.Value
 		},
-		ident: func(arg any) (string, error) {
+		ident: func(arg any) string {
 			if s, ok := arg.(Scanner); ok {
 				runner.Dest = append(runner.Dest, s.Dest)
 
@@ -158,24 +107,21 @@ func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
 					}
 				}
 
-				arg = Expression{
-					SQL:  s.SQL,
-					Args: s.Args,
-				}
+				return s.SQL
 			}
 
 			switch a := arg.(type) {
-			case Expression:
-				return "", unwrap(a)
+			case Raw:
+				return string(a)
 			}
 
 			runner.Args = append(runner.Args, arg)
 
 			if t.positional {
-				return fmt.Sprintf("%s%d", t.placeholder, len(runner.Args)), nil
+				return fmt.Sprintf("%s%d", t.placeholder, len(runner.Args))
 			}
 
-			return t.placeholder, nil
+			return t.placeholder
 		},
 	})
 
