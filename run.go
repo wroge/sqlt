@@ -77,22 +77,30 @@ func (v JSON[V]) MarshalJSON() ([]byte, error) {
 type Raw string
 
 func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
-	var runner = &Runner[Dest]{
-		Value: new(Dest),
+	var (
+		value  = new(Dest)
+		args   []any
+		dest   []any
+		mapper func() error
+	)
+
+	c, err := t.text.Clone()
+	if err != nil {
+		return nil, err
 	}
 
-	t.text.Funcs(template.FuncMap{
+	c.Funcs(template.FuncMap{
 		"Dest": func() any {
-			return runner.Value
+			return value
 		},
 		ident: func(arg any) string {
 			if s, ok := arg.(Scanner); ok {
-				runner.Dest = append(runner.Dest, s.Dest)
+				dest = append(dest, s.Dest)
 
 				if s.Map != nil {
-					m := runner.Map
+					m := mapper
 
-					runner.Map = func() error {
+					mapper = func() error {
 						if m != nil {
 							if err := m(); err != nil {
 								return err
@@ -111,10 +119,10 @@ func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
 				return string(a)
 			}
 
-			runner.Args = append(runner.Args, arg)
+			args = append(args, arg)
 
 			if t.positional {
-				return fmt.Sprintf("%s%d", t.placeholder, len(runner.Args))
+				return fmt.Sprintf("%s%d", t.placeholder, len(args))
 			}
 
 			return t.placeholder
@@ -123,13 +131,17 @@ func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
 
 	var buf bytes.Buffer
 
-	if err := t.text.Execute(&buf, params); err != nil {
+	if err := c.Execute(&buf, params); err != nil {
 		return nil, err
 	}
 
-	runner.SQL = buf.String()
-
-	return runner, nil
+	return &Runner[Dest]{
+		SQL:   buf.String(),
+		Args:  args,
+		Value: value,
+		Dest:  dest,
+		Map:   mapper,
+	}, nil
 }
 
 type Runner[Dest any] struct {
