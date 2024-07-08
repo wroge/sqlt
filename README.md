@@ -6,7 +6,7 @@
 This package uses Go’s template engine to create a flexible and powerful SQL builder and ORM.
 
 ```go
-go get github.com/wroge/sqlt@latest
+go get -u github.com/wroge/sqlt
 ```
 
 ## How does it work?
