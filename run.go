@@ -1,168 +1,82 @@
 package sqlt
 
 import (
-	"bytes"
 	"context"
-	"database/sql"
-	"database/sql/driver"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"text/template"
+	stdsql "database/sql"
 )
 
-type Scanner struct {
-	SQL  string
-	Dest any
-	Map  func() error
+type DB interface {
+	QueryContext(ctx context.Context, sql string, args ...any) (*stdsql.Rows, error)
+	QueryRowContext(ctx context.Context, sql string, args ...any) *stdsql.Row
+	ExecContext(ctx context.Context, sql string, args ...any) (stdsql.Result, error)
 }
 
-type Null[V any] sql.Null[V]
+func InTx(ctx context.Context, opts *stdsql.TxOptions, db *stdsql.DB, do func(db DB) error) error {
+	var (
+		tx  *stdsql.Tx
+		err error
+	)
 
-func (n *Null[V]) UnmarshalJSON(data []byte) error {
-	if err := json.Unmarshal(data, &n.V); err != nil {
-		n.Valid = false
-
-		return nil
-	}
-
-	n.Valid = true
-
-	return nil
-}
-
-func (n *Null[V]) MarshalJSON() ([]byte, error) {
-	if !n.Valid {
-		return []byte("null"), nil
-	}
-
-	return json.Marshal(n.V)
-}
-
-type JSON[V any] struct {
-	Data V
-}
-
-func (v *JSON[V]) Scan(value any) error {
-	switch t := value.(type) {
-	case string:
-		return v.UnmarshalJSON([]byte(t))
-	case []byte:
-		return v.UnmarshalJSON(t)
-	}
-
-	return errors.New("invalid scan value for json bytes")
-}
-
-func (v *JSON[V]) Value() (driver.Value, error) {
-	return json.Marshal(v.Data)
-}
-
-func (v *JSON[V]) UnmarshalJSON(data []byte) error {
-	var value V
-
-	if err := json.Unmarshal(data, &value); err != nil {
+	tx, err = db.BeginTx(ctx, opts)
+	if err != nil {
 		return err
 	}
 
-	v.Data = value
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		} else {
+			err = tx.Commit()
+		}
+	}()
 
-	return nil
+	return do(tx)
 }
 
-func (v JSON[V]) MarshalJSON() ([]byte, error) {
-	return json.Marshal(v.Data)
-}
-
-type Raw string
-
-func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
-	var (
-		value  = new(Dest)
-		args   []any
-		dest   []any
-		mapper func() error
-	)
-
-	c, err := t.text.Clone()
+func Exec(ctx context.Context, db DB, t *Template, params any) (stdsql.Result, error) {
+	runner, err := t.Run(params, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	c.Funcs(template.FuncMap{
-		"Dest": func() any {
-			return value
-		},
-		ident: func(arg any) string {
-			if s, ok := arg.(Scanner); ok {
-				dest = append(dest, s.Dest)
+	return db.ExecContext(ctx, runner.SQL, runner.Args...)
+}
 
-				if s.Map != nil {
-					m := mapper
-
-					mapper = func() error {
-						if m != nil {
-							if err := m(); err != nil {
-								return err
-							}
-						}
-
-						return s.Map()
-					}
-				}
-
-				return s.SQL
-			}
-
-			switch a := arg.(type) {
-			case Raw:
-				return string(a)
-			}
-
-			args = append(args, arg)
-
-			if t.positional {
-				return fmt.Sprintf("%s%d", t.placeholder, len(args))
-			}
-
-			return t.placeholder
-		},
-	})
-
-	var buf bytes.Buffer
-
-	if err := c.Execute(&buf, params); err != nil {
+func Query(ctx context.Context, db DB, t *Template, params any) (*stdsql.Rows, error) {
+	runner, err := t.Run(params, nil)
+	if err != nil {
 		return nil, err
 	}
 
-	return &Runner[Dest]{
-		SQL:   buf.String(),
-		Args:  args,
-		Value: value,
-		Dest:  dest,
-		Map:   mapper,
-	}, nil
+	return db.QueryContext(ctx, runner.SQL, runner.Args...)
 }
 
-type Runner[Dest any] struct {
-	SQL   string
-	Args  []any
-	Value *Dest
-	Dest  []any
-	Map   func() error
-}
-
-func (r *Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
-	if len(r.Dest) == 0 {
-		r.Dest = []any{r.Value}
+func QueryRow(ctx context.Context, db DB, t *Template, params any) (*stdsql.Row, error) {
+	runner, err := t.Run(params, nil)
+	if err != nil {
+		return nil, err
 	}
 
+	return db.QueryRowContext(ctx, runner.SQL, runner.Args...), nil
+}
+
+func QueryAll[Dest any](ctx context.Context, db DB, t *Template, params any) ([]Dest, error) {
 	var (
 		values []Dest
+		value  Dest
 		err    error
 	)
 
-	rows, err := db.QueryContext(ctx, r.SQL, r.Args...)
+	runner, err := t.Run(params, &value)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(runner.Dest) == 0 {
+		runner.Dest = []any{&value}
+	}
+
+	rows, err := db.QueryContext(ctx, runner.SQL, runner.Args...)
 	if err != nil {
 		return nil, err
 	}
@@ -170,17 +84,17 @@ func (r *Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
 	defer rows.Close()
 
 	for rows.Next() {
-		if err = rows.Scan(r.Dest...); err != nil {
+		if err = rows.Scan(runner.Dest...); err != nil {
 			return nil, err
 		}
 
-		if r.Map != nil {
-			if err = r.Map(); err != nil {
+		if runner.Map != nil {
+			if err = runner.Map(); err != nil {
 				return nil, err
 			}
 		}
 
-		values = append(values, *r.Value)
+		values = append(values, value)
 	}
 
 	if err = rows.Err(); err != nil {
@@ -194,65 +108,29 @@ func (r *Runner[Dest]) QueryAll(ctx context.Context, db DB) ([]Dest, error) {
 	return values, nil
 }
 
-var ErrTooManyRows = errors.New("sql: too many rows")
+func QueryFirst[Dest any](ctx context.Context, db DB, t *Template, params any) (Dest, error) {
+	var value Dest
 
-func (r *Runner[Dest]) QueryOne(ctx context.Context, db DB) (Dest, error) {
-	if len(r.Dest) == 0 {
-		r.Dest = []any{r.Value}
-	}
-
-	rows, err := db.QueryContext(ctx, r.SQL, r.Args...)
+	runner, err := t.Run(params, &value)
 	if err != nil {
-		return *r.Value, err
+		return value, err
 	}
 
-	defer rows.Close()
-
-	if !rows.Next() {
-		return *r.Value, sql.ErrNoRows
+	if len(runner.Dest) == 0 {
+		runner.Dest = []any{&value}
 	}
 
-	if err = rows.Scan(r.Dest...); err != nil {
-		return *r.Value, err
+	row := db.QueryRowContext(ctx, runner.SQL, runner.Args...)
+
+	if err := row.Scan(runner.Dest...); err != nil {
+		return value, err
 	}
 
-	if r.Map != nil {
-		if err = r.Map(); err != nil {
-			return *r.Value, err
+	if runner.Map != nil {
+		if err := runner.Map(); err != nil {
+			return value, err
 		}
 	}
 
-	if rows.Next() {
-		return *r.Value, ErrTooManyRows
-	}
-
-	if err = rows.Err(); err != nil {
-		return *r.Value, err
-	}
-
-	if err = rows.Close(); err != nil {
-		return *r.Value, err
-	}
-
-	return *r.Value, nil
-}
-
-func (r *Runner[Dest]) QueryFirst(ctx context.Context, db DB) (Dest, error) {
-	if len(r.Dest) == 0 {
-		r.Dest = []any{r.Value}
-	}
-
-	row := db.QueryRowContext(ctx, r.SQL, r.Args...)
-
-	if err := row.Scan(r.Dest...); err != nil {
-		return *r.Value, err
-	}
-
-	if r.Map != nil {
-		if err := r.Map(); err != nil {
-			return *r.Value, err
-		}
-	}
-
-	return *r.Value, nil
+	return value, nil
 }
