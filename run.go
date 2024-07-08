@@ -77,13 +77,9 @@ func (v JSON[V]) MarshalJSON() ([]byte, error) {
 type Raw string
 
 func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
-	var (
-		buf bytes.Buffer
-
-		runner = &Runner[Dest]{
-			Value: new(Dest),
-		}
-	)
+	var runner = &Runner[Dest]{
+		Value: new(Dest),
+	}
 
 	t.text.Funcs(template.FuncMap{
 		"Dest": func() any {
@@ -124,6 +120,8 @@ func Run[Dest any](t *Template, params any) (*Runner[Dest], error) {
 			return t.placeholder
 		},
 	})
+
+	var buf bytes.Buffer
 
 	if err := t.text.Execute(&buf, params); err != nil {
 		return nil, err
