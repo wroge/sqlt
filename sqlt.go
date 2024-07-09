@@ -2,7 +2,6 @@ package sqlt
 
 import (
 	"bytes"
-	"database/sql"
 	stdsql "database/sql"
 	"database/sql/driver"
 	"encoding/json"
@@ -24,7 +23,7 @@ type Scanner struct {
 type Null[V any] stdsql.Null[V]
 
 func (n *Null[V]) Scan(value any) error {
-	v := new(sql.Null[V])
+	v := new(stdsql.Null[V])
 
 	if err := v.Scan(value); err != nil {
 		return err
@@ -34,7 +33,7 @@ func (n *Null[V]) Scan(value any) error {
 }
 
 func (n Null[V]) Value() (driver.Value, error) {
-	return sql.Null[V]{
+	return stdsql.Null[V]{
 		V:     n.V,
 		Valid: n.Valid,
 	}.Value()
