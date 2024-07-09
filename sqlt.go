@@ -2,6 +2,7 @@ package sqlt
 
 import (
 	"bytes"
+	"database/sql"
 	stdsql "database/sql"
 	"database/sql/driver"
 	"encoding/json"
@@ -21,6 +22,23 @@ type Scanner struct {
 }
 
 type Null[V any] stdsql.Null[V]
+
+func (n *Null[V]) Scan(value any) error {
+	v := new(sql.Null[V])
+
+	if err := v.Scan(value); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (n Null[V]) Value() (driver.Value, error) {
+	return sql.Null[V]{
+		V:     n.V,
+		Valid: n.Valid,
+	}.Value()
+}
 
 func (n *Null[V]) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &n.V); err != nil {
@@ -179,7 +197,13 @@ type Runner struct {
 	Map  func() error
 }
 
-func (t *Template) Run(params any, value any) (*Runner, error) {
+var bufPool = &sync.Pool{
+	New: func() any {
+		return &bytes.Buffer{}
+	},
+}
+
+func (t *Template) Run(params any, value any) (Runner, error) {
 	if t.pool == nil {
 		t.pool = &sync.Pool{
 			New: func() any {
@@ -201,8 +225,10 @@ func (t *Template) Run(params any, value any) (*Runner, error) {
 	case *template.Template:
 		var (
 			runner Runner
-			buf    bytes.Buffer
+			buf    = bufPool.Get().(*bytes.Buffer)
 		)
+
+		buf.Reset()
 
 		text.Funcs(template.FuncMap{
 			"Dest": func() any {
@@ -244,19 +270,20 @@ func (t *Template) Run(params any, value any) (*Runner, error) {
 			},
 		})
 
-		if err := text.Execute(&buf, params); err != nil {
-			return nil, err
+		if err := text.Execute(buf, params); err != nil {
+			return Runner{}, err
 		}
 
 		runner.SQL = buf.String()
 
+		bufPool.Put(buf)
 		t.pool.Put(text)
 
-		return &runner, nil
+		return runner, nil
 	case error:
-		return nil, text
+		return Runner{}, text
 	default:
-		return nil, errors.New("sqlt: pooling error")
+		return Runner{}, errors.New("sqlt: pooling error")
 	}
 }
 

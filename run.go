@@ -3,6 +3,8 @@ package sqlt
 import (
 	"context"
 	stdsql "database/sql"
+	"fmt"
+	"strings"
 )
 
 type DB interface {
@@ -39,7 +41,12 @@ func Exec(ctx context.Context, db DB, t *Template, params any) (stdsql.Result, e
 		return nil, err
 	}
 
-	return db.ExecContext(ctx, runner.SQL, runner.Args...)
+	result, err := db.ExecContext(ctx, runner.SQL, runner.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("sql: %s; args: %v; err: %w", strings.Join(strings.Fields(runner.SQL), " "), runner.Args, err)
+	}
+
+	return result, nil
 }
 
 func Query(ctx context.Context, db DB, t *Template, params any) (*stdsql.Rows, error) {
@@ -48,7 +55,12 @@ func Query(ctx context.Context, db DB, t *Template, params any) (*stdsql.Rows, e
 		return nil, err
 	}
 
-	return db.QueryContext(ctx, runner.SQL, runner.Args...)
+	rows, err := db.QueryContext(ctx, runner.SQL, runner.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("sql: %s; args: %v; err: %w", strings.Join(strings.Fields(runner.SQL), " "), runner.Args, err)
+	}
+
+	return rows, nil
 }
 
 func QueryRow(ctx context.Context, db DB, t *Template, params any) (*stdsql.Row, error) {
@@ -57,7 +69,12 @@ func QueryRow(ctx context.Context, db DB, t *Template, params any) (*stdsql.Row,
 		return nil, err
 	}
 
-	return db.QueryRowContext(ctx, runner.SQL, runner.Args...), nil
+	row := db.QueryRowContext(ctx, runner.SQL, runner.Args...)
+	if err = row.Err(); err != nil {
+		return nil, fmt.Errorf("sql: %s; args: %v; err: %w", strings.Join(strings.Fields(runner.SQL), " "), runner.Args, err)
+	}
+
+	return row, nil
 }
 
 func QueryAll[Dest any](ctx context.Context, db DB, t *Template, params any) ([]Dest, error) {
@@ -78,7 +95,7 @@ func QueryAll[Dest any](ctx context.Context, db DB, t *Template, params any) ([]
 
 	rows, err := db.QueryContext(ctx, runner.SQL, runner.Args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sql: %s; args: %v; err: %w", strings.Join(strings.Fields(runner.SQL), " "), runner.Args, err)
 	}
 
 	defer rows.Close()
@@ -121,6 +138,9 @@ func QueryFirst[Dest any](ctx context.Context, db DB, t *Template, params any) (
 	}
 
 	row := db.QueryRowContext(ctx, runner.SQL, runner.Args...)
+	if err = row.Err(); err != nil {
+		return value, fmt.Errorf("sql: %s; args: %v; err: %w", strings.Join(strings.Fields(runner.SQL), " "), runner.Args, err)
+	}
 
 	if err := row.Scan(runner.Dest...); err != nil {
 		return value, err
