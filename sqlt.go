@@ -2,15 +2,172 @@ package sqlt
 
 import (
 	"bytes"
-	stdsql "database/sql"
+	"context"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"reflect"
+	"strings"
 	"sync"
 	"text/template"
+	"text/template/parse"
+	"time"
 )
+
+type DB interface {
+	QueryContext(ctx context.Context, str string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, str string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, str string, args ...any) (sql.Result, error)
+}
+
+func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) error) error {
+	var (
+		tx  *sql.Tx
+		err error
+	)
+
+	tx, err = db.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		} else {
+			err = tx.Commit()
+		}
+	}()
+
+	return do(tx)
+}
+
+func Exec(ctx context.Context, db DB, t *Template, params any) (sql.Result, error) {
+	runner, err := t.Run(params, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := db.ExecContext(ctx, runner.SQL, runner.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("sql: %s args: %v err: %w", trimSQL(runner.SQL), runner.Args, err)
+	}
+
+	return result, nil
+}
+
+func Query(ctx context.Context, db DB, t *Template, params any) (*sql.Rows, error) {
+	runner, err := t.Run(params, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := db.QueryContext(ctx, runner.SQL, runner.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("sql: %s args: %v err: %w", trimSQL(runner.SQL), runner.Args, err)
+	}
+
+	return rows, nil
+}
+
+func QueryRow(ctx context.Context, db DB, t *Template, params any) (*sql.Row, error) {
+	runner, err := t.Run(params, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	row := db.QueryRowContext(ctx, runner.SQL, runner.Args...)
+	if err = row.Err(); err != nil {
+		return nil, fmt.Errorf("sql: %s args: %v err: %w", trimSQL(runner.SQL), runner.Args, err)
+	}
+
+	return row, nil
+}
+
+func QueryAll[Dest any](ctx context.Context, db DB, t *Template, params any) ([]Dest, error) {
+	var (
+		values []Dest
+		value  Dest
+		err    error
+	)
+
+	runner, err := t.Run(params, &value)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(runner.Dest) == 0 {
+		runner.Dest = []any{&value}
+	}
+
+	rows, err := db.QueryContext(ctx, runner.SQL, runner.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("sql: %s args: %v err: %w", trimSQL(runner.SQL), runner.Args, err)
+	}
+
+	defer rows.Close()
+
+	for rows.Next() {
+		if err = rows.Scan(runner.Dest...); err != nil {
+			return nil, err
+		}
+
+		if runner.Map != nil {
+			if err = runner.Map(); err != nil {
+				return nil, err
+			}
+		}
+
+		values = append(values, value)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+
+	return values, nil
+}
+
+func QueryFirst[Dest any](ctx context.Context, db DB, t *Template, params any) (Dest, error) {
+	var value Dest
+
+	runner, err := t.Run(params, &value)
+	if err != nil {
+		return value, err
+	}
+
+	if len(runner.Dest) == 0 {
+		runner.Dest = []any{&value}
+	}
+
+	row := db.QueryRowContext(ctx, runner.SQL, runner.Args...)
+	if err = row.Err(); err != nil {
+		return value, fmt.Errorf("sql: %s args: %v err: %w", trimSQL(runner.SQL), runner.Args, err)
+	}
+
+	if err := row.Scan(runner.Dest...); err != nil {
+		return value, err
+	}
+
+	if runner.Map != nil {
+		if err := runner.Map(); err != nil {
+			return value, err
+		}
+	}
+
+	return value, nil
+}
+
+func trimSQL(str string) string {
+	return strings.Join(strings.Fields(str), " ")
+}
 
 type Raw string
 
@@ -20,78 +177,191 @@ type Scanner struct {
 	Map  func() error
 }
 
-type Null[V any] stdsql.Null[V]
+type Value[V any] struct {
+	any
+}
 
-func (n *Null[V]) Scan(value any) error {
-	v := new(stdsql.Null[V])
+func (v Value[V]) Get() (V, bool) {
+	switch t := v.any.(type) {
+	case V:
+		return t, true
+	default:
+		return *new(V), false
+	}
+}
 
-	if err := v.Scan(value); err != nil {
+func (v *Value[V]) Scan(value any) error {
+	n := new(sql.Null[V])
+
+	if err := n.Scan(value); err != nil {
+		v.any = nil
+
 		return err
 	}
 
-	return nil
-}
-
-func (n Null[V]) Value() (driver.Value, error) {
-	return stdsql.Null[V]{
-		V:     n.V,
-		Valid: n.Valid,
-	}.Value()
-}
-
-func (n *Null[V]) UnmarshalJSON(data []byte) error {
-	if err := json.Unmarshal(data, &n.V); err != nil {
-		n.Valid = false
-
-		return nil
+	if n.Valid {
+		v.any = n.V
+	} else {
+		v.any = nil
 	}
-
-	n.Valid = true
 
 	return nil
 }
 
-func (n *Null[V]) MarshalJSON() ([]byte, error) {
-	if !n.Valid {
-		return []byte("null"), nil
-	}
-
-	return json.Marshal(n.V)
+func (v Value[V]) Value() (driver.Value, error) {
+	return v.any, nil
 }
 
-type JSON[V any] struct {
-	Data V
-}
+func (v *Value[V]) UnmarshalJSON(data []byte) error {
+	object := new(V)
 
-func (v *JSON[V]) Scan(value any) error {
-	switch t := value.(type) {
-	case string:
-		return v.UnmarshalJSON([]byte(t))
-	case []byte:
-		return v.UnmarshalJSON(t)
-	}
-
-	return errors.New("invalid scan value for json bytes")
-}
-
-func (v *JSON[V]) Value() (driver.Value, error) {
-	return json.Marshal(v.Data)
-}
-
-func (v *JSON[V]) UnmarshalJSON(data []byte) error {
-	var value V
-
-	if err := json.Unmarshal(data, &value); err != nil {
+	if err := json.Unmarshal(data, object); err != nil {
 		return err
 	}
 
-	v.Data = value
+	v.any = object
 
 	return nil
 }
 
-func (v JSON[V]) MarshalJSON() ([]byte, error) {
-	return json.Marshal(v.Data)
+func (v Value[V]) MarshalJSON() ([]byte, error) {
+	return json.Marshal(v.any)
+}
+
+func (v Value[V]) String() string {
+	return fmt.Sprintf("%v", v.any)
+}
+
+type namespace struct{}
+
+func (namespace) Raw(str string) Raw {
+	return Raw(str)
+}
+
+func (namespace) Scanner(dest sql.Scanner, str string, args ...any) (Scanner, error) {
+	if reflect.ValueOf(dest).IsNil() {
+		return Scanner{}, fmt.Errorf("invalid sqlt.Scanner at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	return Scanner{
+		SQL:  str,
+		Dest: dest,
+	}, nil
+}
+
+func (namespace) JSON(dest json.Unmarshaler, str string, args ...any) (Scanner, error) {
+	if reflect.ValueOf(dest).IsNil() {
+		return Scanner{}, fmt.Errorf("invalid sqlt.JSON at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	var data []byte
+
+	return Scanner{
+		SQL:  str,
+		Dest: &data,
+		Map: func() error {
+			return json.Unmarshal(data, dest)
+		},
+	}, nil
+}
+
+func (ns namespace) ByteSlice(dest *[]byte, str string, args ...any) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("invalid sqlt.ByteSlice at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	return Scanner{
+		SQL:  str,
+		Dest: dest,
+	}, nil
+}
+
+func (namespace) String(dest *string, str string, args ...any) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("invalid sqlt.String at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	return Scanner{
+		SQL:  str,
+		Dest: dest,
+	}, nil
+}
+
+func (namespace) Int16(dest *int16, str string, args ...any) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("invalid sqlt.Int16 at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	return Scanner{
+		SQL:  str,
+		Dest: dest,
+	}, nil
+}
+
+func (namespace) Int32(dest *int32, str string, args ...any) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("invalid sqlt.Int32 at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	return Scanner{
+		SQL:  str,
+		Dest: dest,
+	}, nil
+}
+
+func (namespace) Int64(dest *int64, str string, args ...any) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("invalid sqlt.Int64 at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	return Scanner{
+		SQL:  str,
+		Dest: dest,
+	}, nil
+}
+
+func (namespace) Float32(dest *float32, str string, args ...any) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("invalid sqlt.Float32 at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	return Scanner{
+		SQL:  str,
+		Dest: dest,
+	}, nil
+}
+
+func (namespace) Float64(dest *float64, str string, args ...any) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("invalid sqlt.Float64 at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	return Scanner{
+		SQL:  str,
+		Dest: dest,
+	}, nil
+}
+
+func (namespace) Bool(dest *bool, str string, args ...any) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("invalid sqlt.Bool at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	return Scanner{
+		SQL:  str,
+		Dest: dest,
+	}, nil
+}
+
+func (namespace) Time(dest *time.Time, str string, args ...any) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("invalid sqlt.Time at '%s'; try to use sqlt.Value instead", str)
+	}
+
+	return Scanner{
+		SQL:  str,
+		Dest: dest,
+	}, nil
 }
 
 func New(name string, placeholder string, positional bool) *Template {
@@ -138,8 +408,8 @@ func (t *Template) Option(opt ...string) *Template {
 	return t
 }
 
-func (t *Template) Parse(sql string) (*Template, error) {
-	text, err := t.text.Parse(sql)
+func (t *Template) Parse(str string) (*Template, error) {
+	text, err := t.text.Parse(str)
 	if err != nil {
 		return nil, err
 	}
@@ -151,8 +421,8 @@ func (t *Template) Parse(sql string) (*Template, error) {
 	}, nil
 }
 
-func (t *Template) MustParse(sql string) *Template {
-	return Must(t.Parse(sql))
+func (t *Template) MustParse(str string) *Template {
+	return Must(t.Parse(str))
 }
 
 func (t *Template) ParseFS(fsys fs.FS, patterns ...string) (*Template, error) {
@@ -323,4 +593,66 @@ func (t *Template) Lookup(name string) (*Template, error) {
 
 func (t *Template) MustLookup(name string) *Template {
 	return Must(t.Lookup(name))
+}
+
+var ident = "__sqlt__"
+
+// stolen from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
+func escape(text *template.Template) *template.Template {
+	for _, tpl := range text.Templates() {
+		escapeTree(tpl.Tree)
+	}
+
+	return text
+}
+
+func escapeTree(s *parse.Tree) *parse.Tree {
+	if s.Root == nil {
+		return s
+	}
+
+	escapeNode(s, s.Root)
+
+	return s
+}
+
+func escapeNode(s *parse.Tree, n parse.Node) {
+	switch v := n.(type) {
+	case *parse.ActionNode:
+		escapeNode(s, v.Pipe)
+	case *parse.IfNode:
+		escapeNode(s, v.List)
+		escapeNode(s, v.ElseList)
+	case *parse.ListNode:
+		if v == nil {
+			return
+		}
+		for _, n := range v.Nodes {
+			escapeNode(s, n)
+		}
+	case *parse.PipeNode:
+		if len(v.Decl) > 0 {
+			return
+		}
+
+		if len(v.Cmds) < 1 {
+			return
+		}
+
+		cmd := v.Cmds[len(v.Cmds)-1]
+		if len(cmd.Args) == 1 && cmd.Args[0].Type() == parse.NodeIdentifier && cmd.Args[0].(*parse.IdentifierNode).Ident == ident {
+			return
+		}
+
+		v.Cmds = append(v.Cmds, &parse.CommandNode{
+			NodeType: parse.NodeCommand,
+			Args:     []parse.Node{parse.NewIdentifier(ident).SetTree(s).SetPos(cmd.Pos)},
+		})
+	case *parse.RangeNode:
+		escapeNode(s, v.List)
+		escapeNode(s, v.ElseList)
+	case *parse.WithNode:
+		escapeNode(s, v.List)
+		escapeNode(s, v.ElseList)
+	}
 }

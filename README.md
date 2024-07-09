@@ -11,13 +11,11 @@ go get -u github.com/wroge/sqlt
 
 ## How does it work?
 
-- All input values are [escaped](https://github.com/wroge/sqlt/blob/main/escape.go) and [replaced](https://github.com/wroge/sqlt/blob/main/run.go) at execution time with the correct placeholders.
-- Functions like 'sqlt.Int64' create 'sqlt.Scanner`s' that hold pointers to the destination and optionally a mapper.
-- These 'sqlt.Scanner`s' are collected at execution time.
-- The 'Dest' function is a stub, that gets replaced at execution time with the generic type.
-- This package aims to provide the functionalities of the 'text/template' package.
-- SQL templates can be loaded from the filesystem using ParseFS or ParseFiles.
-- All predefined 'sqlt' functions can be found [here](https://github.com/wroge/sqlt/blob/main/namespace.go).
+- All input values are safely escaped and replaced with the correct placeholders at execution time.
+- Functions like ```sqlt.Int64``` generate ```sqlt.Scanners```, which hold pointers to the destination and optionally a mapper. These scanners are collected at execution time.
+- The ```Dest``` function is a placeholder that is replaced at execution time with the appropriate generic type.
+-  ```sqlt.Value[V]``` is a wrapper that allows any value to be used with ```sqlt.Scanner``` and ```sqlt.JSON```.
+- SQL templates can be loaded from the filesystem using ```ParseFS``` or ```ParseFiles```.
 
 ## Example
 
@@ -31,12 +29,13 @@ import (
 	"time"
 
 	"github.com/Masterminds/sprig/v3"
+	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/wroge/sqlt"
 )
 
 type Book struct {
-	ID        int64
+	ID        uuid.UUID
 	Title     string
 	CreatedAt time.Time
 }
@@ -45,16 +44,16 @@ var (
 	t = sqlt.New("db", "?", false).Funcs(sprig.TxtFuncMap())
 
 	insert = t.New("insert").MustParse(`
-		INSERT INTO books (title, created_at) VALUES
+		INSERT INTO books (id, title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
-			({{ $t }}, {{ now }})
+			({{ uuidv4 }}, {{ $t }}, {{ now }})
 		{{ end }}
 		RETURNING id;
 	`)
 
 	query = t.New("query").MustParse(`
 		SELECT
-			{{ sqlt.Int64 Dest.ID "id" }}
+			{{ sqlt.Scanner Dest.ID "id" }}
 			{{ sqlt.String Dest.Title ", title" }}
 			{{ sqlt.Time Dest.CreatedAt ", created_at" }}
 		FROM books
@@ -70,12 +69,12 @@ func main() {
 		panic(err)
 	}
 
-	_, err = db.Exec("CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT, created_at DATE)")
+	_, err = db.Exec("CREATE TABLE books (id, title, created_at DATE)")
 	if err != nil {
 		panic(err)
 	}
 
-	ids, err := sqlt.QueryAll[int64](ctx, db, insert, []string{
+	_, err = sqlt.Exec(ctx, db, insert, []string{
 		"The Bitcoin Standard",
 		"Sapiens: A Brief History of Humankind",
 		"100 Go Mistakes and How to Avoid Them",
@@ -86,9 +85,6 @@ func main() {
 	}
 	// INSERT INTO books (title, created_at) VALUES (?, ?) , (?, ?) , (?, ?) , (?, ?) RETURNING id;
 
-	fmt.Println(ids)
-	// [1 2 3 4]
-
 	books, err := sqlt.QueryAll[Book](ctx, db, query, map[string]any{
 		"Search": "Bitcoin",
 	})
@@ -98,7 +94,8 @@ func main() {
 	// SELECT id, title, created_at FROM books WHERE instr(title, ?) > 0
 
 	fmt.Println(books)
-	// [{1 The Bitcoin Standard 2024-07-06 17:29:43.375399 +0200 +0200} {4 Mastering Bitcoin 2024-07-06 17:29:43.37544 +0200 +0200}]
+	// [{a7c28717-aa78-42ed-8ba1-6e788176be56 The Bitcoin Standard 2024-07-09 20:30:18.382139 +0200 +0200}
+	// {ee72f4ac-a7e7-41c4-99c8-cac9295055bd Mastering Bitcoin 2024-07-09 20:30:18.382153 +0200 +0200}]
 }
 ```
 
