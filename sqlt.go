@@ -16,6 +16,34 @@ import (
 	"time"
 )
 
+type DB interface {
+	QueryContext(ctx context.Context, str string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, str string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, str string, args ...any) (sql.Result, error)
+}
+
+func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) error) error {
+	var (
+		tx  *sql.Tx
+		err error
+	)
+
+	tx, err = db.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		} else {
+			err = tx.Commit()
+		}
+	}()
+
+	return do(tx)
+}
+
 type Raw string
 
 type Scanner struct {
@@ -413,7 +441,7 @@ func Run[T any](t *Template, use func(*Runner[T])) {
 	p.Put(r)
 }
 
-func Exec(ctx context.Context, db *sql.DB, t *Template, params any) (sql.Result, error) {
+func Exec(ctx context.Context, db DB, t *Template, params any) (sql.Result, error) {
 	var (
 		result sql.Result
 		err    error
@@ -431,6 +459,46 @@ func Exec(ctx context.Context, db *sql.DB, t *Template, params any) (sql.Result,
 	})
 
 	return result, err
+}
+
+func Query(ctx context.Context, db DB, t *Template, params any) (*sql.Rows, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+
+	Run(t, func(r *Runner[any]) {
+		if err = r.Text.Execute(r.SQL, params); err != nil {
+			return
+		}
+
+		rows, err = db.QueryContext(ctx, r.SQL.String(), r.Args...)
+		if err != nil {
+			err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+		}
+	})
+
+	return rows, err
+}
+
+func QueryRow(ctx context.Context, db DB, t *Template, params any) (*sql.Row, error) {
+	var (
+		row *sql.Row
+		err error
+	)
+
+	Run(t, func(r *Runner[any]) {
+		if err = r.Text.Execute(r.SQL, params); err != nil {
+			return
+		}
+
+		row = db.QueryRowContext(ctx, r.SQL.String(), r.Args...)
+		if err != nil {
+			err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+		}
+	})
+
+	return row, err
 }
 
 func getTypes(list []any) []reflect.Type {
@@ -474,7 +542,7 @@ func (e Error) Error() string {
 	return fmt.Sprintf("sql: %s; args: %v; dest: %v; map: %v; err: %s", strings.TrimSuffix(strings.Join(strings.Fields(e.SQL), " "), ","), e.Args, e.Dest, e.Map, e.Err)
 }
 
-func All[T any](ctx context.Context, db *sql.DB, t *Template, params any) ([]T, error) {
+func All[T any](ctx context.Context, db DB, t *Template, params any) ([]T, error) {
 	var (
 		values []T
 		err    error
@@ -538,7 +606,7 @@ func All[T any](ctx context.Context, db *sql.DB, t *Template, params any) ([]T, 
 	return values, err
 }
 
-func First[T any](ctx context.Context, db *sql.DB, t *Template, params any) (T, error) {
+func First[T any](ctx context.Context, db DB, t *Template, params any) (T, error) {
 	var (
 		value T
 		err   error
