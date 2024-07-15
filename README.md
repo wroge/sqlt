@@ -12,9 +12,9 @@ go get -u github.com/wroge/sqlt
 ## How does it work?
 
 - All input values are safely escaped and replaced with the correct placeholders at execution time.
-- Functions like ```sqlt.Int64``` generate ```sqlt.Scanners```, which hold pointers to the destination and optionally a mapper. These scanners are collected at execution time.
+- Functions like ```sqlt.Int64``` generate ```sqlt.Scanner`s```, which hold pointers to the destination and optionally a mapper. These scanners are collected at execution time.
 - The ```Dest``` function is a placeholder that is replaced at execution time with the appropriate generic type.
--  ```sqlt.Value[V]``` is a wrapper that allows any value to be used with ```sqlt.Scanner``` and ```sqlt.JSON```.
+-  ```sqlt.Value[T]``` is a wrapper that allows any value to be used with ```sqlt.Scanner``` and ```sqlt.JSON```.
 - SQL templates can be loaded from the filesystem using ```ParseFS``` or ```ParseFiles```.
 
 ## Example
@@ -85,7 +85,7 @@ func main() {
 	}
 	// INSERT INTO books (title, created_at) VALUES (?, ?) , (?, ?) , (?, ?) , (?, ?) RETURNING id;
 
-	books, err := sqlt.QueryAll[Book](ctx, db, query, map[string]any{
+	books, err := sqlt.All[Book](ctx, db, query, map[string]any{
 		"Search": "Bitcoin",
 	})
 	if err != nil {
@@ -94,8 +94,7 @@ func main() {
 	// SELECT id, title, created_at FROM books WHERE instr(title, ?) > 0
 
 	fmt.Println(books)
-	// [{a7c28717-aa78-42ed-8ba1-6e788176be56 The Bitcoin Standard 2024-07-09 20:30:18.382139 +0200 +0200}
-	// {ee72f4ac-a7e7-41c4-99c8-cac9295055bd Mastering Bitcoin 2024-07-09 20:30:18.382153 +0200 +0200}]
+	// [{41c32372-63f0-4c15-b00f-9f79a43b47c3 The Bitcoin Standard 2024-07-15 15:15:43.459629 +0200 +0200} {5607a225-5305-4bf9-bfca-b76fe0551819 Mastering Bitcoin 2024-07-15 15:15:43.459645 +0200 +0200}]
 }
 ```
 

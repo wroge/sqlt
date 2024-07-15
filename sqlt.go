@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
 	"reflect"
@@ -17,158 +16,6 @@ import (
 	"time"
 )
 
-type DB interface {
-	QueryContext(ctx context.Context, str string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, str string, args ...any) *sql.Row
-	ExecContext(ctx context.Context, str string, args ...any) (sql.Result, error)
-}
-
-func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) error) error {
-	var (
-		tx  *sql.Tx
-		err error
-	)
-
-	tx, err = db.BeginTx(ctx, opts)
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		if err != nil {
-			tx.Rollback()
-		} else {
-			err = tx.Commit()
-		}
-	}()
-
-	return do(tx)
-}
-
-func Exec(ctx context.Context, db DB, t *Template, params any) (sql.Result, error) {
-	runner, err := t.Run(params, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := db.ExecContext(ctx, runner.SQL, runner.Args...)
-	if err != nil {
-		return nil, fmt.Errorf("sql: %s args: %v err: %w", trimSQL(runner.SQL), runner.Args, err)
-	}
-
-	return result, nil
-}
-
-func Query(ctx context.Context, db DB, t *Template, params any) (*sql.Rows, error) {
-	runner, err := t.Run(params, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := db.QueryContext(ctx, runner.SQL, runner.Args...)
-	if err != nil {
-		return nil, fmt.Errorf("sql: %s args: %v err: %w", trimSQL(runner.SQL), runner.Args, err)
-	}
-
-	return rows, nil
-}
-
-func QueryRow(ctx context.Context, db DB, t *Template, params any) (*sql.Row, error) {
-	runner, err := t.Run(params, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	row := db.QueryRowContext(ctx, runner.SQL, runner.Args...)
-	if err = row.Err(); err != nil {
-		return nil, fmt.Errorf("sql: %s args: %v err: %w", trimSQL(runner.SQL), runner.Args, err)
-	}
-
-	return row, nil
-}
-
-func QueryAll[Dest any](ctx context.Context, db DB, t *Template, params any) ([]Dest, error) {
-	var (
-		values []Dest
-		value  Dest
-		err    error
-	)
-
-	runner, err := t.Run(params, &value)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(runner.Dest) == 0 {
-		runner.Dest = []any{&value}
-	}
-
-	rows, err := db.QueryContext(ctx, runner.SQL, runner.Args...)
-	if err != nil {
-		return nil, fmt.Errorf("sql: %s args: %v err: %w", trimSQL(runner.SQL), runner.Args, err)
-	}
-
-	defer rows.Close()
-
-	for rows.Next() {
-		if err = rows.Scan(runner.Dest...); err != nil {
-			return nil, err
-		}
-
-		if runner.Map != nil {
-			if err = runner.Map(); err != nil {
-				return nil, err
-			}
-		}
-
-		values = append(values, value)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-
-	if err = rows.Close(); err != nil {
-		return nil, err
-	}
-
-	return values, nil
-}
-
-func QueryFirst[Dest any](ctx context.Context, db DB, t *Template, params any) (Dest, error) {
-	var value Dest
-
-	runner, err := t.Run(params, &value)
-	if err != nil {
-		return value, err
-	}
-
-	if len(runner.Dest) == 0 {
-		runner.Dest = []any{&value}
-	}
-
-	row := db.QueryRowContext(ctx, runner.SQL, runner.Args...)
-	if err = row.Err(); err != nil {
-		return value, fmt.Errorf("sql: %s args: %v err: %w", trimSQL(runner.SQL), runner.Args, err)
-	}
-
-	if err := row.Scan(runner.Dest...); err != nil {
-		return value, err
-	}
-
-	if runner.Map != nil {
-		if err := runner.Map(); err != nil {
-			return value, err
-		}
-	}
-
-	return value, nil
-}
-
-func trimSQL(str string) string {
-	return strings.Join(strings.Fields(str), " ")
-}
-
 type Raw string
 
 type Scanner struct {
@@ -177,21 +24,21 @@ type Scanner struct {
 	Map  func() error
 }
 
-type Value[V any] struct {
+type Value[T any] struct {
 	any
 }
 
-func (v Value[V]) Get() (V, bool) {
+func (v Value[T]) Get() (T, bool) {
 	switch t := v.any.(type) {
-	case V:
+	case T:
 		return t, true
 	default:
-		return *new(V), false
+		return *new(T), false
 	}
 }
 
-func (v *Value[V]) Scan(value any) error {
-	n := new(sql.Null[V])
+func (v *Value[T]) Scan(value any) error {
+	n := new(sql.Null[T])
 
 	if err := n.Scan(value); err != nil {
 		v.any = nil
@@ -208,27 +55,29 @@ func (v *Value[V]) Scan(value any) error {
 	return nil
 }
 
-func (v Value[V]) Value() (driver.Value, error) {
+func (v Value[T]) Value() (driver.Value, error) {
 	return v.any, nil
 }
 
-func (v *Value[V]) UnmarshalJSON(data []byte) error {
-	object := new(V)
+func (v *Value[T]) UnmarshalJSON(data []byte) error {
+	t := new(T)
 
-	if err := json.Unmarshal(data, object); err != nil {
+	if err := json.Unmarshal(data, t); err != nil {
+		v.any = nil
+
 		return err
 	}
 
-	v.any = object
+	v.any = t
 
 	return nil
 }
 
-func (v Value[V]) MarshalJSON() ([]byte, error) {
+func (v Value[T]) MarshalJSON() ([]byte, error) {
 	return json.Marshal(v.any)
 }
 
-func (v Value[V]) String() string {
+func (v Value[T]) String() string {
 	return fmt.Sprintf("%v", v.any)
 }
 
@@ -238,9 +87,9 @@ func (namespace) Raw(str string) Raw {
 	return Raw(str)
 }
 
-func (namespace) Scanner(dest sql.Scanner, str string, args ...any) (Scanner, error) {
-	if reflect.ValueOf(dest).IsNil() {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Scanner at '%s'; try to use sqlt.Value instead", str)
+func (namespace) Scanner(dest sql.Scanner, str string) (Scanner, error) {
+	if dest == nil || reflect.ValueOf(dest).IsNil() {
+		return Scanner{}, fmt.Errorf("invalid sqlt.Scanner at '%s'", str)
 	}
 
 	return Scanner{
@@ -249,9 +98,9 @@ func (namespace) Scanner(dest sql.Scanner, str string, args ...any) (Scanner, er
 	}, nil
 }
 
-func (namespace) JSON(dest json.Unmarshaler, str string, args ...any) (Scanner, error) {
-	if reflect.ValueOf(dest).IsNil() {
-		return Scanner{}, fmt.Errorf("invalid sqlt.JSON at '%s'; try to use sqlt.Value instead", str)
+func (namespace) JSON(dest json.Unmarshaler, str string) (Scanner, error) {
+	if dest == nil || reflect.ValueOf(dest).IsNil() {
+		return Scanner{}, fmt.Errorf("invalid sqlt.JSON at '%s'", str)
 	}
 
 	var data []byte
@@ -265,9 +114,9 @@ func (namespace) JSON(dest json.Unmarshaler, str string, args ...any) (Scanner, 
 	}, nil
 }
 
-func (ns namespace) ByteSlice(dest *[]byte, str string, args ...any) (Scanner, error) {
+func (ns namespace) ByteSlice(dest *[]byte, str string) (Scanner, error) {
 	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.ByteSlice at '%s'; try to use sqlt.Value instead", str)
+		return Scanner{}, fmt.Errorf("invalid sqlt.ByteSlice at '%s'", str)
 	}
 
 	return Scanner{
@@ -276,9 +125,9 @@ func (ns namespace) ByteSlice(dest *[]byte, str string, args ...any) (Scanner, e
 	}, nil
 }
 
-func (namespace) String(dest *string, str string, args ...any) (Scanner, error) {
+func (namespace) String(dest *string, str string) (Scanner, error) {
 	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.String at '%s'; try to use sqlt.Value instead", str)
+		return Scanner{}, fmt.Errorf("invalid sqlt.String at '%s'", str)
 	}
 
 	return Scanner{
@@ -287,9 +136,9 @@ func (namespace) String(dest *string, str string, args ...any) (Scanner, error) 
 	}, nil
 }
 
-func (namespace) Int16(dest *int16, str string, args ...any) (Scanner, error) {
+func (namespace) Int16(dest *int16, str string) (Scanner, error) {
 	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Int16 at '%s'; try to use sqlt.Value instead", str)
+		return Scanner{}, fmt.Errorf("invalid sqlt.Int16 at '%s'", str)
 	}
 
 	return Scanner{
@@ -298,9 +147,9 @@ func (namespace) Int16(dest *int16, str string, args ...any) (Scanner, error) {
 	}, nil
 }
 
-func (namespace) Int32(dest *int32, str string, args ...any) (Scanner, error) {
+func (namespace) Int32(dest *int32, str string) (Scanner, error) {
 	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Int32 at '%s'; try to use sqlt.Value instead", str)
+		return Scanner{}, fmt.Errorf("invalid sqlt.Int32 at '%s'", str)
 	}
 
 	return Scanner{
@@ -309,9 +158,9 @@ func (namespace) Int32(dest *int32, str string, args ...any) (Scanner, error) {
 	}, nil
 }
 
-func (namespace) Int64(dest *int64, str string, args ...any) (Scanner, error) {
+func (namespace) Int64(dest *int64, str string) (Scanner, error) {
 	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Int64 at '%s'; try to use sqlt.Value instead", str)
+		return Scanner{}, fmt.Errorf("invalid sqlt.Int64 at '%s'", str)
 	}
 
 	return Scanner{
@@ -320,9 +169,9 @@ func (namespace) Int64(dest *int64, str string, args ...any) (Scanner, error) {
 	}, nil
 }
 
-func (namespace) Float32(dest *float32, str string, args ...any) (Scanner, error) {
+func (namespace) Float32(dest *float32, str string) (Scanner, error) {
 	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Float32 at '%s'; try to use sqlt.Value instead", str)
+		return Scanner{}, fmt.Errorf("invalid sqlt.Float32 at '%s'", str)
 	}
 
 	return Scanner{
@@ -331,9 +180,9 @@ func (namespace) Float32(dest *float32, str string, args ...any) (Scanner, error
 	}, nil
 }
 
-func (namespace) Float64(dest *float64, str string, args ...any) (Scanner, error) {
+func (namespace) Float64(dest *float64, str string) (Scanner, error) {
 	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Float64 at '%s'; try to use sqlt.Value instead", str)
+		return Scanner{}, fmt.Errorf("invalid sqlt.Float64 at '%s'", str)
 	}
 
 	return Scanner{
@@ -342,9 +191,9 @@ func (namespace) Float64(dest *float64, str string, args ...any) (Scanner, error
 	}, nil
 }
 
-func (namespace) Bool(dest *bool, str string, args ...any) (Scanner, error) {
+func (namespace) Bool(dest *bool, str string) (Scanner, error) {
 	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Bool at '%s'; try to use sqlt.Value instead", str)
+		return Scanner{}, fmt.Errorf("invalid sqlt.Bool at '%s'", str)
 	}
 
 	return Scanner{
@@ -353,30 +202,15 @@ func (namespace) Bool(dest *bool, str string, args ...any) (Scanner, error) {
 	}, nil
 }
 
-func (namespace) Time(dest *time.Time, str string, args ...any) (Scanner, error) {
+func (namespace) Time(dest *time.Time, str string) (Scanner, error) {
 	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Time at '%s'; try to use sqlt.Value instead", str)
+		return Scanner{}, fmt.Errorf("invalid sqlt.Time at '%s'", str)
 	}
 
 	return Scanner{
 		SQL:  str,
 		Dest: dest,
 	}, nil
-}
-
-func New(name string, placeholder string, positional bool) *Template {
-	return &Template{
-		text: template.New(name).Funcs(template.FuncMap{
-			"Dest": func() any {
-				return map[string]any{}
-			},
-			"sqlt": func() any {
-				return namespace{}
-			},
-		}),
-		placeholder: placeholder,
-		positional:  positional,
-	}
 }
 
 func Must(t *Template, err error) *Template {
@@ -387,11 +221,26 @@ func Must(t *Template, err error) *Template {
 	return t
 }
 
+func New(name string, placeholder string, positional bool) *Template {
+	return &Template{
+		text: template.New(name).Funcs(template.FuncMap{
+			"Dest": func() any {
+				return nil
+			},
+			"sqlt": func() any {
+				return namespace{}
+			},
+		}),
+		placeholder: placeholder,
+		positional:  positional,
+	}
+}
+
 type Template struct {
 	text        *template.Template
 	placeholder string
 	positional  bool
-	pool        *sync.Pool
+	poolMap     sync.Map
 }
 
 func (t *Template) New(name string) *Template {
@@ -459,109 +308,6 @@ func (t *Template) MustParseFiles(filenames ...string) *Template {
 	return Must(t.ParseFiles(filenames...))
 }
 
-type Runner struct {
-	SQL  string
-	Args []any
-	Dest []any
-	Map  func() error
-}
-
-var bufPool = &sync.Pool{
-	New: func() any {
-		return &bytes.Buffer{}
-	},
-}
-
-func (t *Template) Run(params any, value any) (Runner, error) {
-	if t.pool == nil {
-		t.pool = &sync.Pool{
-			New: func() any {
-				text, err := t.text.Clone()
-				if err != nil {
-					return err
-				}
-
-				return escape(text)
-			},
-		}
-	}
-
-	if value == nil {
-		value = map[string]any{}
-	}
-
-	switch text := t.pool.Get().(type) {
-	case *template.Template:
-		var (
-			runner Runner
-			buf    = bufPool.Get().(*bytes.Buffer)
-		)
-
-		buf.Reset()
-
-		text.Funcs(template.FuncMap{
-			"Dest": func() any {
-				return value
-			},
-			ident: func(arg any) string {
-				if s, ok := arg.(Scanner); ok {
-					runner.Dest = append(runner.Dest, s.Dest)
-
-					if s.Map != nil {
-						m := runner.Map
-
-						runner.Map = func() error {
-							if m != nil {
-								if err := m(); err != nil {
-									return err
-								}
-							}
-
-							return s.Map()
-						}
-					}
-
-					return s.SQL
-				}
-
-				switch a := arg.(type) {
-				case Raw:
-					return string(a)
-				}
-
-				runner.Args = append(runner.Args, arg)
-
-				if t.positional {
-					return fmt.Sprintf("%s%d", t.placeholder, len(runner.Args))
-				}
-
-				return t.placeholder
-			},
-		})
-
-		if err := text.Execute(buf, params); err != nil {
-			return Runner{}, err
-		}
-
-		runner.SQL = buf.String()
-
-		bufPool.Put(buf)
-		t.pool.Put(text)
-
-		return runner, nil
-	case error:
-		return Runner{}, text
-	default:
-		return Runner{}, errors.New("sqlt: pooling error")
-	}
-}
-
-func (t *Template) Delims(left, right string) *Template {
-	t.text.Delims(left, right)
-
-	return t
-}
-
 func (t *Template) Funcs(fm template.FuncMap) *Template {
 	t.text.Funcs(fm)
 
@@ -593,6 +339,249 @@ func (t *Template) Lookup(name string) (*Template, error) {
 
 func (t *Template) MustLookup(name string) *Template {
 	return Must(t.Lookup(name))
+}
+
+type Runner[T any] struct {
+	Text  *template.Template
+	SQL   *bytes.Buffer
+	Args  []any
+	Value *T
+	Dest  []any
+	Map   []func() error
+}
+
+func (r *Runner[T]) Reset() {
+	r.SQL.Reset()
+	r.Args = r.Args[:0]
+	r.Dest = r.Dest[:0]
+	r.Map = r.Map[:0]
+}
+
+func Run[T any](t *Template, use func(*Runner[T])) {
+	pool, _ := t.poolMap.LoadOrStore(reflect.TypeFor[T]().Name(), &sync.Pool{
+		New: func() any {
+			text, err := t.text.Clone()
+			if err != nil {
+				panic(err)
+			}
+
+			r := &Runner[T]{
+				Text:  escape(text),
+				SQL:   &bytes.Buffer{},
+				Value: new(T),
+			}
+
+			r.Text.Funcs(template.FuncMap{
+				"Dest": func() any {
+					return r.Value
+				},
+				ident: func(arg any) string {
+					if s, ok := arg.(Scanner); ok {
+						r.Dest = append(r.Dest, s.Dest)
+						r.Map = append(r.Map, s.Map)
+
+						return s.SQL
+					}
+
+					switch a := arg.(type) {
+					case Raw:
+						return string(a)
+					}
+
+					r.Args = append(r.Args, arg)
+
+					if t.positional {
+						return fmt.Sprintf("%s%d", t.placeholder, len(r.Args))
+					}
+
+					return t.placeholder
+				},
+			})
+
+			return r
+		},
+	})
+
+	p := pool.(*sync.Pool)
+
+	r := p.Get().(*Runner[T])
+
+	r.Reset()
+
+	use(r)
+
+	p.Put(r)
+}
+
+func Exec(ctx context.Context, db *sql.DB, t *Template, params any) (sql.Result, error) {
+	var (
+		result sql.Result
+		err    error
+	)
+
+	Run(t, func(r *Runner[any]) {
+		if err = r.Text.Execute(r.SQL, params); err != nil {
+			return
+		}
+
+		result, err = db.ExecContext(ctx, r.SQL.String(), r.Args...)
+		if err != nil {
+			err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+		}
+	})
+
+	return result, err
+}
+
+func getTypes(list []any) []reflect.Type {
+	types := make([]reflect.Type, len(list))
+
+	for i, a := range list {
+		types[i] = reflect.TypeOf(a)
+	}
+
+	return types
+}
+
+func makeErr(err error, sql *bytes.Buffer, args []any, dest []any, mappers []func() error) Error {
+	mapperExist := make([]bool, len(mappers))
+	for i, m := range mappers {
+		mapperExist[i] = m != nil
+	}
+
+	return Error{
+		Err:  err,
+		SQL:  sql.String(),
+		Args: getTypes(args),
+		Dest: getTypes(dest),
+		Map:  mapperExist,
+	}
+}
+
+type Error struct {
+	Err  error
+	SQL  string
+	Args []reflect.Type
+	Dest []reflect.Type
+	Map  []bool
+}
+
+func (e Error) Unwrap() error {
+	return e.Err
+}
+
+func (e Error) Error() string {
+	return fmt.Sprintf("sql: %s; args: %v; dest: %v; map: %v; err: %s", strings.TrimSuffix(strings.Join(strings.Fields(e.SQL), " "), ","), e.Args, e.Dest, e.Map, e.Err)
+}
+
+func All[T any](ctx context.Context, db *sql.DB, t *Template, params any) ([]T, error) {
+	var (
+		values []T
+		err    error
+	)
+
+	Run(t, func(r *Runner[T]) {
+		if err = r.Text.Execute(r.SQL, params); err != nil {
+			return
+		}
+
+		if len(r.Dest) == 0 {
+			r.Dest = []any{r.Value}
+		}
+
+		var rows *sql.Rows
+
+		rows, err = db.QueryContext(ctx, r.SQL.String(), r.Args...)
+		if err != nil {
+			err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+
+			return
+		}
+
+		defer rows.Close()
+
+		for rows.Next() {
+			if err = rows.Scan(r.Dest...); err != nil {
+				err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+
+				return
+			}
+
+			for _, m := range r.Map {
+				if m == nil {
+					continue
+				}
+
+				if err = m(); err != nil {
+					err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+
+					return
+				}
+			}
+
+			values = append(values, *r.Value)
+		}
+
+		if err = rows.Err(); err != nil {
+			err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+
+			return
+		}
+
+		if err = rows.Close(); err != nil {
+			err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+
+			return
+		}
+	})
+
+	return values, err
+}
+
+func First[T any](ctx context.Context, db *sql.DB, t *Template, params any) (T, error) {
+	var (
+		value T
+		err   error
+	)
+
+	Run(t, func(r *Runner[T]) {
+		if err = r.Text.Execute(r.SQL, params); err != nil {
+			return
+		}
+
+		if len(r.Dest) == 0 {
+			r.Dest = []any{r.Value}
+		}
+
+		row := db.QueryRowContext(ctx, r.SQL.String(), r.Args...)
+		if err = row.Err(); err != nil {
+			err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+
+			return
+		}
+
+		if err = row.Scan(r.Dest...); err != nil {
+			err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+
+			return
+		}
+
+		for _, m := range r.Map {
+			if m == nil {
+				continue
+			}
+
+			if err = m(); err != nil {
+				err = makeErr(err, r.SQL, r.Args, r.Dest, r.Map)
+
+				return
+			}
+		}
+
+		value = *r.Value
+	})
+
+	return value, err
 }
 
 var ident = "__sqlt__"
