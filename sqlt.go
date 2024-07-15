@@ -542,7 +542,7 @@ func (e Error) Error() string {
 	return fmt.Sprintf("sql: %s; args: %v; dest: %v; map: %v; err: %s", strings.TrimSuffix(strings.Join(strings.Fields(e.SQL), " "), ","), e.Args, e.Dest, e.Map, e.Err)
 }
 
-func All[T any](ctx context.Context, db DB, t *Template, params any) ([]T, error) {
+func QueryAll[T any](ctx context.Context, db DB, t *Template, params any) ([]T, error) {
 	var (
 		values []T
 		err    error
@@ -606,7 +606,7 @@ func All[T any](ctx context.Context, db DB, t *Template, params any) ([]T, error
 	return values, err
 }
 
-func First[T any](ctx context.Context, db DB, t *Template, params any) (T, error) {
+func QueryFirst[T any](ctx context.Context, db DB, t *Template, params any) (T, error) {
 	var (
 		value T
 		err   error

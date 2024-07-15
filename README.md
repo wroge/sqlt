@@ -85,7 +85,7 @@ func main() {
 	}
 	// INSERT INTO books (title, created_at) VALUES (?, ?) , (?, ?) , (?, ?) , (?, ?) RETURNING id;
 
-	books, err := sqlt.All[Book](ctx, db, query, map[string]any{
+	books, err := sqlt.QueryAll[Book](ctx, db, query, map[string]any{
 		"Search": "Bitcoin",
 	})
 	if err != nil {
