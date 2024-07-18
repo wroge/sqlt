@@ -66,6 +66,7 @@ func (v Value[T]) Get() (T, bool) {
 }
 
 func (v *Value[T]) Scan(value any) error {
+	v.any = nil
 	n := new(sql.Null[T])
 
 	if err := n.Scan(value); err != nil {
@@ -76,8 +77,6 @@ func (v *Value[T]) Scan(value any) error {
 
 	if n.Valid {
 		v.any = n.V
-	} else {
-		v.any = nil
 	}
 
 	return nil
@@ -88,15 +87,19 @@ func (v Value[T]) Value() (driver.Value, error) {
 }
 
 func (v *Value[T]) UnmarshalJSON(data []byte) error {
+	v.any = nil
+
+	if bytes.Equal(data, []byte("null")) {
+		return nil
+	}
+
 	t := new(T)
 
 	if err := json.Unmarshal(data, t); err != nil {
-		v.any = nil
-
 		return err
 	}
 
-	v.any = t
+	v.any = *t
 
 	return nil
 }
@@ -334,6 +337,23 @@ func (t *Template) ParseFiles(filenames ...string) (*Template, error) {
 
 func (t *Template) MustParseFiles(filenames ...string) *Template {
 	return Must(t.ParseFiles(filenames...))
+}
+
+func (t *Template) ParseGlob(pattern string) (*Template, error) {
+	text, err := t.text.ParseGlob(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Template{
+		text:        text,
+		placeholder: t.placeholder,
+		positional:  t.positional,
+	}, nil
+}
+
+func (t *Template) MustParseGlob(pattern string) *Template {
+	return Must(t.ParseGlob(pattern))
 }
 
 func (t *Template) Funcs(fm template.FuncMap) *Template {
