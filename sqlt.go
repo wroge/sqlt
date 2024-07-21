@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"reflect"
+	"slices"
 	"sync"
 	"text/template"
 	"text/template/parse"
@@ -182,16 +183,35 @@ func (namespace) Time(dest *time.Time, str string) (Scanner, error) {
 	}, nil
 }
 
-func Must(t *Template, err error) *Template {
-	if err != nil {
-		panic(err)
+func getTypes(list []any) []reflect.Type {
+	types := make([]reflect.Type, len(list))
+
+	for i, each := range list {
+		types[i] = reflect.TypeOf(each)
 	}
 
-	return t
+	return types
 }
 
-func New(name string, placeholder string, positional bool) *Template {
-	return &Template{
+type Error struct {
+	Err      error
+	Template string
+	SQL      string
+	Args     []any
+	Dest     []reflect.Type
+}
+
+func Dest[T, A any](t *Template[A]) *Template[T] {
+	return &Template[T]{
+		text:        t.text,
+		placeholder: t.placeholder,
+		positional:  t.positional,
+		errHandler:  t.errHandler,
+	}
+}
+
+func New(name string) *Template[any] {
+	t := &Template[any]{
 		text: template.New(name).Funcs(template.FuncMap{
 			"Dest": func() any {
 				return nil
@@ -200,118 +220,168 @@ func New(name string, placeholder string, positional bool) *Template {
 				return namespace{}
 			},
 		}),
-		placeholder: placeholder,
-		positional:  positional,
+		placeholder: "?",
 	}
+
+	return t
 }
 
-type Template struct {
+type Template[T any] struct {
 	text        *template.Template
 	placeholder string
 	positional  bool
+	errHandler  func(err Error) error
 	pool        *sync.Pool
-	errHandler  func(err error, runner *Runner) error
 }
 
-func (t *Template) New(name string) *Template {
-	return &Template{
+func (t *Template[T]) New(name string) *Template[T] {
+	return &Template[T]{
 		text:        t.text.New(name),
 		placeholder: t.placeholder,
 		positional:  t.positional,
+		errHandler:  t.errHandler,
+		pool:        t.pool,
 	}
 }
 
-func (t *Template) HandleErr(handle func(err error, runner *Runner) error) *Template {
+func (t *Template[T]) Placeholder(placeholder string, positional bool) *Template[T] {
+	t.placeholder = placeholder
+	t.positional = positional
+
+	return t
+}
+
+func (t *Template[T]) Question() *Template[T] {
+	return t.Placeholder("?", false)
+}
+
+func (t *Template[T]) Dollar() *Template[T] {
+	return t.Placeholder("$", true)
+}
+
+func (t *Template[T]) Colon() *Template[T] {
+	return t.Placeholder(":", true)
+}
+
+func (t *Template[T]) AtP() *Template[T] {
+	return t.Placeholder("@p", true)
+}
+
+func (t *Template[T]) HandleErr(handle func(err Error) error) *Template[T] {
 	t.errHandler = handle
 
 	return t
 }
 
-func (t *Template) Option(opt ...string) *Template {
+func (t *Template[T]) Option(opt ...string) *Template[T] {
 	t.text.Option(opt...)
 
 	return t
 }
 
-func (t *Template) Parse(str string) (*Template, error) {
+func (t *Template[T]) Parse(str string) (*Template[T], error) {
 	text, err := t.text.Parse(str)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template{
+	return &Template[T]{
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
 		errHandler:  t.errHandler,
+		pool:        t.pool,
 	}, nil
 }
 
-func (t *Template) MustParse(str string) *Template {
-	return Must(t.Parse(str))
+func (t *Template[T]) MustParse(str string) *Template[T] {
+	n, err := t.Parse(str)
+	if err != nil {
+		panic(err)
+	}
+
+	return n
 }
 
-func (t *Template) ParseFS(fsys fs.FS, patterns ...string) (*Template, error) {
+func (t *Template[T]) ParseFS(fsys fs.FS, patterns ...string) (*Template[T], error) {
 	text, err := t.text.ParseFS(fsys, patterns...)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template{
+	return &Template[T]{
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
 		errHandler:  t.errHandler,
+		pool:        t.pool,
 	}, nil
 }
 
-func (t *Template) MustParseFS(fsys fs.FS, patterns ...string) *Template {
-	return Must(t.ParseFS(fsys, patterns...))
+func (t *Template[T]) MustParseFS(fsys fs.FS, patterns ...string) *Template[T] {
+	n, err := t.ParseFS(fsys, patterns...)
+	if err != nil {
+		panic(err)
+	}
+
+	return n
 }
 
-func (t *Template) ParseFiles(filenames ...string) (*Template, error) {
+func (t *Template[T]) ParseFiles(filenames ...string) (*Template[T], error) {
 	text, err := t.text.ParseFiles(filenames...)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template{
+	return &Template[T]{
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
 		errHandler:  t.errHandler,
+		pool:        t.pool,
 	}, nil
 }
 
-func (t *Template) MustParseFiles(filenames ...string) *Template {
-	return Must(t.ParseFiles(filenames...))
+func (t *Template[T]) MustParseFiles(filenames ...string) *Template[T] {
+	n, err := t.ParseFiles(filenames...)
+	if err != nil {
+		panic(err)
+	}
+
+	return n
 }
 
-func (t *Template) ParseGlob(pattern string) (*Template, error) {
+func (t *Template[T]) ParseGlob(pattern string) (*Template[T], error) {
 	text, err := t.text.ParseGlob(pattern)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Template{
+	return &Template[T]{
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
 		errHandler:  t.errHandler,
+		pool:        t.pool,
 	}, nil
 }
 
-func (t *Template) MustParseGlob(pattern string) *Template {
-	return Must(t.ParseGlob(pattern))
+func (t *Template[T]) MustParseGlob(pattern string) *Template[T] {
+	n, err := t.ParseGlob(pattern)
+	if err != nil {
+		panic(err)
+	}
+
+	return n
 }
 
-func (t *Template) Funcs(fm template.FuncMap) *Template {
+func (t *Template[T]) Funcs(fm template.FuncMap) *Template[T] {
 	t.text.Funcs(fm)
 
 	return t
 }
 
-func (t *Template) Value(name string, value any) *Template {
+func (t *Template[T]) Value(name string, value any) *Template[T] {
 	t.text.Funcs(template.FuncMap{
 		name: func() any {
 			return value
@@ -321,24 +391,40 @@ func (t *Template) Value(name string, value any) *Template {
 	return t
 }
 
-func (t *Template) Lookup(name string) (*Template, error) {
+func (t *Template[T]) Lookup(name string) (*Template[T], error) {
 	text := t.text.Lookup(name)
 	if text == nil {
 		return nil, fmt.Errorf("template name '%s' not found", name)
 	}
 
-	return &Template{
+	return &Template[T]{
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
+		errHandler:  t.errHandler,
+		pool:        t.pool,
 	}, nil
 }
 
-func (t *Template) MustLookup(name string) *Template {
-	return Must(t.Lookup(name))
+func (t *Template[T]) MustLookup(name string) *Template[T] {
+	n, err := t.Lookup(name)
+	if err != nil {
+		panic(err)
+	}
+
+	return n
 }
 
-func (t *Template) Run(value any, params any, use func(runner *Runner) error) error {
+type Runner[T any] struct {
+	Text  *template.Template
+	SQL   *bytes.Buffer
+	Args  []any
+	Value *T
+	Dest  []any
+	Map   []func() error
+}
+
+func (t *Template[T]) Run(use func(runner *Runner[T]) error) error {
 	if t.pool == nil {
 		t.pool = &sync.Pool{
 			New: func() any {
@@ -347,14 +433,15 @@ func (t *Template) Run(value any, params any, use func(runner *Runner) error) er
 					return err
 				}
 
-				var r = &Runner{
-					Text: escape(text),
-					SQL:  &bytes.Buffer{},
+				var r = &Runner[T]{
+					Text:  escape(text),
+					SQL:   &bytes.Buffer{},
+					Value: new(T),
 				}
 
 				r.Text.Funcs(template.FuncMap{
 					"Dest": func() any {
-						return value
+						return r.Value
 					},
 					ident: func(arg any) string {
 						if s, ok := arg.(Scanner); ok {
@@ -385,20 +472,21 @@ func (t *Template) Run(value any, params any, use func(runner *Runner) error) er
 	}
 
 	switch r := t.pool.Get().(type) {
-	case *Runner:
-		r.Reset()
-
-		if err := r.Text.Execute(r.SQL, params); err != nil {
-			if t.errHandler != nil {
-				return t.errHandler(err, r)
-			}
-
-			return err
-		}
+	case *Runner[T]:
+		r.SQL.Reset()
+		r.Args = r.Args[:0]
+		r.Dest = r.Dest[:0]
+		r.Map = r.Map[:0]
 
 		if err := use(r); err != nil {
 			if t.errHandler != nil {
-				return t.errHandler(err, r)
+				return t.errHandler(Error{
+					Err:      err,
+					Template: r.Text.Name(),
+					SQL:      r.SQL.String(),
+					Args:     slices.Clone(r.Args),
+					Dest:     getTypes(r.Dest),
+				})
 			}
 
 			return err
@@ -414,13 +502,17 @@ func (t *Template) Run(value any, params any, use func(runner *Runner) error) er
 	}
 }
 
-func (t *Template) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
+func (t *Template[T]) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
 	var (
 		result sql.Result
 		err    error
 	)
 
-	err = t.Run(nil, params, func(r *Runner) error {
+	err = t.Run(func(r *Runner[T]) error {
+		if err := r.Text.Execute(r.SQL, params); err != nil {
+			return err
+		}
+
 		result, err = db.ExecContext(ctx, r.SQL.String(), r.Args...)
 		if err != nil {
 			return err
@@ -432,13 +524,17 @@ func (t *Template) Exec(ctx context.Context, db DB, params any) (sql.Result, err
 	return result, err
 }
 
-func (t *Template) Query(ctx context.Context, db DB, params any) (*sql.Rows, error) {
+func (t *Template[T]) Query(ctx context.Context, db DB, params any) (*sql.Rows, error) {
 	var (
 		rows *sql.Rows
 		err  error
 	)
 
-	err = t.Run(nil, params, func(r *Runner) error {
+	err = t.Run(func(r *Runner[T]) error {
+		if err := r.Text.Execute(r.SQL, params); err != nil {
+			return err
+		}
+
 		rows, err = db.QueryContext(ctx, r.SQL.String(), r.Args...)
 		if err != nil {
 			return err
@@ -450,13 +546,17 @@ func (t *Template) Query(ctx context.Context, db DB, params any) (*sql.Rows, err
 	return rows, err
 }
 
-func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, error) {
+func (t *Template[T]) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, error) {
 	var (
 		row *sql.Row
 		err error
 	)
 
-	err = t.Run(nil, params, func(r *Runner) error {
+	err = t.Run(func(r *Runner[T]) error {
+		if err := r.Text.Execute(r.SQL, params); err != nil {
+			return err
+		}
+
 		row = db.QueryRowContext(ctx, r.SQL.String(), r.Args...)
 
 		return nil
@@ -465,31 +565,19 @@ func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, e
 	return row, err
 }
 
-type Runner struct {
-	Text *template.Template
-	SQL  *bytes.Buffer
-	Args []any
-	Dest []any
-	Map  []func() error
-}
-
-func (r *Runner) Reset() {
-	r.SQL.Reset()
-	r.Args = r.Args[:0]
-	r.Dest = r.Dest[:0]
-	r.Map = r.Map[:0]
-}
-
-func FetchAll[T any](ctx context.Context, db DB, t *Template, params any) ([]T, error) {
+func (t *Template[T]) QueryAll(ctx context.Context, db DB, params any) ([]T, error) {
 	var (
 		values []T
-		value  = new(T)
 		err    error
 	)
 
-	err = t.Run(value, params, func(r *Runner) error {
+	err = t.Run(func(r *Runner[T]) error {
+		if err := r.Text.Execute(r.SQL, params); err != nil {
+			return err
+		}
+
 		if len(r.Dest) == 0 {
-			r.Dest = []any{value}
+			r.Dest = []any{r.Value}
 		}
 
 		var rows *sql.Rows
@@ -516,7 +604,7 @@ func FetchAll[T any](ctx context.Context, db DB, t *Template, params any) ([]T, 
 				}
 			}
 
-			values = append(values, *value)
+			values = append(values, *r.Value)
 		}
 
 		if err = rows.Err(); err != nil {
@@ -533,15 +621,19 @@ func FetchAll[T any](ctx context.Context, db DB, t *Template, params any) ([]T, 
 	return values, err
 }
 
-func FetchFirst[T any](ctx context.Context, db DB, t *Template, params any) (T, error) {
+func (t *Template[T]) QueryFirst(ctx context.Context, db DB, params any) (T, error) {
 	var (
 		value T
 		err   error
 	)
 
-	err = t.Run(&value, params, func(r *Runner) error {
+	err = t.Run(func(r *Runner[T]) error {
+		if err := r.Text.Execute(r.SQL, params); err != nil {
+			return err
+		}
+
 		if len(r.Dest) == 0 {
-			r.Dest = []any{&value}
+			r.Dest = []any{r.Value}
 		}
 
 		if err = db.QueryRowContext(ctx, r.SQL.String(), r.Args...).Scan(r.Dest...); err != nil {
@@ -557,6 +649,8 @@ func FetchFirst[T any](ctx context.Context, db DB, t *Template, params any) (T, 
 				return err
 			}
 		}
+
+		value = *r.Value
 
 		return nil
 	})

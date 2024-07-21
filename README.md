@@ -14,7 +14,6 @@ go get -u github.com/wroge/sqlt
 - All input values are safely escaped and replaced with the correct placeholders at execution time.
 - Functions like ```sqlt.Int64``` generate ```sqlt.Scanner`s```, which hold pointers to the destination and optionally a mapper. These scanners are collected at execution time.
 - The ```Dest``` function is a placeholder that is replaced at execution time with the appropriate generic type.
--  ```sqlt.Value[T]``` is a wrapper that allows any value to be used with ```sqlt.Scanner``` and ```sqlt.JSON```.
 - SQL templates can be loaded from the filesystem using ```ParseFS``` or ```ParseFiles```.
 
 ## Example
@@ -25,6 +24,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -41,7 +41,16 @@ type Book struct {
 }
 
 var (
-	t = sqlt.New("db", "?", false).Funcs(sprig.TxtFuncMap())
+	t = sqlt.New("db").Dollar().Funcs(sprig.TxtFuncMap()).HandleErr(func(err sqlt.Error) error {
+		if errors.Is(err.Err, sql.ErrNoRows) {
+			return nil
+		}
+
+		// apply logging here
+		fmt.Println(err.Template, err.SQL, err.Args)
+
+		return err.Err
+	})
 
 	insert = t.New("insert").MustParse(`
 		INSERT INTO books (id, title, created_at) VALUES
@@ -51,14 +60,14 @@ var (
 		RETURNING id;
 	`)
 
-	query = t.New("query").MustParse(`
+	query = sqlt.Dest[Book](t.New("query").MustParse(`
 		SELECT
 			{{ sqlt.Scanner Dest.ID "id" }}
 			{{ sqlt.String Dest.Title ", title" }}
 			{{ sqlt.Time Dest.CreatedAt ", created_at" }}
 		FROM books
 		WHERE instr(title, {{ .Search }}) > 0
-	`)
+	`))
 )
 
 func main() {
@@ -85,7 +94,7 @@ func main() {
 	}
 	// INSERT INTO books (title, created_at) VALUES (?, ?) , (?, ?) , (?, ?) , (?, ?) RETURNING id;
 
-	books, err := sqlt.FetchAll[Book](ctx, db, query, map[string]any{
+	books, err := query.QueryAll(ctx, db, map[string]any{
 		"Search": "Bitcoin",
 	})
 	if err != nil {
@@ -94,7 +103,7 @@ func main() {
 	// SELECT id, title, created_at FROM books WHERE instr(title, ?) > 0
 
 	fmt.Println(books)
-	// [{76cfcc01-1b7a-4f14-ab9e-b9e0d1546f25 The Bitcoin Standard 2024-07-21 17:14:53.390319 +0200 +0200} {5c397925-7bd8-4b00-8dfb-2576207c690e Mastering Bitcoin 2024-07-21 17:14:53.390338 +0200 +0200}]
+	// [{76b87e40-0d47-429e-8a80-563e7bf0cf13 The Bitcoin Standard 2024-07-21 22:50:37.672297 +0200 +0200} {b63ec5c4-1fd9-448a-96c6-5abc54c05aa1 Mastering Bitcoin 2024-07-21 22:50:37.672306 +0200 +0200}]
 }
 ```
 
