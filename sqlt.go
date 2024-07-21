@@ -444,25 +444,23 @@ func (t *Template[T]) Run(use func(runner *Runner[T]) error) error {
 						return r.Value
 					},
 					ident: func(arg any) string {
-						if s, ok := arg.(Scanner); ok {
-							r.Dest = append(r.Dest, s.Dest)
-							r.Map = append(r.Map, s.Map)
-
-							return s.SQL
-						}
-
 						switch a := arg.(type) {
+						case Scanner:
+							r.Dest = append(r.Dest, a.Dest)
+							r.Map = append(r.Map, a.Map)
+
+							return a.SQL
 						case Raw:
 							return string(a)
+						default:
+							r.Args = append(r.Args, arg)
+
+							if t.positional {
+								return fmt.Sprintf("%s%d", t.placeholder, len(r.Args))
+							}
+
+							return t.placeholder
 						}
-
-						r.Args = append(r.Args, arg)
-
-						if t.positional {
-							return fmt.Sprintf("%s%d", t.placeholder, len(r.Args))
-						}
-
-						return t.placeholder
 					},
 				})
 
@@ -473,14 +471,11 @@ func (t *Template[T]) Run(use func(runner *Runner[T]) error) error {
 
 	switch r := t.pool.Get().(type) {
 	case *Runner[T]:
-		r.SQL.Reset()
-		r.Args = r.Args[:0]
-		r.Dest = r.Dest[:0]
-		r.Map = r.Map[:0]
+		var err error
 
-		if err := use(r); err != nil {
+		if err = use(r); err != nil {
 			if t.errHandler != nil {
-				return t.errHandler(Error{
+				err = t.errHandler(Error{
 					Err:      err,
 					Template: r.Text.Name(),
 					SQL:      r.SQL.String(),
@@ -488,13 +483,18 @@ func (t *Template[T]) Run(use func(runner *Runner[T]) error) error {
 					Dest:     getTypes(r.Dest),
 				})
 			}
-
-			return err
 		}
 
-		t.pool.Put(r)
+		go func() {
+			r.SQL.Reset()
+			r.Args = r.Args[:0]
+			r.Dest = r.Dest[:0]
+			r.Map = r.Map[:0]
 
-		return nil
+			t.pool.Put(r)
+		}()
+
+		return err
 	case error:
 		return r
 	default:
