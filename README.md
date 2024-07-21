@@ -74,7 +74,7 @@ func main() {
 		panic(err)
 	}
 
-	_, err = sqlt.Exec(ctx, db, insert, []string{
+	_, err = insert.Exec(ctx, db, []string{
 		"The Bitcoin Standard",
 		"Sapiens: A Brief History of Humankind",
 		"100 Go Mistakes and How to Avoid Them",
@@ -85,7 +85,7 @@ func main() {
 	}
 	// INSERT INTO books (title, created_at) VALUES (?, ?) , (?, ?) , (?, ?) , (?, ?) RETURNING id;
 
-	books, err := sqlt.QueryAll[Book](ctx, db, query, map[string]any{
+	books, err := sqlt.FetchAll[Book](ctx, db, query, map[string]any{
 		"Search": "Bitcoin",
 	})
 	if err != nil {
@@ -94,7 +94,7 @@ func main() {
 	// SELECT id, title, created_at FROM books WHERE instr(title, ?) > 0
 
 	fmt.Println(books)
-	// [{41c32372-63f0-4c15-b00f-9f79a43b47c3 The Bitcoin Standard 2024-07-15 15:15:43.459629 +0200 +0200} {5607a225-5305-4bf9-bfca-b76fe0551819 Mastering Bitcoin 2024-07-15 15:15:43.459645 +0200 +0200}]
+	// [{76cfcc01-1b7a-4f14-ab9e-b9e0d1546f25 The Bitcoin Standard 2024-07-21 17:14:53.390319 +0200 +0200} {5c397925-7bd8-4b00-8dfb-2576207c690e Mastering Bitcoin 2024-07-21 17:14:53.390338 +0200 +0200}]
 }
 ```
 
