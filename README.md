@@ -12,7 +12,7 @@ go get -u github.com/wroge/sqlt
 ## How does it work?
 
 - All input values are safely escaped and replaced with the correct placeholders at execution time.
-- Functions like ```sqlt.Int64``` generate ```sqlt.Scanner`s```, which hold pointers to the destination and optionally a mapper. These scanners are collected at execution time.
+- Functions like ```ScanInt64``` generate ```sqlt.Scanner`s```, which hold pointers to the destination and optionally a mapper. These scanners are collected at execution time.
 - The ```Dest``` function is a placeholder that is replaced at execution time with the appropriate generic type.
 - SQL templates can be loaded from the filesystem using ```ParseFS``` or ```ParseFiles```.
 
@@ -62,9 +62,9 @@ var (
 
 	query = sqlt.Dest[Book](t.New("query").MustParse(`
 		SELECT
-			{{ sqlt.Scanner Dest.ID "id" }}
-			{{ sqlt.String Dest.Title ", title" }}
-			{{ sqlt.Time Dest.CreatedAt ", created_at" }}
+			{{ Scan Dest.ID "id" }}
+			{{ ScanString Dest.Title ", title" }}
+			{{ ScanTime Dest.CreatedAt ", created_at" }}
 		FROM books
 		WHERE instr(title, {{ .Search }}) > 0
 	`))
@@ -94,7 +94,7 @@ func main() {
 	}
 	// INSERT INTO books (title, created_at) VALUES (?, ?) , (?, ?) , (?, ?) , (?, ?) RETURNING id;
 
-	books, err := query.QueryAll(ctx, db, map[string]any{
+	books, err := query.FetchAll(ctx, db, map[string]any{
 		"Search": "Bitcoin",
 	})
 	if err != nil {

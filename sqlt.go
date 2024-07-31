@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"text/template"
 	"text/template/parse"
@@ -51,138 +52,6 @@ type Scanner struct {
 	Map  func() error
 }
 
-type namespace struct{}
-
-func (namespace) Raw(str string) Raw {
-	return Raw(str)
-}
-
-func (namespace) Scanner(dest sql.Scanner, str string) (Scanner, error) {
-	if dest == nil || reflect.ValueOf(dest).IsNil() {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Scanner at '%s'", str)
-	}
-
-	return Scanner{
-		SQL:  str,
-		Dest: dest,
-	}, nil
-}
-
-func (namespace) JSON(dest json.Unmarshaler, str string) (Scanner, error) {
-	if dest == nil || reflect.ValueOf(dest).IsNil() {
-		return Scanner{}, fmt.Errorf("invalid sqlt.JSON at '%s'", str)
-	}
-
-	var data []byte
-
-	return Scanner{
-		SQL:  str,
-		Dest: &data,
-		Map: func() error {
-			return json.Unmarshal(data, dest)
-		},
-	}, nil
-}
-
-func (ns namespace) ByteSlice(dest *[]byte, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.ByteSlice at '%s'", str)
-	}
-
-	return Scanner{
-		SQL:  str,
-		Dest: dest,
-	}, nil
-}
-
-func (namespace) String(dest *string, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.String at '%s'", str)
-	}
-
-	return Scanner{
-		SQL:  str,
-		Dest: dest,
-	}, nil
-}
-
-func (namespace) Int16(dest *int16, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Int16 at '%s'", str)
-	}
-
-	return Scanner{
-		SQL:  str,
-		Dest: dest,
-	}, nil
-}
-
-func (namespace) Int32(dest *int32, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Int32 at '%s'", str)
-	}
-
-	return Scanner{
-		SQL:  str,
-		Dest: dest,
-	}, nil
-}
-
-func (namespace) Int64(dest *int64, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Int64 at '%s'", str)
-	}
-
-	return Scanner{
-		SQL:  str,
-		Dest: dest,
-	}, nil
-}
-
-func (namespace) Float32(dest *float32, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Float32 at '%s'", str)
-	}
-
-	return Scanner{
-		SQL:  str,
-		Dest: dest,
-	}, nil
-}
-
-func (namespace) Float64(dest *float64, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Float64 at '%s'", str)
-	}
-
-	return Scanner{
-		SQL:  str,
-		Dest: dest,
-	}, nil
-}
-
-func (namespace) Bool(dest *bool, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Bool at '%s'", str)
-	}
-
-	return Scanner{
-		SQL:  str,
-		Dest: dest,
-	}, nil
-}
-
-func (namespace) Time(dest *time.Time, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("invalid sqlt.Time at '%s'", str)
-	}
-
-	return Scanner{
-		SQL:  str,
-		Dest: dest,
-	}, nil
-}
-
 func getTypes(list []any) []reflect.Type {
 	types := make([]reflect.Type, len(list))
 
@@ -216,8 +85,123 @@ func New(name string) *Template[any] {
 			"Dest": func() any {
 				return nil
 			},
-			"sqlt": func() any {
-				return namespace{}
+			"Raw": func(str string) Raw {
+				return Raw(str)
+			},
+			"Scan": func(dest sql.Scanner, str string) (Scanner, error) {
+				if dest == nil {
+					return Scanner{}, fmt.Errorf("invalid sqlt.Scanner at '%s'", str)
+				}
+
+				return Scanner{
+					SQL:  str,
+					Dest: dest,
+				}, nil
+			},
+			"ScanJSON": func(dest json.Unmarshaler, str string) (Scanner, error) {
+				if dest == nil || reflect.ValueOf(dest).IsNil() {
+					return Scanner{}, fmt.Errorf("invalid sqlt.JSON at '%s'", str)
+				}
+
+				var data []byte
+
+				return Scanner{
+					SQL:  str,
+					Dest: &data,
+					Map: func() error {
+						return json.Unmarshal(data, dest)
+					},
+				}, nil
+			},
+			"ScanBytes": func(dest *[]byte, str string) (Scanner, error) {
+				if dest == nil {
+					return Scanner{}, fmt.Errorf("invalid sqlt.ByteSlice at '%s'", str)
+				}
+
+				return Scanner{
+					SQL:  str,
+					Dest: dest,
+				}, nil
+			},
+			"ScanString": func(dest *string, str string) (Scanner, error) {
+				if dest == nil {
+					return Scanner{}, fmt.Errorf("invalid sqlt.String at '%s'", str)
+				}
+
+				return Scanner{
+					SQL:  str,
+					Dest: dest,
+				}, nil
+			},
+			"ScanInt16": func(dest *int16, str string) (Scanner, error) {
+				if dest == nil {
+					return Scanner{}, fmt.Errorf("invalid sqlt.Int16 at '%s'", str)
+				}
+
+				return Scanner{
+					SQL:  str,
+					Dest: dest,
+				}, nil
+			},
+			"ScanInt32": func(dest *int32, str string) (Scanner, error) {
+				if dest == nil {
+					return Scanner{}, fmt.Errorf("invalid sqlt.Int32 at '%s'", str)
+				}
+
+				return Scanner{
+					SQL:  str,
+					Dest: dest,
+				}, nil
+			},
+			"ScanInt64": func(dest *int64, str string) (Scanner, error) {
+				if dest == nil {
+					return Scanner{}, fmt.Errorf("invalid sqlt.Int64 at '%s'", str)
+				}
+
+				return Scanner{
+					SQL:  str,
+					Dest: dest,
+				}, nil
+			},
+			"ScanFloat32": func(dest *float32, str string) (Scanner, error) {
+				if dest == nil {
+					return Scanner{}, fmt.Errorf("invalid sqlt.Float32 at '%s'", str)
+				}
+
+				return Scanner{
+					SQL:  str,
+					Dest: dest,
+				}, nil
+			},
+			"ScanFloat64": func(dest *float64, str string) (Scanner, error) {
+				if dest == nil {
+					return Scanner{}, fmt.Errorf("invalid sqlt.Float64 at '%s'", str)
+				}
+
+				return Scanner{
+					SQL:  str,
+					Dest: dest,
+				}, nil
+			},
+			"ScanBool": func(dest *bool, str string) (Scanner, error) {
+				if dest == nil {
+					return Scanner{}, fmt.Errorf("invalid sqlt.Bool at '%s'", str)
+				}
+
+				return Scanner{
+					SQL:  str,
+					Dest: dest,
+				}, nil
+			},
+			"ScanTime": func(dest *time.Time, str string) (Scanner, error) {
+				if dest == nil {
+					return Scanner{}, fmt.Errorf("invalid sqlt.Time at '%s'", str)
+				}
+
+				return Scanner{
+					SQL:  str,
+					Dest: dest,
+				}, nil
 			},
 		}),
 		placeholder: "?",
@@ -279,6 +263,14 @@ func (t *Template[T]) Option(opt ...string) *Template[T] {
 	return t
 }
 
+func must[T any](n *Template[T], err error) *Template[T] {
+	if err != nil {
+		panic(err)
+	}
+
+	return n
+}
+
 func (t *Template[T]) Parse(str string) (*Template[T], error) {
 	text, err := t.text.Parse(str)
 	if err != nil {
@@ -295,12 +287,7 @@ func (t *Template[T]) Parse(str string) (*Template[T], error) {
 }
 
 func (t *Template[T]) MustParse(str string) *Template[T] {
-	n, err := t.Parse(str)
-	if err != nil {
-		panic(err)
-	}
-
-	return n
+	return must(t.Parse(str))
 }
 
 func (t *Template[T]) ParseFS(fsys fs.FS, patterns ...string) (*Template[T], error) {
@@ -319,12 +306,7 @@ func (t *Template[T]) ParseFS(fsys fs.FS, patterns ...string) (*Template[T], err
 }
 
 func (t *Template[T]) MustParseFS(fsys fs.FS, patterns ...string) *Template[T] {
-	n, err := t.ParseFS(fsys, patterns...)
-	if err != nil {
-		panic(err)
-	}
-
-	return n
+	return must(t.ParseFS(fsys, patterns...))
 }
 
 func (t *Template[T]) ParseFiles(filenames ...string) (*Template[T], error) {
@@ -343,12 +325,7 @@ func (t *Template[T]) ParseFiles(filenames ...string) (*Template[T], error) {
 }
 
 func (t *Template[T]) MustParseFiles(filenames ...string) *Template[T] {
-	n, err := t.ParseFiles(filenames...)
-	if err != nil {
-		panic(err)
-	}
-
-	return n
+	return must(t.ParseFiles(filenames...))
 }
 
 func (t *Template[T]) ParseGlob(pattern string) (*Template[T], error) {
@@ -367,26 +344,11 @@ func (t *Template[T]) ParseGlob(pattern string) (*Template[T], error) {
 }
 
 func (t *Template[T]) MustParseGlob(pattern string) *Template[T] {
-	n, err := t.ParseGlob(pattern)
-	if err != nil {
-		panic(err)
-	}
-
-	return n
+	return must(t.ParseGlob(pattern))
 }
 
 func (t *Template[T]) Funcs(fm template.FuncMap) *Template[T] {
 	t.text.Funcs(fm)
-
-	return t
-}
-
-func (t *Template[T]) Value(name string, value any) *Template[T] {
-	t.text.Funcs(template.FuncMap{
-		name: func() any {
-			return value
-		},
-	})
 
 	return t
 }
@@ -407,12 +369,7 @@ func (t *Template[T]) Lookup(name string) (*Template[T], error) {
 }
 
 func (t *Template[T]) MustLookup(name string) *Template[T] {
-	n, err := t.Lookup(name)
-	if err != nil {
-		panic(err)
-	}
-
-	return n
+	return must(t.Lookup(name))
 }
 
 type Runner[T any] struct {
@@ -478,7 +435,7 @@ func (t *Template[T]) Run(use func(runner *Runner[T]) error) error {
 				err = t.errHandler(Error{
 					Err:      err,
 					Template: r.Text.Name(),
-					SQL:      r.SQL.String(),
+					SQL:      strings.Join(strings.Fields(r.SQL.String()), " "),
 					Args:     slices.Clone(r.Args),
 					Dest:     getTypes(r.Dest),
 				})
@@ -565,11 +522,8 @@ func (t *Template[T]) QueryRow(ctx context.Context, db DB, params any) (*sql.Row
 	return row, err
 }
 
-func (t *Template[T]) QueryAll(ctx context.Context, db DB, params any) ([]T, error) {
-	var (
-		values []T
-		err    error
-	)
+func (t *Template[T]) FetchEach(ctx context.Context, db DB, params any, each func(value T) (bool, error)) error {
+	var err error
 
 	err = t.Run(func(r *Runner[T]) error {
 		if err := r.Text.Execute(r.SQL, params); err != nil {
@@ -604,7 +558,14 @@ func (t *Template[T]) QueryAll(ctx context.Context, db DB, params any) ([]T, err
 				}
 			}
 
-			values = append(values, *r.Value)
+			next, err := each(*r.Value)
+			if err != nil {
+				return err
+			}
+
+			if !next {
+				break
+			}
 		}
 
 		if err = rows.Err(); err != nil {
@@ -618,44 +579,108 @@ func (t *Template[T]) QueryAll(ctx context.Context, db DB, params any) ([]T, err
 		return nil
 	})
 
+	return err
+}
+
+func (t *Template[T]) FetchAll(ctx context.Context, db DB, params any) ([]T, error) {
+	var (
+		values []T
+		err    error
+	)
+
+	err = t.FetchEach(ctx, db, params, func(value T) (bool, error) {
+		values = append(values, value)
+
+		return true, nil
+	})
+
 	return values, err
 }
 
-func (t *Template[T]) QueryFirst(ctx context.Context, db DB, params any) (T, error) {
+var ErrTooManyRows = fmt.Errorf("sqlt: too many rows")
+
+func (t *Template[T]) FetchAllN(ctx context.Context, db DB, params any, n int) ([]T, error) {
 	var (
-		value T
-		err   error
+		values = make([]T, n)
+		index  int
+		err    error
 	)
 
-	err = t.Run(func(r *Runner[T]) error {
-		if err := r.Text.Execute(r.SQL, params); err != nil {
-			return err
+	err = t.FetchEach(ctx, db, params, func(value T) (bool, error) {
+		if index >= n {
+			return false, ErrTooManyRows
 		}
 
-		if len(r.Dest) == 0 {
-			r.Dest = []any{r.Value}
-		}
+		values[index] = value
 
-		if err = db.QueryRowContext(ctx, r.SQL.String(), r.Args...).Scan(r.Dest...); err != nil {
-			return err
-		}
+		index++
 
-		for _, m := range r.Map {
-			if m == nil {
-				continue
-			}
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
 
-			if err = m(); err != nil {
-				return err
-			}
-		}
+	if index != n {
+		return values, fmt.Errorf("sqlt: not enough rows")
+	}
 
-		value = *r.Value
+	return values, nil
+}
 
-		return nil
+func (t *Template[T]) FetchFirstN(ctx context.Context, db DB, params any, n int) ([]T, error) {
+	var (
+		values = make([]T, n)
+		index  int
+		err    error
+	)
+
+	err = t.FetchEach(ctx, db, params, func(value T) (bool, error) {
+		values[index] = value
+
+		index++
+
+		return n > index, nil
 	})
 
-	return value, err
+	return values, err
+}
+
+func (t *Template[T]) FetchFirst(ctx context.Context, db DB, params any) (T, error) {
+	var (
+		val T
+		err error
+	)
+
+	err = t.FetchEach(ctx, db, params, func(value T) (bool, error) {
+		val = value
+
+		return false, nil
+	})
+
+	return val, err
+}
+
+func (t *Template[T]) FetchOne(ctx context.Context, db DB, params any) (T, error) {
+	var (
+		val T
+		one bool
+		err error
+	)
+
+	err = t.FetchEach(ctx, db, params, func(value T) (bool, error) {
+		if one {
+			return false, ErrTooManyRows
+		}
+
+		val = value
+
+		one = true
+
+		return false, nil
+	})
+
+	return val, err
 }
 
 var ident = "__sqlt__"
