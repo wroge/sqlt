@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -90,7 +91,7 @@ func New(name string) *Template[any] {
 			},
 			"Scan": func(dest sql.Scanner, str string) (Scanner, error) {
 				if dest == nil {
-					return Scanner{}, fmt.Errorf("invalid sqlt.Scanner at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid Scan at '%s'", str)
 				}
 
 				return Scanner{
@@ -100,7 +101,7 @@ func New(name string) *Template[any] {
 			},
 			"ScanJSON": func(dest json.Unmarshaler, str string) (Scanner, error) {
 				if dest == nil || reflect.ValueOf(dest).IsNil() {
-					return Scanner{}, fmt.Errorf("invalid sqlt.JSON at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid ScanJSON at '%s'", str)
 				}
 
 				var data []byte
@@ -115,7 +116,7 @@ func New(name string) *Template[any] {
 			},
 			"ScanBytes": func(dest *[]byte, str string) (Scanner, error) {
 				if dest == nil {
-					return Scanner{}, fmt.Errorf("invalid sqlt.ByteSlice at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid ScanBytes at '%s'", str)
 				}
 
 				return Scanner{
@@ -125,7 +126,7 @@ func New(name string) *Template[any] {
 			},
 			"ScanString": func(dest *string, str string) (Scanner, error) {
 				if dest == nil {
-					return Scanner{}, fmt.Errorf("invalid sqlt.String at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid ScanString at '%s'", str)
 				}
 
 				return Scanner{
@@ -135,7 +136,7 @@ func New(name string) *Template[any] {
 			},
 			"ScanInt16": func(dest *int16, str string) (Scanner, error) {
 				if dest == nil {
-					return Scanner{}, fmt.Errorf("invalid sqlt.Int16 at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid ScanInt16 at '%s'", str)
 				}
 
 				return Scanner{
@@ -145,7 +146,7 @@ func New(name string) *Template[any] {
 			},
 			"ScanInt32": func(dest *int32, str string) (Scanner, error) {
 				if dest == nil {
-					return Scanner{}, fmt.Errorf("invalid sqlt.Int32 at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid ScanInt32 at '%s'", str)
 				}
 
 				return Scanner{
@@ -155,7 +156,7 @@ func New(name string) *Template[any] {
 			},
 			"ScanInt64": func(dest *int64, str string) (Scanner, error) {
 				if dest == nil {
-					return Scanner{}, fmt.Errorf("invalid sqlt.Int64 at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid ScanInt64 at '%s'", str)
 				}
 
 				return Scanner{
@@ -165,7 +166,7 @@ func New(name string) *Template[any] {
 			},
 			"ScanFloat32": func(dest *float32, str string) (Scanner, error) {
 				if dest == nil {
-					return Scanner{}, fmt.Errorf("invalid sqlt.Float32 at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid ScanFloat32 at '%s'", str)
 				}
 
 				return Scanner{
@@ -175,7 +176,7 @@ func New(name string) *Template[any] {
 			},
 			"ScanFloat64": func(dest *float64, str string) (Scanner, error) {
 				if dest == nil {
-					return Scanner{}, fmt.Errorf("invalid sqlt.Float64 at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid ScanFloat64 at '%s'", str)
 				}
 
 				return Scanner{
@@ -185,7 +186,7 @@ func New(name string) *Template[any] {
 			},
 			"ScanBool": func(dest *bool, str string) (Scanner, error) {
 				if dest == nil {
-					return Scanner{}, fmt.Errorf("invalid sqlt.Bool at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid ScanBool at '%s'", str)
 				}
 
 				return Scanner{
@@ -195,7 +196,7 @@ func New(name string) *Template[any] {
 			},
 			"ScanTime": func(dest *time.Time, str string) (Scanner, error) {
 				if dest == nil {
-					return Scanner{}, fmt.Errorf("invalid sqlt.Time at '%s'", str)
+					return Scanner{}, fmt.Errorf("invalid ScanTime at '%s'", str)
 				}
 
 				return Scanner{
@@ -216,6 +217,7 @@ type Template[T any] struct {
 	positional  bool
 	errHandler  func(err Error) error
 	pool        *sync.Pool
+	size        int
 }
 
 func (t *Template[T]) New(name string) *Template[T] {
@@ -392,7 +394,7 @@ func (t *Template[T]) Run(use func(runner *Runner[T]) error) error {
 
 				var r = &Runner[T]{
 					Text:  escape(text),
-					SQL:   &bytes.Buffer{},
+					SQL:   bytes.NewBuffer(make([]byte, 0, t.size)),
 					Value: new(T),
 				}
 
@@ -413,7 +415,7 @@ func (t *Template[T]) Run(use func(runner *Runner[T]) error) error {
 							r.Args = append(r.Args, arg)
 
 							if t.positional {
-								return fmt.Sprintf("%s%d", t.placeholder, len(r.Args))
+								return t.placeholder + strconv.Itoa(len(r.Args))
 							}
 
 							return t.placeholder
@@ -443,6 +445,11 @@ func (t *Template[T]) Run(use func(runner *Runner[T]) error) error {
 		}
 
 		go func() {
+			size := r.SQL.Len()
+			if size > t.size {
+				t.size = size
+			}
+
 			r.SQL.Reset()
 			r.Args = r.Args[:0]
 			r.Dest = r.Dest[:0]
@@ -466,7 +473,7 @@ func (t *Template[T]) Exec(ctx context.Context, db DB, params any) (sql.Result, 
 	)
 
 	err = t.Run(func(r *Runner[T]) error {
-		if err := r.Text.Execute(r.SQL, params); err != nil {
+		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
 
@@ -488,7 +495,7 @@ func (t *Template[T]) Query(ctx context.Context, db DB, params any) (*sql.Rows, 
 	)
 
 	err = t.Run(func(r *Runner[T]) error {
-		if err := r.Text.Execute(r.SQL, params); err != nil {
+		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
 
@@ -510,7 +517,7 @@ func (t *Template[T]) QueryRow(ctx context.Context, db DB, params any) (*sql.Row
 	)
 
 	err = t.Run(func(r *Runner[T]) error {
-		if err := r.Text.Execute(r.SQL, params); err != nil {
+		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
 
@@ -526,7 +533,7 @@ func (t *Template[T]) FetchEach(ctx context.Context, db DB, params any, each fun
 	var err error
 
 	err = t.Run(func(r *Runner[T]) error {
-		if err := r.Text.Execute(r.SQL, params); err != nil {
+		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
 
@@ -597,55 +604,6 @@ func (t *Template[T]) FetchAll(ctx context.Context, db DB, params any) ([]T, err
 	return values, err
 }
 
-var ErrTooManyRows = fmt.Errorf("sqlt: too many rows")
-
-func (t *Template[T]) FetchAllN(ctx context.Context, db DB, params any, n int) ([]T, error) {
-	var (
-		values = make([]T, n)
-		index  int
-		err    error
-	)
-
-	err = t.FetchEach(ctx, db, params, func(value T) (bool, error) {
-		if index >= n {
-			return false, ErrTooManyRows
-		}
-
-		values[index] = value
-
-		index++
-
-		return true, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	if index != n {
-		return values, fmt.Errorf("sqlt: not enough rows")
-	}
-
-	return values, nil
-}
-
-func (t *Template[T]) FetchFirstN(ctx context.Context, db DB, params any, n int) ([]T, error) {
-	var (
-		values = make([]T, n)
-		index  int
-		err    error
-	)
-
-	err = t.FetchEach(ctx, db, params, func(value T) (bool, error) {
-		values[index] = value
-
-		index++
-
-		return n > index, nil
-	})
-
-	return values, err
-}
-
 func (t *Template[T]) FetchFirst(ctx context.Context, db DB, params any) (T, error) {
 	var (
 		val T
@@ -660,6 +618,8 @@ func (t *Template[T]) FetchFirst(ctx context.Context, db DB, params any) (T, err
 
 	return val, err
 }
+
+var ErrTooManyRows = fmt.Errorf("sqlt: too many rows")
 
 func (t *Template[T]) FetchOne(ctx context.Context, db DB, params any) (T, error) {
 	var (
