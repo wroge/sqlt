@@ -26,6 +26,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Masterminds/sprig/v3"
@@ -41,16 +42,27 @@ type Book struct {
 }
 
 var (
-	t = sqlt.New("db").Dollar().Funcs(sprig.TxtFuncMap()).HandleErr(func(err sqlt.Error) error {
-		if errors.Is(err.Err, sql.ErrNoRows) {
-			return nil
-		}
+	t = sqlt.New("db").
+		Dollar().
+		Funcs(sprig.TxtFuncMap()).
+		AfterRun(func(err error, name string, r *sqlt.Runner) error {
+			if err != nil {
+				// ignore sql.ErrNoRows
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil
+				}
 
-		// apply logging here
-		fmt.Println(err.Template, err.SQL, err.Args)
+				// apply error logging here
+				fmt.Println(err, name, strings.Join(strings.Fields(r.SQL.String()), " "))
 
-		return err.Err
-	})
+				return err
+			}
+
+			// apply normal logging here
+			fmt.Println(name, strings.Join(strings.Fields(r.SQL.String()), " "))
+
+			return err
+		})
 
 	insert = t.New("insert").MustParse(`
 		INSERT INTO books (id, title, created_at) VALUES
@@ -60,14 +72,14 @@ var (
 		RETURNING id;
 	`)
 
-	query = sqlt.Dest[Book](t.New("query").MustParse(`
+	query = t.New("query").MustParse(`
 		SELECT
 			{{ Scan Dest.ID "id" }}
 			{{ ScanString Dest.Title ", title" }}
 			{{ ScanTime Dest.CreatedAt ", created_at" }}
 		FROM books
-		WHERE instr(title, {{ .Search }}) > 0
-	`))
+		WHERE INSTR(title, {{ .Search }}) > 0
+	`)
 )
 
 func main() {
@@ -92,18 +104,18 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// INSERT INTO books (title, created_at) VALUES (?, ?) , (?, ?) , (?, ?) , (?, ?) RETURNING id;
+	// insert INSERT INTO books (id, title, created_at) VALUES ($1, $2, $3) , ($4, $5, $6) , ($7, $8, $9) , ($10, $11, $12) RETURNING id;
 
-	books, err := query.FetchAll(ctx, db, map[string]any{
+	books, err := sqlt.FetchAll[Book](ctx, query, db, map[string]any{
 		"Search": "Bitcoin",
 	})
 	if err != nil {
 		panic(err)
 	}
-	// SELECT id, title, created_at FROM books WHERE instr(title, ?) > 0
+	// query SELECT id , title , created_at FROM books WHERE INSTR(title, $1) > 0
 
 	fmt.Println(books)
-	// [{76b87e40-0d47-429e-8a80-563e7bf0cf13 The Bitcoin Standard 2024-07-21 22:50:37.672297 +0200 +0200} {b63ec5c4-1fd9-448a-96c6-5abc54c05aa1 Mastering Bitcoin 2024-07-21 22:50:37.672306 +0200 +0200}]
+	// [{6bde9829-324e-4b06-a39e-e76f62398b15 The Bitcoin Standard 2024-08-03 11:08:57.432134 +0200 +0200} {60eef5a3-401c-4df9-93ee-6ad00902d0a8 Mastering Bitcoin 2024-08-03 11:08:57.432155 +0200 +0200}]
 }
 ```
 
