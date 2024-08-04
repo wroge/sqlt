@@ -49,9 +49,9 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 type Raw string
 
 type Scanner struct {
-	SQL  string
 	Dest any
 	Map  func() error
+	SQL  string
 }
 
 func New(name string) *Template {
@@ -187,12 +187,12 @@ func New(name string) *Template {
 
 type Template struct {
 	text        *template.Template
-	placeholder string
-	positional  bool
 	beforeRun   func(name string, r *Runner)
 	afterRun    func(err error, name string, r *Runner) error
 	pool        *sync.Pool
+	placeholder string
 	size        int
+	positional  bool
 }
 
 func (t *Template) New(name string) *Template {
@@ -664,6 +664,7 @@ func escapeNode(s *parse.Tree, n parse.Node) {
 		if v == nil {
 			return
 		}
+
 		for _, n := range v.Nodes {
 			escapeNode(s, n)
 		}
