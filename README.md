@@ -51,6 +51,11 @@ var (
 			r.Context = context.WithValue(r.Context, startKey{}, time.Now())
 		}).
 		AfterRun(func(err error, name string, r *sqlt.Runner) error {
+			var (
+				query    = strings.Join(strings.Fields(r.SQL.String()), " ")
+				duration = time.Since(r.Context.Value(startKey{}).(time.Time))
+			)
+
 			if err != nil {
 				// ignore sql.ErrNoRows
 				if errors.Is(err, sql.ErrNoRows) {
@@ -58,13 +63,13 @@ var (
 				}
 
 				// apply error logging here
-				fmt.Println(err, name, strings.Join(strings.Fields(r.SQL.String()), " "))
+				fmt.Println(err, name, duration, query, r.Args)
 
 				return err
 			}
 
 			// apply normal logging here
-			fmt.Println(name, time.Since(r.Context.Value(startKey{}).(time.Time)), strings.Join(strings.Fields(r.SQL.String()), " "))
+			fmt.Println(name, duration, query, r.Args)
 
 			return nil
 		})
