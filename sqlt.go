@@ -186,12 +186,14 @@ func New(name string) *Template {
 }
 
 type Template struct {
-	text        *template.Template
-	placeholder string
-	positional  bool
-	afterRun    func(err error, name string, r *Runner) error
-	pool        *sync.Pool
-	size        int
+	text         *template.Template
+	placeholder  string
+	positional   bool
+	beforeRun    func(name string, r *Runner)
+	afterRun     func(err error, name string, r *Runner) error
+	pool         *sync.Pool
+	size         int
+	withDuration bool
 }
 
 func (t *Template) New(name string) *Template {
@@ -199,6 +201,7 @@ func (t *Template) New(name string) *Template {
 		text:        t.text.New(name),
 		placeholder: t.placeholder,
 		positional:  t.positional,
+		beforeRun:   t.beforeRun,
 		afterRun:    t.afterRun,
 		pool:        t.pool,
 	}
@@ -225,6 +228,18 @@ func (t *Template) Colon() *Template {
 
 func (t *Template) AtP() *Template {
 	return t.Placeholder("@p", true)
+}
+
+func (t *Template) WithDuration() *Template {
+	t.withDuration = true
+
+	return t
+}
+
+func (t *Template) BeforeRun(handle func(name string, r *Runner)) *Template {
+	t.beforeRun = handle
+
+	return t
 }
 
 func (t *Template) AfterRun(handle func(err error, name string, r *Runner) error) *Template {
@@ -257,6 +272,7 @@ func (t *Template) Parse(str string) (*Template, error) {
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
+		beforeRun:   t.beforeRun,
 		afterRun:    t.afterRun,
 		pool:        t.pool,
 	}, nil
@@ -276,6 +292,7 @@ func (t *Template) ParseFS(fsys fs.FS, patterns ...string) (*Template, error) {
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
+		beforeRun:   t.beforeRun,
 		afterRun:    t.afterRun,
 		pool:        t.pool,
 	}, nil
@@ -295,6 +312,7 @@ func (t *Template) ParseFiles(filenames ...string) (*Template, error) {
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
+		beforeRun:   t.beforeRun,
 		afterRun:    t.afterRun,
 		pool:        t.pool,
 	}, nil
@@ -314,6 +332,7 @@ func (t *Template) ParseGlob(pattern string) (*Template, error) {
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
+		beforeRun:   t.beforeRun,
 		afterRun:    t.afterRun,
 		pool:        t.pool,
 	}, nil
@@ -339,6 +358,7 @@ func (t *Template) Lookup(name string) (*Template, error) {
 		text:        text,
 		placeholder: t.placeholder,
 		positional:  t.positional,
+		beforeRun:   t.beforeRun,
 		afterRun:    t.afterRun,
 		pool:        t.pool,
 	}, nil
@@ -349,14 +369,15 @@ func (t *Template) MustLookup(name string) *Template {
 }
 
 type Runner struct {
-	Text *template.Template
-	SQL  *bytes.Buffer
-	Args []any
-	Dest []any
-	Map  []func() error
+	Context context.Context
+	Text    *template.Template
+	SQL     *bytes.Buffer
+	Args    []any
+	Dest    []any
+	Map     []func() error
 }
 
-func (t *Template) Run(dest any, use func(runner *Runner) error) error {
+func (t *Template) Run(ctx context.Context, dest any, use func(runner *Runner) error) error {
 	if t.pool == nil {
 		t.pool = &sync.Pool{
 			New: func() any {
@@ -399,11 +420,17 @@ func (t *Template) Run(dest any, use func(runner *Runner) error) error {
 
 	switch r := t.pool.Get().(type) {
 	case *Runner:
+		r.Context = ctx
+
 		r.Text.Funcs(template.FuncMap{
 			"Dest": func() any {
 				return dest
 			},
 		})
+
+		if t.beforeRun != nil {
+			t.beforeRun(t.text.Name(), r)
+		}
 
 		err := use(r)
 
@@ -438,7 +465,7 @@ func (t *Template) Exec(ctx context.Context, db DB, params any) (sql.Result, err
 		err    error
 	)
 
-	err = t.Run(nil, func(r *Runner) error {
+	err = t.Run(ctx, nil, func(r *Runner) error {
 		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
@@ -460,7 +487,7 @@ func (t *Template) Query(ctx context.Context, db DB, params any) (*sql.Rows, err
 		err  error
 	)
 
-	err = t.Run(nil, func(r *Runner) error {
+	err = t.Run(ctx, nil, func(r *Runner) error {
 		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
@@ -482,7 +509,7 @@ func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, e
 		err error
 	)
 
-	err = t.Run(nil, func(r *Runner) error {
+	err = t.Run(ctx, nil, func(r *Runner) error {
 		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
@@ -503,7 +530,7 @@ func FetchEach[T any](ctx context.Context, t *Template, db DB, params any, each 
 		err  error
 	)
 
-	err = t.Run(&dest, func(r *Runner) error {
+	err = t.Run(ctx, &dest, func(r *Runner) error {
 		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}

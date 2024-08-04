@@ -35,6 +35,8 @@ import (
 	"github.com/wroge/sqlt"
 )
 
+type startKey struct{}
+
 type Book struct {
 	ID        uuid.UUID
 	Title     string
@@ -45,6 +47,9 @@ var (
 	t = sqlt.New("db").
 		Dollar().
 		Funcs(sprig.TxtFuncMap()).
+		BeforeRun(func(name string, r *sqlt.Runner) {
+			r.Context = context.WithValue(r.Context, startKey{}, time.Now())
+		}).
 		AfterRun(func(err error, name string, r *sqlt.Runner) error {
 			if err != nil {
 				// ignore sql.ErrNoRows
@@ -59,9 +64,9 @@ var (
 			}
 
 			// apply normal logging here
-			fmt.Println(name, strings.Join(strings.Fields(r.SQL.String()), " "))
+			fmt.Println(name, time.Since(r.Context.Value(startKey{}).(time.Time)), strings.Join(strings.Fields(r.SQL.String()), " "))
 
-			return err
+			return nil
 		})
 
 	insert = t.New("insert").MustParse(`
@@ -104,7 +109,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// insert INSERT INTO books (id, title, created_at) VALUES ($1, $2, $3) , ($4, $5, $6) , ($7, $8, $9) , ($10, $11, $12) RETURNING id;
+	// insert 426.75µs INSERT INTO books (id, title, created_at) VALUES ($1, $2, $3) , ($4, $5, $6) , ($7, $8, $9) , ($10, $11, $12) RETURNING id;
 
 	books, err := sqlt.FetchAll[Book](ctx, query, db, map[string]any{
 		"Search": "Bitcoin",
@@ -112,10 +117,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// query SELECT id , title , created_at FROM books WHERE INSTR(title, $1) > 0
+	// query 137.041µs SELECT id , title , created_at FROM books WHERE INSTR(title, $1) > 0
 
 	fmt.Println(books)
-	// [{6bde9829-324e-4b06-a39e-e76f62398b15 The Bitcoin Standard 2024-08-03 11:08:57.432134 +0200 +0200} {60eef5a3-401c-4df9-93ee-6ad00902d0a8 Mastering Bitcoin 2024-08-03 11:08:57.432155 +0200 +0200}]
+	// [{ac4ceabc-0091-4d2f-85e7-1ada0069ca7e The Bitcoin Standard 2024-08-04 11:20:17.821766 +0200 +0200} {7ea05e4d-1578-4088-b00b-3dbbf2f55576 Mastering Bitcoin 2024-08-04 11:20:17.821783 +0200 +0200}]
 }
 ```
 
