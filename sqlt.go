@@ -186,14 +186,13 @@ func New(name string) *Template {
 }
 
 type Template struct {
-	text         *template.Template
-	placeholder  string
-	positional   bool
-	beforeRun    func(name string, r *Runner)
-	afterRun     func(err error, name string, r *Runner) error
-	pool         *sync.Pool
-	size         int
-	withDuration bool
+	text        *template.Template
+	placeholder string
+	positional  bool
+	beforeRun   func(name string, r *Runner)
+	afterRun    func(err error, name string, r *Runner) error
+	pool        *sync.Pool
+	size        int
 }
 
 func (t *Template) New(name string) *Template {
@@ -228,12 +227,6 @@ func (t *Template) Colon() *Template {
 
 func (t *Template) AtP() *Template {
 	return t.Placeholder("@p", true)
-}
-
-func (t *Template) WithDuration() *Template {
-	t.withDuration = true
-
-	return t
 }
 
 func (t *Template) BeforeRun(handle func(name string, r *Runner)) *Template {
