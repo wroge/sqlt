@@ -129,7 +129,7 @@ func main() {
 }
 ```
 
-## Example API using huma and sqlt
+## Example & Benchmarks
 
 [https://github.com/wroge/vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture)
 
