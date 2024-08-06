@@ -22,8 +22,8 @@ type DB interface {
 	ExecContext(ctx context.Context, str string, args ...any) (sql.Result, error)
 }
 
-// InTx executes the provided function within a database transaction.
-// It begins a transaction and ensures proper rollback or commit based on the function's result.
+// InTx executes a function within a database transaction.
+// It begins a transaction, rolling back if the function returns an error or panics, and committing otherwise.
 func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) error) (err error) {
 	var tx *sql.Tx
 
@@ -49,14 +49,14 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 // Raw represents a raw SQL string that should not be escaped.
 type Raw string
 
-// Scanner is a struct used for scanning SQL query results into a destination.
+// Scanner represents a structure for mapping SQL query results into a destination variable.
 type Scanner struct {
 	Dest any
 	Map  func() error
 	SQL  string
 }
 
-// ScanError represents an error that occurs during scanning when a destination value is nil.
+// ScanError indicates an error during scanning caused by a nil destination value.
 type ScanError struct {
 	SQL string
 }
@@ -103,7 +103,7 @@ func Scan[T any](dest *T, str string) (Scanner, error) {
 	}, nil
 }
 
-// Must ensures that the template is created without errors, panicking if an error occurs.
+// Must returns the template if no error, otherwise it panics.
 func Must(t *Template, err error) *Template {
 	if err != nil {
 		panic(err)
@@ -147,14 +147,21 @@ func New(name string) *Template {
 					},
 				}, nil
 			},
-			"ScanBytes":   Scan[[]byte],
 			"ScanString":  Scan[string],
+			"ScanBytes":   Scan[[]byte],
+			"ScanInt":     Scan[int],
+			"ScanInt8":    Scan[int8],
 			"ScanInt16":   Scan[int16],
 			"ScanInt32":   Scan[int32],
 			"ScanInt64":   Scan[int64],
+			"ScanUint":    Scan[uint],
+			"ScanUint8":   Scan[uint8],
+			"ScanUint16":  Scan[uint16],
+			"ScanUint32":  Scan[uint32],
+			"ScanUint64":  Scan[uint64],
+			"ScanBool":    Scan[bool],
 			"ScanFloat32": Scan[float32],
 			"ScanFloat64": Scan[float64],
-			"ScanBool":    Scan[bool],
 			"ScanTime":    Scan[time.Time],
 		}),
 		placeholder: "?",
@@ -163,9 +170,10 @@ func New(name string) *Template {
 	return t
 }
 
-// Template represents a SQL template with associated functions and configuration.
-// It wraps around a text/template and provides methods to parse and execute SQL
-// templates with various placeholders and positional parameters.
+// Template provides an enhanced SQL template system, extending text/template with additional features
+// for generating and executing SQL queries. It supports custom placeholders, positional parameters,
+// and pre- and post-execution hooks. Template instances can parse SQL strings, files, and patterns
+// from various sources, and manage execution contexts using pooled Runner instances for efficiency.
 type Template struct {
 	text        *template.Template
 	beforeRun   func(name string, r *Runner)
@@ -176,7 +184,7 @@ type Template struct {
 	positional  bool
 }
 
-// New creates a new SQL template with the specified name.
+// New initializes a new SQL template with the given name, inheriting the current template's settings.
 func (t *Template) New(name string) *Template {
 	return &Template{
 		text:        t.text.New(name),
@@ -188,7 +196,12 @@ func (t *Template) New(name string) *Template {
 	}
 }
 
-// Placeholder sets the placeholder and positional parameters for the Template.
+// Name returns the name of the underlying template.
+func (t *Template) Name() string {
+	return t.text.Name()
+}
+
+// Placeholder configures the template to use a specified placeholder string and positional parameter mode.
 func (t *Template) Placeholder(placeholder string, positional bool) *Template {
 	t.placeholder = placeholder
 	t.positional = positional
@@ -237,7 +250,7 @@ func (t *Template) Option(opt ...string) *Template {
 	return t
 }
 
-// Parse parses the given string into the Template.
+// Parse parses a SQL template from the provided string and returns the Template.
 func (t *Template) Parse(str string) (*Template, error) {
 	text, err := t.text.Parse(str)
 	if err != nil {
@@ -254,7 +267,7 @@ func (t *Template) Parse(str string) (*Template, error) {
 	}, nil
 }
 
-// MustParse ensures that the string is parsed into the Template successfully or panics if there's an error.
+// MustParse parses the string into the Template and panics if an error occurs.
 func (t *Template) MustParse(str string) *Template {
 	return Must(t.Parse(str))
 }
@@ -325,14 +338,14 @@ func (t *Template) MustParseGlob(pattern string) *Template {
 	return Must(t.ParseGlob(pattern))
 }
 
-// Funcs adds the specified functions to the Template.
+// Funcs registers custom functions to the template, extending its capabilities.
 func (t *Template) Funcs(fm template.FuncMap) *Template {
 	t.text.Funcs(fm)
 
 	return t
 }
 
-// Lookup finds a template with the specified name.
+// Lookup retrieves a template by its name, returning an error if the template is not found.
 func (t *Template) Lookup(name string) (*Template, error) {
 	text := t.text.Lookup(name)
 	if text == nil {
@@ -366,12 +379,10 @@ type Runner struct {
 	Map     []func() error
 }
 
-// Run executes the Template with the given context and parameters. It manages the
-// creation and pooling of Runner instances to efficiently reuse resources. Before
-// executing the template, it sets up the destination value and optional hooks for
-// before and after execution. The Runner processes the SQL template with the provided
-// parameters, maps the arguments and destinations, and resets itself for reuse after
-// the execution.
+// Run executes the SQL template with the provided context and parameters.
+// It manages Runner instances from a pool for efficient resource reuse, and processes
+// the template, mapping arguments and destinations. Optional hooks can be set for pre
+// and post-execution. The Runner resets itself for reuse after execution.
 func (t *Template) Run(ctx context.Context, dest any, use func(runner *Runner) error) error {
 	if t.pool == nil {
 		t.pool = &sync.Pool{
@@ -520,12 +531,10 @@ func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, e
 	return row, err
 }
 
-// FetchEach retrieves each row of the query result and calls the provided function
-// with the row value. It uses the Template to generate the SQL query, executes it
-// against the given database, and processes each resulting row. The provided function
-// determines whether to continue fetching more rows (return true) or stop (return false).
-// If any error occurs during the process, it is returned. This function is useful for
-// streaming results or processing large datasets without loading them all into memory at once.
+// FetchEach processes each row of a query result with a provided function.
+// It uses the Template to generate the SQL query and processes each row, invoking the
+// provided function to decide whether to continue or stop. This method is ideal for
+// streaming results or handling large datasets without loading all data into memory.
 // Note: `Dest` must not be a pointer to a struct.
 func FetchEach[Dest any](ctx context.Context, t *Template, db DB, params any, each func(value Dest) (bool, error)) error {
 	var (
@@ -688,6 +697,7 @@ func escapeTree(s *parse.Tree) *parse.Tree {
 	return s
 }
 
+// escapeNode traverses and modifies a parse.Node to add necessary escaping logic for template processing.
 func escapeNode(s *parse.Tree, n parse.Node) {
 	switch v := n.(type) {
 	case *parse.ActionNode:
