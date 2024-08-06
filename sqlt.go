@@ -14,17 +14,18 @@ import (
 	"time"
 )
 
+// DB defines the interface for database operations.
+// It includes methods for querying and executing SQL commands with context support.
 type DB interface {
 	QueryContext(ctx context.Context, str string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, str string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, str string, args ...any) (sql.Result, error)
 }
 
-func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) error) error {
-	var (
-		tx  *sql.Tx
-		err error
-	)
+// InTx executes the provided function within a database transaction.
+// It begins a transaction and ensures proper rollback or commit based on the function's result.
+func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) error) (err error) {
+	var tx *sql.Tx
 
 	tx, err = db.BeginTx(ctx, opts)
 	if err != nil {
@@ -45,22 +46,27 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 	return do(tx)
 }
 
+// Raw represents a raw SQL string that should not be escaped.
 type Raw string
 
+// Scanner is a struct used for scanning SQL query results into a destination.
 type Scanner struct {
 	Dest any
 	Map  func() error
 	SQL  string
 }
 
+// ScanError represents an error that occurs during scanning when a destination value is nil.
 type ScanError struct {
 	SQL string
 }
 
+// Error returns the error message for a ScanError.
 func (e ScanError) Error() string {
 	return fmt.Sprintf("Dest value at '%s' is <nil>", e.SQL)
 }
 
+// ScanJSON creates a Scanner for scanning JSON results into the specified destination.
 func ScanJSON[T any](dest *T, str string) (Scanner, error) {
 	if dest == nil {
 		return Scanner{}, ScanError{SQL: str}
@@ -85,6 +91,7 @@ func ScanJSON[T any](dest *T, str string) (Scanner, error) {
 	}, nil
 }
 
+// Scan creates a Scanner for scanning results into the specified destination.
 func Scan[T any](dest *T, str string) (Scanner, error) {
 	if dest == nil {
 		return Scanner{}, ScanError{SQL: str}
@@ -96,6 +103,7 @@ func Scan[T any](dest *T, str string) (Scanner, error) {
 	}, nil
 }
 
+// Must ensures that the template is created without errors, panicking if an error occurs.
 func Must(t *Template, err error) *Template {
 	if err != nil {
 		panic(err)
@@ -518,8 +526,7 @@ func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, e
 // determines whether to continue fetching more rows (return true) or stop (return false).
 // If any error occurs during the process, it is returned. This function is useful for
 // streaming results or processing large datasets without loading them all into memory at once.
-// Note: `Dest` must not be a pointer to a struct. It should be a value type or a pointer
-// to a basic type (e.g., *int, *string).
+// Note: `Dest` must not be a pointer to a struct.
 func FetchEach[Dest any](ctx context.Context, t *Template, db DB, params any, each func(value Dest) (bool, error)) error {
 	var (
 		dest Dest
@@ -586,8 +593,7 @@ func FetchEach[Dest any](ctx context.Context, t *Template, db DB, params any, ea
 // FetchAll retrieves all rows of the query result into a slice. It uses the Template to
 // generate the SQL query, executes it against the given database, and collects each
 // resulting row into a slice. If any error occurs during the process, it is returned.
-// Note: `Dest` must not be a pointer to a struct. It should be a value type or a pointer
-// to a basic type (e.g., *int, *string).
+// Note: `Dest` must not be a pointer to a struct.
 func FetchAll[Dest any](ctx context.Context, t *Template, db DB, params any) ([]Dest, error) {
 	var (
 		values []Dest
@@ -606,8 +612,7 @@ func FetchAll[Dest any](ctx context.Context, t *Template, db DB, params any) ([]
 // FetchFirst retrieves the first row of the query result. It uses the Template to
 // generate the SQL query, executes it against the given database, and returns the
 // first resulting row. If any error occurs during the process, it is returned.
-// Note: `Dest` must not be a pointer to a struct. It should be a value type or a pointer
-// to a basic type (e.g., *int, *string).
+// Note: `Dest` must not be a pointer to a struct.
 func FetchFirst[Dest any](ctx context.Context, t *Template, db DB, params any) (Dest, error) {
 	var (
 		val Dest
@@ -632,8 +637,7 @@ var ErrTooManyRows = fmt.Errorf("sqlt: too many rows")
 // than one row is found. It uses the Template to generate the SQL query, executes it
 // against the given database, and ensures only one resulting row is returned. If no
 // rows are found or more than one row is found, it returns an error.
-// Note: `Dest` must not be a pointer to a struct. It should be a value type or a pointer
-// to a basic type (e.g., *int, *string).
+// Note: `Dest` must not be a pointer to a struct.
 func FetchOne[Dest any](ctx context.Context, t *Template, db DB, params any) (Dest, error) {
 	var (
 		val Dest
