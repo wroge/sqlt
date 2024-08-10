@@ -133,6 +133,19 @@ func main() {
 
 [https://github.com/wroge/vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture)
 
+```
+go test -bench . -benchmem .
+goos: darwin
+goarch: arm64
+pkg: github.com/wroge/sqlt
+BenchmarkSqltFirst-12              27699             87936 ns/op            9742 B/op         90 allocs/op
+BenchmarkSquirrelFirst-12          32630             89447 ns/op           11110 B/op         98 allocs/op
+BenchmarkSqltAll-12                27032             85363 ns/op           10941 B/op        101 allocs/op
+BenchmarkSquirrelAll-12            32100             89801 ns/op           12250 B/op        107 allocs/op
+PASS
+ok      github.com/wroge/sqlt   12.359s
+```
+
 ## Inspiration
 
 - [VauntDev/tqla](https://github.com/VauntDev/tqla)
