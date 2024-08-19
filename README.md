@@ -26,7 +26,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/Masterminds/sprig/v3"
@@ -47,29 +46,26 @@ var (
 	t = sqlt.New("db").
 		Dollar().
 		Funcs(sprig.TxtFuncMap()).
-		BeforeRun(func(name string, r *sqlt.Runner) {
-			r.Context = context.WithValue(r.Context, startKey{}, time.Now())
+		BeforeRun(func(op sqlt.Operation, runner *sqlt.Runner) {
+			runner.Context = context.WithValue(runner.Context, startKey{}, time.Now())
 		}).
-		AfterRun(func(err error, name string, r *sqlt.Runner) error {
-			var (
-				query    = strings.Join(strings.Fields(r.SQL.String()), " ")
-				duration = time.Since(r.Context.Value(startKey{}).(time.Time))
-			)
+		AfterRun(func(err error, op sqlt.Operation, runner *sqlt.Runner) error {
+			var duration = time.Since(runner.Context.Value(startKey{}).(time.Time))
 
 			if err != nil {
 				// ignore sql.ErrNoRows
-				if errors.Is(err, sql.ErrNoRows) {
+				if op == sqlt.FetchAllOperation && errors.Is(err, sql.ErrNoRows) {
 					return nil
 				}
 
 				// apply error logging here
-				fmt.Println(err, name, duration, query, r.Args)
+				fmt.Println(err, runner.Text.Name(), duration, runner.SQL, runner.Args)
 
 				return err
 			}
 
 			// apply normal logging here
-			fmt.Println(name, duration, query, r.Args)
+			fmt.Println(runner.Text.Name(), duration, runner.SQL, runner.Args)
 
 			return nil
 		})

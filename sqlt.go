@@ -175,8 +175,8 @@ func New(name string) *Template {
 // from various sources, and manage execution contexts using pooled Runner instances for efficiency.
 type Template struct {
 	text        *template.Template
-	beforeRun   func(name string, r *Runner)
-	afterRun    func(err error, name string, r *Runner) error
+	beforeRun   func(op Operation, runner *Runner)
+	afterRun    func(err error, op Operation, runner *Runner) error
 	pool        *sync.Pool
 	placeholder string
 	size        int
@@ -229,14 +229,14 @@ func (t *Template) AtP() *Template {
 }
 
 // BeforeRun sets a function to be called before running the Template.
-func (t *Template) BeforeRun(handle func(name string, r *Runner)) *Template {
+func (t *Template) BeforeRun(handle func(op Operation, runner *Runner)) *Template {
 	t.beforeRun = handle
 
 	return t
 }
 
 // AfterRun sets a function to be called after running the Template.
-func (t *Template) AfterRun(handle func(err error, name string, r *Runner) error) *Template {
+func (t *Template) AfterRun(handle func(err error, op Operation, runner *Runner) error) *Template {
 	t.afterRun = handle
 
 	return t
@@ -418,7 +418,7 @@ func (s *SQL) Reset() {
 // It manages Runner instances from a pool for efficient resource reuse, and processes
 // the template, mapping arguments and destinations. Optional hooks can be set for pre
 // and post-execution. The Runner resets itself for reuse after execution.
-func (t *Template) Run(ctx context.Context, use func(runner *Runner) error) error {
+func (t *Template) Run(ctx context.Context, op Operation, use func(runner *Runner) error) error {
 	if t.pool == nil {
 		t.pool = &sync.Pool{
 			New: func() any {
@@ -467,13 +467,13 @@ func (t *Template) Run(ctx context.Context, use func(runner *Runner) error) erro
 		r.Context = ctx
 
 		if t.beforeRun != nil {
-			t.beforeRun(t.text.Name(), r)
+			t.beforeRun(op, r)
 		}
 
 		err := use(r)
 
 		if t.afterRun != nil {
-			err = t.afterRun(err, t.text.Name(), r)
+			err = t.afterRun(err, op, r)
 		}
 
 		go func() {
@@ -497,6 +497,17 @@ func (t *Template) Run(ctx context.Context, use func(runner *Runner) error) erro
 	}
 }
 
+type Operation string
+
+const (
+	ExecOperation       Operation = "Exec"
+	QueryRowOperation   Operation = "QueryRow"
+	QueryOperation      Operation = "Query"
+	FetchAllOperation   Operation = "FetchAll"
+	FetchOneOperation   Operation = "FetchOne"
+	FetchFirstOperation Operation = "FetchFirst"
+)
+
 // Exec executes a SQL command using the Template and the given context and database.
 func (t *Template) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
 	var (
@@ -504,7 +515,7 @@ func (t *Template) Exec(ctx context.Context, db DB, params any) (sql.Result, err
 		err    error
 	)
 
-	err = t.Run(ctx, func(r *Runner) error {
+	err = t.Run(ctx, ExecOperation, func(r *Runner) error {
 		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
@@ -527,7 +538,7 @@ func (t *Template) Query(ctx context.Context, db DB, params any) (*sql.Rows, err
 		err  error
 	)
 
-	err = t.Run(ctx, func(r *Runner) error {
+	err = t.Run(ctx, QueryOperation, func(r *Runner) error {
 		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
@@ -550,7 +561,7 @@ func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, e
 		err error
 	)
 
-	err = t.Run(ctx, func(r *Runner) error {
+	err = t.Run(ctx, QueryRowOperation, func(r *Runner) error {
 		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
@@ -574,7 +585,7 @@ func FetchAll[Dest any](ctx context.Context, t *Template, db DB, params any) ([]
 		err    error
 	)
 
-	err = t.Run(ctx, func(r *Runner) error {
+	err = t.Run(ctx, FetchAllOperation, func(r *Runner) error {
 		var rows *sql.Rows
 
 		r.Value = &dest
@@ -642,7 +653,7 @@ func FetchOne[Dest any](ctx context.Context, t *Template, db DB, params any) (De
 		err  error
 	)
 
-	err = t.Run(ctx, func(r *Runner) error {
+	err = t.Run(ctx, FetchOneOperation, func(r *Runner) error {
 		var rows *sql.Rows
 
 		r.Value = &dest
@@ -708,7 +719,7 @@ func FetchFirst[Dest any](ctx context.Context, t *Template, db DB, params any) (
 		err  error
 	)
 
-	err = t.Run(ctx, func(r *Runner) error {
+	err = t.Run(ctx, FetchFirstOperation, func(r *Runner) error {
 		r.Value = &dest
 
 		if err = r.Text.Execute(r.SQL, params); err != nil {
