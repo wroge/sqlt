@@ -80,9 +80,9 @@ var (
 
 	query = t.New("query").MustParse(`
 		SELECT
-			{{ Scan Dest.ID "id" }}
-			{{ ScanString Dest.Title ", title" }}
-			{{ ScanTime Dest.CreatedAt ", created_at" }}
+			{{ Scan Dest.ID }} id,
+			{{ ScanString Dest.Title }} title,
+			{{ ScanTime Dest.CreatedAt }} created_at
 		FROM books
 		WHERE INSTR(title, {{ .Search }}) > 0
 	`)

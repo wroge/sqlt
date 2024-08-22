@@ -42,7 +42,7 @@ var (
 func TestStuff(t *testing.T) {
 	tests := []testCase{
 		{
-			tpl:            sqlt.New("test-1").MustParse(`SELECT {{ index . 0 }} {{ ScanInt64 Dest.Int64 "AS int64" }}, {{ index . 1 }} {{ ScanString Dest.String "AS string" }}`),
+			tpl:            sqlt.New("test-1").MustParse(`SELECT {{ index . 0 }} {{ ScanInt64 Dest.Int64 }} AS int64, {{ index . 1 }} {{ ScanString Dest.String }} AS string`),
 			params:         []any{100, "hundred"},
 			mockRows:       sqlmock.NewRows([]string{"int64", "string"}).AddRow(100, "hundred"),
 			expectedSQL:    `SELECT \? AS int64, \? AS string`,
@@ -52,7 +52,7 @@ func TestStuff(t *testing.T) {
 			testFunc:       testFetchOne[Result],
 		},
 		{
-			tpl:            sqlt.New("test-2").MustParse(`SELECT {{ index . 0 }} {{ ScanInt64 Dest.Int64 "AS int64" }}, {{ index . 1 }} {{ ScanString Dest.String "AS string" }}`),
+			tpl:            sqlt.New("test-2").MustParse(`SELECT {{ index . 0 }} {{ ScanInt64 Dest.Int64 }} AS int64, {{ index . 1 }} {{ ScanString Dest.String }} AS string`),
 			params:         []any{100, "hundred"},
 			mockRows:       sqlmock.NewRows([]string{"int64", "string"}).AddRow(100, "hundred"),
 			expectedSQL:    `SELECT \? AS int64, \? AS string`,
@@ -62,7 +62,7 @@ func TestStuff(t *testing.T) {
 			testFunc:       testFetchFirst[Result],
 		},
 		{
-			tpl:            sqlt.New("test-3").MustParse(`SELECT {{ index . 0 }} {{ ScanTime Dest.Time "AS time" }}, {{ index . 1 }} {{ ScanJSON Dest.JSON "AS json" }}`),
+			tpl:            sqlt.New("test-3").MustParse(`SELECT {{ index . 0 }} {{ ScanTime Dest.Time }} AS time, {{ index . 1 }} {{ ScanJSON Dest.JSON }} AS json`),
 			params:         []any{date, []byte(`{"hundred": 100}`)},
 			mockRows:       sqlmock.NewRows([]string{"time", "json"}).AddRow(date, []byte(`{"hundred": 100}`)),
 			expectedSQL:    `SELECT \? AS time, \? AS json`,
@@ -72,7 +72,7 @@ func TestStuff(t *testing.T) {
 			testFunc:       testFetchAll[Result],
 		},
 		{
-			tpl:            sqlt.New("test-4").MustParse(`SELECT {{ index . 00 }} {{ ScanInt Dest.Int "AS int" }}`),
+			tpl:            sqlt.New("test-4").MustParse(`SELECT {{ index . 00 }} {{ ScanInt Dest.Int }} AS int`),
 			params:         []any{42},
 			mockRows:       sqlmock.NewRows([]string{"int"}).AddRow(42),
 			expectedSQL:    `SELECT \? AS int`,
@@ -82,7 +82,7 @@ func TestStuff(t *testing.T) {
 			testFunc:       testFetchOne[Result],
 		},
 		{
-			tpl:            sqlt.New("test-5").MustParse(`SELECT {{ index . 0 }} {{ ScanString Dest.String "AS string" }}, {{ index . 1 }} {{ ScanBool Dest.Bool "AS bool" }}`),
+			tpl:            sqlt.New("test-5").MustParse(`SELECT {{ index . 0 }} {{ ScanString Dest.String }} AS string, {{ index . 1 }} {{ ScanBool Dest.Bool }} AS bool`),
 			params:         []any{"example", true},
 			mockRows:       sqlmock.NewRows([]string{"string", "bool"}).AddRow("example", true),
 			expectedSQL:    `SELECT \? AS string, \? AS bool`,
@@ -92,7 +92,7 @@ func TestStuff(t *testing.T) {
 			testFunc:       testFetchFirst[Result],
 		},
 		{
-			tpl:            sqlt.New("test-6").MustParse(`SELECT {{ index . 0 }} {{ ScanFloat64 Dest.Float64 "AS float64" }}, {{ index . 1 }} {{ ScanJSON Dest.JSON "AS json" }}`),
+			tpl:            sqlt.New("test-6").MustParse(`SELECT {{ index . 0 }} {{ ScanFloat64 Dest.Float64 }} AS float64, {{ index . 1 }} {{ ScanJSON Dest.JSON }} AS json`),
 			params:         []any{3.14, []byte(`{"pi": 3.14}`)},
 			mockRows:       sqlmock.NewRows([]string{"float64", "json"}).AddRow(3.14, []byte(`{"pi": 3.14}`)),
 			expectedSQL:    `SELECT \? AS float64, \? AS json`,

@@ -52,29 +52,14 @@ type Raw string
 type Scanner struct {
 	Dest any
 	Map  func() error
-	SQL  string
-}
-
-// ScanError indicates an error during scanning caused by a nil destination value.
-type ScanError struct {
-	SQL string
-}
-
-// Error returns the error message for a ScanError.
-func (e ScanError) Error() string {
-	return fmt.Sprintf("Dest value at '%s' is <nil>", e.SQL)
 }
 
 // ScanJSON creates a Scanner for scanning JSON results into the specified destination.
-func ScanJSON[T any](dest *T, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, ScanError{SQL: str}
-	}
-
+func ScanJSON[T any](dest *T) (Scanner, error) {
 	var data []byte
 
 	return Scanner{
-		SQL:  str,
+
 		Dest: &data,
 		Map: func() error {
 			var t T
@@ -91,13 +76,8 @@ func ScanJSON[T any](dest *T, str string) (Scanner, error) {
 }
 
 // Scan creates a Scanner for scanning results into the specified destination.
-func Scan[T any](dest *T, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, ScanError{SQL: str}
-	}
-
+func Scan[T any](dest *T) (Scanner, error) {
 	return Scanner{
-		SQL:  str,
 		Dest: dest,
 	}, nil
 }
@@ -121,25 +101,16 @@ func New(name string) *Template {
 			"Raw": func(str string) Raw {
 				return Raw(str)
 			},
-			"Scan": func(dest sql.Scanner, str string) (Scanner, error) {
-				if dest == nil {
-					return Scanner{}, ScanError{SQL: str}
-				}
-
+			"Scan": func(dest sql.Scanner) (Scanner, error) {
 				return Scanner{
-					SQL:  str,
 					Dest: dest,
 				}, nil
 			},
-			"ScanJSON": func(dest json.Unmarshaler, str string) (Scanner, error) {
-				if dest == nil {
-					return Scanner{}, ScanError{SQL: str}
-				}
-
+			"ScanJSON": func(dest json.Unmarshaler) (Scanner, error) {
 				var data []byte
 
 				return Scanner{
-					SQL:  str,
+
 					Dest: &data,
 					Map: func() error {
 						return json.Unmarshal(data, dest)
@@ -442,7 +413,7 @@ func (t *Template) Run(ctx context.Context, op Operation, use func(runner *Runne
 							r.Dest = append(r.Dest, a.Dest)
 							r.Map = append(r.Map, a.Map)
 
-							return a.SQL
+							return ""
 						case Raw:
 							return string(a)
 						default:
