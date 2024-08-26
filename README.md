@@ -70,6 +70,8 @@ var (
 			return nil
 		})
 
+		// INSERT INTO books (id, title, created_at) VALUES
+
 	insert = t.New("insert").MustParse(`
 		INSERT INTO books (id, title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
@@ -80,9 +82,9 @@ var (
 
 	query = t.New("query").MustParse(`
 		SELECT
-			{{ Scan Dest.ID }} id,
-			{{ ScanString Dest.Title }} title,
-			{{ ScanTime Dest.CreatedAt }} created_at
+			{{ Scan Dest.ID "id" }}
+			{{ ScanString Dest.Title ", title" }}
+			{{ ScanTime Dest.CreatedAt ", created_at" }}
 		FROM books
 		WHERE INSTR(title, {{ .Search }}) > 0
 	`)

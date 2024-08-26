@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"strconv"
+	"strings"
 	"sync"
 	"text/template"
 	"text/template/parse"
@@ -50,16 +51,17 @@ type Raw string
 
 // Scanner represents a structure for mapping SQL query results into a destination variable.
 type Scanner struct {
+	SQL  string
 	Dest any
 	Map  func() error
 }
 
 // ScanJSON creates a Scanner for scanning JSON results into the specified destination.
-func ScanJSON[T any](dest *T) (Scanner, error) {
+func ScanJSON[T any](dest *T, text ...string) (Scanner, error) {
 	var data []byte
 
 	return Scanner{
-
+		SQL:  strings.Join(text, " "),
 		Dest: &data,
 		Map: func() error {
 			var t T
@@ -76,8 +78,9 @@ func ScanJSON[T any](dest *T) (Scanner, error) {
 }
 
 // Scan creates a Scanner for scanning results into the specified destination.
-func Scan[T any](dest *T) (Scanner, error) {
+func Scan[T any](dest *T, text ...string) (Scanner, error) {
 	return Scanner{
+		SQL:  strings.Join(text, " "),
 		Dest: dest,
 	}, nil
 }
@@ -101,16 +104,17 @@ func New(name string) *Template {
 			"Raw": func(str string) Raw {
 				return Raw(str)
 			},
-			"Scan": func(dest sql.Scanner) (Scanner, error) {
+			"Scan": func(dest sql.Scanner, text ...string) (Scanner, error) {
 				return Scanner{
+					SQL:  strings.Join(text, " "),
 					Dest: dest,
 				}, nil
 			},
-			"ScanJSON": func(dest json.Unmarshaler) (Scanner, error) {
+			"ScanJSON": func(dest json.Unmarshaler, text ...string) (Scanner, error) {
 				var data []byte
 
 				return Scanner{
-
+					SQL:  strings.Join(text, " "),
 					Dest: &data,
 					Map: func() error {
 						return json.Unmarshal(data, dest)
@@ -413,7 +417,7 @@ func (t *Template) Run(ctx context.Context, op Operation, use func(runner *Runne
 							r.Dest = append(r.Dest, a.Dest)
 							r.Map = append(r.Map, a.Map)
 
-							return ""
+							return a.SQL
 						case Raw:
 							return string(a)
 						default:
