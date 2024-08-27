@@ -130,50 +130,6 @@ func equal(a, b interface{}) bool {
 	return reflect.DeepEqual(a, b)
 }
 
-func BenchmarkSquirrelFirst(b *testing.B) {
-	sb := squirrel.Select("int64", "string").From("results").PlaceholderFormat(squirrel.Dollar)
-
-	benchmarkFirst(b, func(db *sql.DB, param any) (Result, error) {
-		query := sb
-
-		if param != nil {
-			query = query.Where("test = ?", param)
-		}
-
-		var res Result
-
-		err := query.RunWith(db).ScanContext(context.Background(), &res.Int64, &res.String)
-
-		return res, err
-	})
-}
-
-func benchmarkFirst(b *testing.B, do func(db *sql.DB, param any) (Result, error)) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		b.Fatalf("failed to open sqlmock database: %s", err)
-	}
-
-	defer db.Close()
-
-	b.ResetTimer()
-
-	for range b.N {
-		mock.ExpectQuery(`SELECT int64, string FROM results WHERE test = \$1`).WithArgs("value").
-			WillReturnRows(
-				sqlmock.NewRows([]string{"int64", "string"}).AddRow(100, "hundred"))
-
-		res, err := do(db, "value")
-		if err != nil {
-			b.Fatal(err)
-		}
-
-		if res.Int64 != 100 || res.String != "hundred" {
-			b.Fail()
-		}
-	}
-}
-
 func BenchmarkSqltAll(b *testing.B) {
 	t := sqlt.New("first").Dollar().MustParse(`
 		SELECT {{ ScanInt64 Dest.Int64 "int64" }}, {{ ScanString Dest.String "string" }} FROM results WHERE test = {{ . }}
