@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"strconv"
@@ -56,8 +57,14 @@ type Scanner struct {
 	Map  func() error
 }
 
+var ErrNilDest = errors.New("sqlt: dest is nil")
+
 // ScanJSON creates a Scanner for scanning JSON results into the specified destination.
 func ScanJSON[T any](dest *T, text ...string) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("%w at %s", ErrNilDest, strings.Join(text, " "))
+	}
+
 	var data []byte
 
 	return Scanner{
@@ -79,6 +86,10 @@ func ScanJSON[T any](dest *T, text ...string) (Scanner, error) {
 
 // Scan creates a Scanner for scanning results into the specified destination.
 func Scan[T any](dest *T, text ...string) (Scanner, error) {
+	if dest == nil {
+		return Scanner{}, fmt.Errorf("%w at %s", ErrNilDest, strings.Join(text, " "))
+	}
+
 	return Scanner{
 		SQL:  strings.Join(text, " "),
 		Dest: dest,
@@ -150,8 +161,8 @@ func New(name string) *Template {
 // from various sources, and manage execution contexts using pooled Runner instances for efficiency.
 type Template struct {
 	text        *template.Template
-	beforeRun   func(op Operation, runner *Runner)
-	afterRun    func(err error, op Operation, runner *Runner) error
+	beforeRun   func(runner *Runner)
+	afterRun    func(err error, runner *Runner) error
 	pool        *sync.Pool
 	placeholder string
 	size        int
@@ -204,14 +215,14 @@ func (t *Template) AtP() *Template {
 }
 
 // BeforeRun sets a function to be called before running the Template.
-func (t *Template) BeforeRun(handle func(op Operation, runner *Runner)) *Template {
+func (t *Template) BeforeRun(handle func(runner *Runner)) *Template {
 	t.beforeRun = handle
 
 	return t
 }
 
 // AfterRun sets a function to be called after running the Template.
-func (t *Template) AfterRun(handle func(err error, op Operation, runner *Runner) error) *Template {
+func (t *Template) AfterRun(handle func(err error, runner *Runner) error) *Template {
 	t.afterRun = handle
 
 	return t
@@ -393,7 +404,7 @@ func (s *SQL) Reset() {
 // It manages Runner instances from a pool for efficient resource reuse, and processes
 // the template, mapping arguments and destinations. Optional hooks can be set for pre
 // and post-execution. The Runner resets itself for reuse after execution.
-func (t *Template) Run(ctx context.Context, op Operation, use func(runner *Runner) error) error {
+func (t *Template) Run(ctx context.Context, use func(runner *Runner) error) error {
 	if t.pool == nil {
 		t.pool = &sync.Pool{
 			New: func() any {
@@ -442,13 +453,13 @@ func (t *Template) Run(ctx context.Context, op Operation, use func(runner *Runne
 		r.Context = ctx
 
 		if t.beforeRun != nil {
-			t.beforeRun(op, r)
+			t.beforeRun(r)
 		}
 
 		err := use(r)
 
 		if t.afterRun != nil {
-			err = t.afterRun(err, op, r)
+			err = t.afterRun(err, r)
 		}
 
 		go func() {
@@ -472,17 +483,6 @@ func (t *Template) Run(ctx context.Context, op Operation, use func(runner *Runne
 	}
 }
 
-type Operation string
-
-const (
-	ExecOperation       Operation = "Exec"
-	QueryRowOperation   Operation = "QueryRow"
-	QueryOperation      Operation = "Query"
-	FetchAllOperation   Operation = "FetchAll"
-	FetchOneOperation   Operation = "FetchOne"
-	FetchFirstOperation Operation = "FetchFirst"
-)
-
 // Exec executes a SQL command using the Template and the given context and database.
 func (t *Template) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
 	var (
@@ -490,7 +490,7 @@ func (t *Template) Exec(ctx context.Context, db DB, params any) (sql.Result, err
 		err    error
 	)
 
-	err = t.Run(ctx, ExecOperation, func(r *Runner) error {
+	err = t.Run(ctx, func(r *Runner) error {
 		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
@@ -513,7 +513,7 @@ func (t *Template) Query(ctx context.Context, db DB, params any) (*sql.Rows, err
 		err  error
 	)
 
-	err = t.Run(ctx, QueryOperation, func(r *Runner) error {
+	err = t.Run(ctx, func(r *Runner) error {
 		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
@@ -536,7 +536,7 @@ func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, e
 		err error
 	)
 
-	err = t.Run(ctx, QueryRowOperation, func(r *Runner) error {
+	err = t.Run(ctx, func(r *Runner) error {
 		if err = r.Text.Execute(r.SQL, params); err != nil {
 			return err
 		}
@@ -560,7 +560,7 @@ func FetchAll[Dest any](ctx context.Context, t *Template, db DB, params any) ([]
 		err    error
 	)
 
-	err = t.Run(ctx, FetchAllOperation, func(r *Runner) error {
+	err = t.Run(ctx, func(r *Runner) error {
 		var rows *sql.Rows
 
 		r.Value = &dest
@@ -575,6 +575,10 @@ func FetchAll[Dest any](ctx context.Context, t *Template, db DB, params any) ([]
 
 		rows, err = db.QueryContext(ctx, r.SQL.String(), r.Args...)
 		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+
 			return err
 		}
 
@@ -628,7 +632,7 @@ func FetchOne[Dest any](ctx context.Context, t *Template, db DB, params any) (De
 		err  error
 	)
 
-	err = t.Run(ctx, FetchOneOperation, func(r *Runner) error {
+	err = t.Run(ctx, func(r *Runner) error {
 		var rows *sql.Rows
 
 		r.Value = &dest
@@ -676,47 +680,6 @@ func FetchOne[Dest any](ctx context.Context, t *Template, db DB, params any) (De
 
 		if err = rows.Close(); err != nil {
 			return err
-		}
-
-		return nil
-	})
-
-	return dest, err
-}
-
-// FetchFirst retrieves the first row of the query result. It uses the Template to
-// generate the SQL query, executes it against the given database, and returns the
-// first resulting row. If any error occurs during the process, it is returned.
-// Note: `Dest` must not be a pointer to a struct.
-func FetchFirst[Dest any](ctx context.Context, t *Template, db DB, params any) (Dest, error) {
-	var (
-		dest Dest
-		err  error
-	)
-
-	err = t.Run(ctx, FetchFirstOperation, func(r *Runner) error {
-		r.Value = &dest
-
-		if err = r.Text.Execute(r.SQL, params); err != nil {
-			return err
-		}
-
-		if len(r.Dest) == 0 {
-			r.Dest = append(r.Dest, &dest)
-		}
-
-		if err = db.QueryRowContext(ctx, r.SQL.String(), r.Args...).Scan(r.Dest...); err != nil {
-			return err
-		}
-
-		for _, m := range r.Map {
-			if m == nil {
-				continue
-			}
-
-			if err = m(); err != nil {
-				return err
-			}
 		}
 
 		return nil

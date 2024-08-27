@@ -24,7 +24,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -46,18 +45,13 @@ var (
 	t = sqlt.New("db").
 		Dollar().
 		Funcs(sprig.TxtFuncMap()).
-		BeforeRun(func(op sqlt.Operation, runner *sqlt.Runner) {
+		BeforeRun(func(runner *sqlt.Runner) {
 			runner.Context = context.WithValue(runner.Context, startKey{}, time.Now())
 		}).
-		AfterRun(func(err error, op sqlt.Operation, runner *sqlt.Runner) error {
+		AfterRun(func(err error, runner *sqlt.Runner) error {
 			var duration = time.Since(runner.Context.Value(startKey{}).(time.Time))
 
 			if err != nil {
-				// ignore sql.ErrNoRows
-				if op == sqlt.FetchAllOperation && errors.Is(err, sql.ErrNoRows) {
-					return nil
-				}
-
 				// apply error logging here
 				fmt.Println(err, runner.Text.Name(), duration, runner.SQL, runner.Args)
 

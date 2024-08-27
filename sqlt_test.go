@@ -52,16 +52,6 @@ func TestStuff(t *testing.T) {
 			testFunc:       testFetchOne[Result],
 		},
 		{
-			tpl:            sqlt.New("test-2").MustParse(`SELECT {{ index . 0 }} {{ ScanInt64 Dest.Int64 }} AS int64, {{ index . 1 }} {{ ScanString Dest.String }} AS string`),
-			params:         []any{100, "hundred"},
-			mockRows:       sqlmock.NewRows([]string{"int64", "string"}).AddRow(100, "hundred"),
-			expectedSQL:    `SELECT \? AS int64, \? AS string`,
-			expectedArgs:   []driver.Value{100, "hundred"},
-			expectedResult: Result{Int64: 100, String: "hundred"},
-			expectError:    false,
-			testFunc:       testFetchFirst[Result],
-		},
-		{
 			tpl:            sqlt.New("test-3").MustParse(`SELECT {{ index . 0 }} {{ ScanTime Dest.Time }} AS time, {{ index . 1 }} {{ ScanJSON Dest.JSON }} AS json`),
 			params:         []any{date, []byte(`{"hundred": 100}`)},
 			mockRows:       sqlmock.NewRows([]string{"time", "json"}).AddRow(date, []byte(`{"hundred": 100}`)),
@@ -80,16 +70,6 @@ func TestStuff(t *testing.T) {
 			expectedResult: Result{Int: 42},
 			expectError:    false,
 			testFunc:       testFetchOne[Result],
-		},
-		{
-			tpl:            sqlt.New("test-5").MustParse(`SELECT {{ index . 0 }} {{ ScanString Dest.String }} AS string, {{ index . 1 }} {{ ScanBool Dest.Bool }} AS bool`),
-			params:         []any{"example", true},
-			mockRows:       sqlmock.NewRows([]string{"string", "bool"}).AddRow("example", true),
-			expectedSQL:    `SELECT \? AS string, \? AS bool`,
-			expectedArgs:   []driver.Value{"example", true},
-			expectedResult: Result{String: "example", Bool: true},
-			expectError:    false,
-			testFunc:       testFetchFirst[Result],
 		},
 		{
 			tpl:            sqlt.New("test-6").MustParse(`SELECT {{ index . 0 }} {{ ScanFloat64 Dest.Float64 }} AS float64, {{ index . 1 }} {{ ScanJSON Dest.JSON }} AS json`),
@@ -146,29 +126,8 @@ func testFetchAll[Dest any](t *testing.T, db *sql.DB, tc testCase) {
 	}
 }
 
-func testFetchFirst[Dest any](t *testing.T, db *sql.DB, tc testCase) {
-	result, err := sqlt.FetchFirst[Dest](context.Background(), tc.tpl, db, tc.params)
-	if (err != nil) != tc.expectError {
-		t.Fatalf("expected error: %v, got: %v", tc.expectError, err)
-	}
-
-	if !tc.expectError && !equal(result, tc.expectedResult) {
-		t.Fatalf("expected: %v, got: %v", tc.expectedResult, result)
-	}
-}
-
 func equal(a, b interface{}) bool {
 	return reflect.DeepEqual(a, b)
-}
-
-func BenchmarkSqltFirst(b *testing.B) {
-	t := sqlt.New("first").Dollar().MustParse(`
-		SELECT {{ ScanInt64 Dest.Int64 "int64" }}, {{ ScanString Dest.String "string" }} FROM results WHERE test = {{ . }}
-	`)
-
-	benchmarkFirst(b, func(db *sql.DB, param any) (Result, error) {
-		return sqlt.FetchFirst[Result](context.Background(), t, db, param)
-	})
 }
 
 func BenchmarkSquirrelFirst(b *testing.B) {
