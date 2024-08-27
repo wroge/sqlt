@@ -57,32 +57,25 @@ type Scanner struct {
 	Map  func() error
 }
 
-var ErrNilDest = errors.New("sqlt: dest is nil")
+type Slice[T any] []T
 
-// ScanJSON creates a Scanner for scanning JSON results into the specified destination.
-func ScanJSON[T any](dest *T, text ...string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("%w at %s", ErrNilDest, strings.Join(text, " "))
+func (s Slice[T]) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]T(s))
+}
+
+func (s *Slice[T]) UnmarshalJSON(data []byte) error {
+	var list []T
+
+	if err := json.Unmarshal(data, &list); err != nil {
+		return err
 	}
 
-	var data []byte
+	*s = list
 
-	return Scanner{
-		SQL:  strings.Join(text, " "),
-		Dest: &data,
-		Map: func() error {
-			var t T
-
-			if err := json.Unmarshal(data, &t); err != nil {
-				return err
-			}
-
-			*dest = t
-
-			return nil
-		},
-	}, nil
+	return nil
 }
+
+var ErrNilDest = errors.New("sqlt: dest is nil")
 
 // Scan creates a Scanner for scanning results into the specified destination.
 func Scan[T any](dest *T, text ...string) (Scanner, error) {
