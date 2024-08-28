@@ -13,6 +13,7 @@ import (
 	"text/template"
 	"text/template/parse"
 	"time"
+	"unsafe"
 )
 
 // DB defines the interface for database operations.
@@ -363,37 +364,44 @@ type SQL struct {
 }
 
 func (s *SQL) Write(data []byte) (int, error) {
-	var start, end int
+	start, end := 0, 0
+	bufLen := len(s.buf)
 
 	for start < len(data) {
-		for start < len(data) && isWhitespace(data[start]) {
+		// Skip leading whitespace
+		for start < len(data) && (data[start] == ' ' || data[start] == '\n' || data[start] == '\r' || data[start] == '\t') {
 			start++
 		}
 
+		// Find the end of the next word
 		end = start
-		for end < len(data) && !isWhitespace(data[end]) {
+		for end < len(data) && !(data[end] == ' ' || data[end] == '\n' || data[end] == '\r' || data[end] == '\t') {
 			end++
 		}
 
+		// Append word to buffer
 		if start < end {
-			if len(s.buf) > 0 {
+			wordLen := end - start
+
+			// If the buffer has existing content, append a space before the new word
+			if bufLen > 0 {
 				s.buf = append(s.buf, ' ')
+				bufLen++
 			}
+
 			s.buf = append(s.buf, data[start:end]...)
+			bufLen += wordLen
 		}
 
+		// Move to the next word
 		start = end
 	}
 
 	return len(data), nil
 }
 
-func isWhitespace(b byte) bool {
-	return b == ' ' || b == '\n' || b == '\r' || b == '\t'
-}
-
 func (s *SQL) String() string {
-	return string(s.buf)
+	return *(*string)(unsafe.Pointer(&s.buf))
 }
 
 func (s *SQL) Len() int {
