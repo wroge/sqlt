@@ -359,38 +359,49 @@ type Runner struct {
 }
 
 type SQL struct {
-	data      []byte
-	nextSpace bool
+	buf []byte
 }
 
 func (s *SQL) Write(data []byte) (int, error) {
-	for _, b := range data {
-		if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
-			if !s.nextSpace {
-				continue
-			}
-			s.data = append(s.data, ' ')
-			s.nextSpace = false
-		} else {
-			s.data = append(s.data, b)
-			s.nextSpace = true
+	var start, end int
+
+	for start < len(data) {
+		for start < len(data) && isWhitespace(data[start]) {
+			start++
 		}
+
+		end = start
+		for end < len(data) && !isWhitespace(data[end]) {
+			end++
+		}
+
+		if start < end {
+			if len(s.buf) > 0 {
+				s.buf = append(s.buf, ' ')
+			}
+			s.buf = append(s.buf, data[start:end]...)
+		}
+
+		start = end
 	}
 
 	return len(data), nil
 }
 
+func isWhitespace(b byte) bool {
+	return b == ' ' || b == '\n' || b == '\r' || b == '\t'
+}
+
 func (s *SQL) String() string {
-	return string(s.data)
+	return string(s.buf)
 }
 
 func (s *SQL) Len() int {
-	return len(s.data)
+	return len(s.buf)
 }
 
 func (s *SQL) Reset() {
-	s.data = s.data[:0]
-	s.nextSpace = false
+	s.buf = s.buf[:0]
 }
 
 // Run executes the SQL template with the provided context and parameters.
@@ -408,7 +419,9 @@ func (t *Template) Run(ctx context.Context, use func(runner *Runner) error) erro
 
 				var r = &Runner{
 					Text: escape(text),
-					SQL:  &SQL{data: make([]byte, 0, t.size)},
+					SQL: &SQL{
+						buf: make([]byte, 0, t.size),
+					},
 				}
 
 				r.Text.Funcs(template.FuncMap{

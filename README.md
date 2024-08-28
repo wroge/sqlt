@@ -106,8 +106,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// insert 423.75µs INSERT INTO books (id, title, created_at) VALUES ($1, $2, $3) , ($4, $5, $6) , ($7, $8, $9) , ($10, $11, $12) RETURNING id;
-	// [979f9bff-a250-466a-8217-e6fc1dba6cb2 The Bitcoin Standard 2024-08-28 20:03:39.275247 +0200 CEST m=+0.011488501 f1e517b4-95af-4683-afba-76af0bf0a194 Sapiens: A Brief History of Humankind 2024-08-28 20:03:39.275253 +0200 CEST m=+0.011494835 0dbde871-6cfc-41ed-902d-84f10def6291 100 Go Mistakes and How to Avoid Them 2024-08-28 20:03:39.275258 +0200 CEST m=+0.011499251 1e318d79-3773-44b6-b10b-6cd3096b4f36 Mastering Bitcoin 2024-08-28 20:03:39.275262 +0200 CEST m=+0.011503543]
+	//insert 261.625µs INSERT INTO books (id, title, created_at) VALUES ( $1 , $2 , $3 ) , ( $4 , $5 , $6 ) , ( $7 , $8 , $9 ) , ( $10 , $11 , $12 ) RETURNING id;
+	// [2865b686-7e56-4d92-a6f8-6c33b92f5ee0 The Bitcoin Standard 2024-08-28 20:26:48.234509 +0200 CEST m=+0.006122043 31670a37-ef93-46f9-b30f-ea465d53730e Sapiens: A Brief History of Humankind 2024-08-28 20:26:48.234515 +0200 CEST m=+0.006127709 ef5c235f-cb93-469c-a94d-c8f5888c9a14 100 Go Mistakes and How to Avoid Them 2024-08-28 20:26:48.234519 +0200 CEST m=+0.006132418 dfc56762-8e7d-4e5f-beb7-6eb577cb02e1 Mastering Bitcoin 2024-08-28 20:26:48.234524 +0200 CEST m=+0.006136793]
 
 	books, err := sqlt.FetchAll[Book](ctx, query, db, map[string]any{
 		"Search": "Bitcoin",
@@ -115,10 +115,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// query 97.042µs SELECT id , title , created_at FROM books WHERE INSTR(title, $1) > 0  [Bitcoin]
+	// query 69.25µs SELECT id , title , created_at FROM books WHERE INSTR(title, $1 ) > 0 [Bitcoin]
 
 	fmt.Println(books)
-	// [{979f9bff-a250-466a-8217-e6fc1dba6cb2 The Bitcoin Standard 2024-08-28 20:03:39.275247 +0200 CEST} {1e318d79-3773-44b6-b10b-6cd3096b4f36 Mastering Bitcoin 2024-08-28 20:03:39.275262 +0200 CEST}]
+	// [{2865b686-7e56-4d92-a6f8-6c33b92f5ee0 The Bitcoin Standard 2024-08-28 20:26:48.234509 +0200 CEST} {dfc56762-8e7d-4e5f-beb7-6eb577cb02e1 Mastering Bitcoin 2024-08-28 20:26:48.234524 +0200 CEST}]
 }
 ```
 
