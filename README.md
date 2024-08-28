@@ -29,8 +29,8 @@ import (
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/google/uuid"
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/wroge/sqlt"
+	_ "modernc.org/sqlite"
 )
 
 type startKey struct{}
@@ -87,7 +87,7 @@ var (
 func main() {
 	ctx := context.Background()
 
-	db, err := sql.Open("sqlite3", "file:test.db?cache=shared&mode=memory")
+	db, err := sql.Open("sqlite", "file:test.db?cache=shared&mode=memory")
 	if err != nil {
 		panic(err)
 	}
@@ -106,7 +106,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// insert 426.75µs INSERT INTO books (id, title, created_at) VALUES ($1, $2, $3) , ($4, $5, $6) , ($7, $8, $9) , ($10, $11, $12) RETURNING id;
+	// insert 423.75µs INSERT INTO books (id, title, created_at) VALUES ($1, $2, $3) , ($4, $5, $6) , ($7, $8, $9) , ($10, $11, $12) RETURNING id;
+	// [979f9bff-a250-466a-8217-e6fc1dba6cb2 The Bitcoin Standard 2024-08-28 20:03:39.275247 +0200 CEST m=+0.011488501 f1e517b4-95af-4683-afba-76af0bf0a194 Sapiens: A Brief History of Humankind 2024-08-28 20:03:39.275253 +0200 CEST m=+0.011494835 0dbde871-6cfc-41ed-902d-84f10def6291 100 Go Mistakes and How to Avoid Them 2024-08-28 20:03:39.275258 +0200 CEST m=+0.011499251 1e318d79-3773-44b6-b10b-6cd3096b4f36 Mastering Bitcoin 2024-08-28 20:03:39.275262 +0200 CEST m=+0.011503543]
 
 	books, err := sqlt.FetchAll[Book](ctx, query, db, map[string]any{
 		"Search": "Bitcoin",
@@ -114,10 +115,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// query 137.041µs SELECT id , title , created_at FROM books WHERE INSTR(title, $1) > 0
+	// query 97.042µs SELECT id , title , created_at FROM books WHERE INSTR(title, $1) > 0  [Bitcoin]
 
 	fmt.Println(books)
-	// [{ac4ceabc-0091-4d2f-85e7-1ada0069ca7e The Bitcoin Standard 2024-08-04 11:20:17.821766 +0200 +0200} {7ea05e4d-1578-4088-b00b-3dbbf2f55576 Mastering Bitcoin 2024-08-04 11:20:17.821783 +0200 +0200}]
+	// [{979f9bff-a250-466a-8217-e6fc1dba6cb2 The Bitcoin Standard 2024-08-28 20:03:39.275247 +0200 CEST} {1e318d79-3773-44b6-b10b-6cd3096b4f36 Mastering Bitcoin 2024-08-28 20:03:39.275262 +0200 CEST}]
 }
 ```
 
