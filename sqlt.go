@@ -656,6 +656,10 @@ func (q *DestParamExecutor[Dest, Param]) Query(ctx context.Context, db DB, param
 			return
 		}
 
+		defer func() {
+			err = q.tpl.PutRunner(err, runner)
+		}()
+
 		runner.Value = &dest
 
 		if err = runner.Execute(param); err != nil {
@@ -676,7 +680,7 @@ func (q *DestParamExecutor[Dest, Param]) Query(ctx context.Context, db DB, param
 		}
 
 		defer func() {
-			err = q.tpl.PutRunner(errors.Join(err, rows.Close()), runner)
+			err = errors.Join(err, rows.Close())
 		}()
 
 		for rows.Next() {
