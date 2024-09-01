@@ -7,8 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"iter"
+	"reflect"
 	"strconv"
-	"strings"
 	"sync"
 	"text/template"
 	"text/template/parse"
@@ -79,13 +80,13 @@ func (s *Slice[T]) UnmarshalJSON(data []byte) error {
 var ErrNilDest = errors.New("sqlt: dest is nil")
 
 // Scan creates a Scanner for scanning results into the specified destination.
-func Scan[T any](dest *T, text ...string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, fmt.Errorf("%w at %s", ErrNilDest, strings.Join(text, " "))
+func Scan[T any](dest *T, str string) (Scanner, error) {
+	if dest == nil || reflect.ValueOf(dest).IsNil() {
+		return Scanner{}, fmt.Errorf("%w at %s", ErrNilDest, str)
 	}
 
 	return Scanner{
-		SQL:  strings.Join(text, " "),
+		SQL:  str,
 		Dest: dest,
 	}, nil
 }
@@ -109,39 +110,52 @@ func New(name string) *Template {
 			"Raw": func(str string) Raw {
 				return Raw(str)
 			},
-			"Scan": func(dest sql.Scanner, text ...string) (Scanner, error) {
+			"Scan": func(dest sql.Scanner, str string) (Scanner, error) {
+				if dest == nil || reflect.ValueOf(dest).IsNil() {
+					return Scanner{}, fmt.Errorf("%w at %s", ErrNilDest, str)
+				}
+
 				return Scanner{
-					SQL:  strings.Join(text, " "),
+					SQL:  str,
 					Dest: dest,
 				}, nil
 			},
-			"ScanJSON": func(dest json.Unmarshaler, text ...string) (Scanner, error) {
+			"ScanJSON": func(dest json.Unmarshaler, str string) (Scanner, error) {
+				if dest == nil || reflect.ValueOf(dest).IsNil() {
+					return Scanner{}, fmt.Errorf("%w at %s", ErrNilDest, str)
+				}
+
 				var data []byte
 
 				return Scanner{
-					SQL:  strings.Join(text, " "),
+					SQL:  str,
 					Dest: &data,
 					Map: func() error {
-						return json.Unmarshal(data, dest)
+						if err := dest.UnmarshalJSON(data); err != nil {
+							return fmt.Errorf("%w at %s", err, str)
+						}
+
+						return nil
 					},
 				}, nil
 			},
-			"ScanString":  Scan[string],
-			"ScanBytes":   Scan[[]byte],
-			"ScanInt":     Scan[int],
-			"ScanInt8":    Scan[int8],
-			"ScanInt16":   Scan[int16],
-			"ScanInt32":   Scan[int32],
-			"ScanInt64":   Scan[int64],
-			"ScanUint":    Scan[uint],
-			"ScanUint8":   Scan[uint8],
-			"ScanUint16":  Scan[uint16],
-			"ScanUint32":  Scan[uint32],
-			"ScanUint64":  Scan[uint64],
-			"ScanBool":    Scan[bool],
-			"ScanFloat32": Scan[float32],
-			"ScanFloat64": Scan[float64],
-			"ScanTime":    Scan[time.Time],
+			"ScanString":   Scan[string],
+			"ScanBytes":    Scan[[]byte],
+			"ScanInt":      Scan[int],
+			"ScanInt8":     Scan[int8],
+			"ScanInt16":    Scan[int16],
+			"ScanInt32":    Scan[int32],
+			"ScanInt64":    Scan[int64],
+			"ScanUint":     Scan[uint],
+			"ScanUint8":    Scan[uint8],
+			"ScanUint16":   Scan[uint16],
+			"ScanUint32":   Scan[uint32],
+			"ScanUint64":   Scan[uint64],
+			"ScanBool":     Scan[bool],
+			"ScanFloat32":  Scan[float32],
+			"ScanFloat64":  Scan[float64],
+			"ScanTime":     Scan[time.Time],
+			"ScanDuration": Scan[time.Duration],
 		}),
 		placeholder: "?",
 	}
@@ -359,6 +373,10 @@ type Runner struct {
 	Map     []func() error
 }
 
+func (r *Runner) Execute(param any) error {
+	return r.Text.Execute(r.SQL, param)
+}
+
 type SQL struct {
 	buf []byte
 }
@@ -412,11 +430,7 @@ func (s *SQL) Reset() {
 	s.buf = s.buf[:0]
 }
 
-// Run executes the SQL template with the provided context and parameters.
-// It manages Runner instances from a pool for efficient resource reuse, and processes
-// the template, mapping arguments and destinations. Optional hooks can be set for pre
-// and post-execution. The Runner resets itself for reuse after execution.
-func (t *Template) Run(ctx context.Context, use func(runner *Runner) error) error {
+func (t *Template) GetRunner(ctx context.Context) (*Runner, error) {
 	if t.pool == nil {
 		t.pool = &sync.Pool{
 			New: func() any {
@@ -470,236 +484,299 @@ func (t *Template) Run(ctx context.Context, use func(runner *Runner) error) erro
 			t.beforeRun(r)
 		}
 
-		err := use(r)
-
-		if t.afterRun != nil {
-			err = t.afterRun(err, r)
-		}
-
-		go func() {
-			if size := r.SQL.Len(); size > t.size {
-				t.size = size
-			}
-
-			r.SQL.Reset()
-			r.Args = r.Args[:0]
-			r.Dest = r.Dest[:0]
-			r.Map = r.Map[:0]
-
-			t.pool.Put(r)
-		}()
-
-		return err
+		return r, nil
 	case error:
-		return r
-	default:
-		panic(r)
+		return nil, r
 	}
+
+	return nil, errors.New("invalid runner")
+}
+
+func (t *Template) PutRunner(r *Runner) error {
+	var err error
+
+	if t.afterRun != nil {
+		err = t.afterRun(err, r)
+	}
+
+	if size := r.SQL.Len(); size > t.size {
+		t.size = size
+	}
+
+	r.SQL.Reset()
+	r.Args = r.Args[:0]
+	r.Dest = r.Dest[:0]
+	r.Map = r.Map[:0]
+
+	t.pool.Put(r)
+
+	return err
 }
 
 // Exec executes a SQL command using the Template and the given context and database.
-func (t *Template) Exec(ctx context.Context, db DB, params any) (sql.Result, error) {
-	var (
-		result sql.Result
-		err    error
-	)
+func (t *Template) Exec(ctx context.Context, db DB, param any) (sql.Result, error) {
+	runner, err := t.GetRunner(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	err = t.Run(ctx, func(r *Runner) error {
-		if err = r.Text.Execute(r.SQL, params); err != nil {
-			return err
-		}
+	if err = runner.Execute(param); err != nil {
+		return nil, err
+	}
 
-		result, err = db.ExecContext(ctx, r.SQL.String(), r.Args...)
-		if err != nil {
-			return err
-		}
+	result, err := db.ExecContext(ctx, runner.SQL.String(), runner.Args...)
+	if err != nil {
+		return nil, err
+	}
 
-		return nil
-	})
-
-	return result, err
+	return result, t.PutRunner(runner)
 }
 
 // Query runs a SQL query using the Template and the given context and database.
-func (t *Template) Query(ctx context.Context, db DB, params any) (*sql.Rows, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
+func (t *Template) Query(ctx context.Context, db DB, param any) (*sql.Rows, error) {
+	runner, err := t.GetRunner(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	err = t.Run(ctx, func(r *Runner) error {
-		if err = r.Text.Execute(r.SQL, params); err != nil {
-			return err
-		}
+	if err = runner.Execute(param); err != nil {
+		return nil, err
+	}
 
-		rows, err = db.QueryContext(ctx, r.SQL.String(), r.Args...)
-		if err != nil {
-			return err
-		}
+	rows, err := db.QueryContext(ctx, runner.SQL.String(), runner.Args...)
+	if err != nil {
+		return nil, err
+	}
 
-		return nil
-	})
-
-	return rows, err
+	return rows, t.PutRunner(runner)
 }
 
 // QueryRow runs a SQL query that is expected to return a single row using the Template and the given context and database.
-func (t *Template) QueryRow(ctx context.Context, db DB, params any) (*sql.Row, error) {
-	var (
-		row *sql.Row
-		err error
-	)
+func (t *Template) QueryRow(ctx context.Context, db DB, param any) (*sql.Row, error) {
+	runner, err := t.GetRunner(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	err = t.Run(ctx, func(r *Runner) error {
-		if err = r.Text.Execute(r.SQL, params); err != nil {
-			return err
-		}
+	if err = runner.Execute(param); err != nil {
+		return nil, err
+	}
 
-		row = db.QueryRowContext(ctx, r.SQL.String(), r.Args...)
+	row := db.QueryRowContext(ctx, runner.SQL.String(), runner.Args...)
 
-		return nil
-	})
-
-	return row, err
+	return row, t.PutRunner(runner)
 }
 
-// FetchAll retrieves all rows of the query result into a slice. It uses the Template to
-// generate the SQL query, executes it against the given database, and collects each
-// resulting row into a slice. If any error occurs during the process, it is returned.
-// Note: `Dest` must not be a pointer to a struct.
-func FetchAll[Dest any](ctx context.Context, t *Template, db DB, params any) ([]Dest, error) {
-	var (
-		values []Dest
-		dest   Dest
-		err    error
-	)
+func Param[Param any](tpl *Template) *ParamExecutor[Param] {
+	return &ParamExecutor[Param]{
+		tpl: tpl,
+	}
+}
 
-	err = t.Run(ctx, func(r *Runner) error {
-		var rows *sql.Rows
+type ParamExecutor[Param any] struct {
+	tpl *Template
+}
 
-		r.Value = &dest
+func (e *ParamExecutor[Param]) Query(ctx context.Context, db DB, param Param) (*sql.Rows, error) {
+	return e.tpl.Query(ctx, db, param)
+}
 
-		if err = r.Text.Execute(r.SQL, params); err != nil {
-			return err
-		}
+func (e *ParamExecutor[Param]) QueryRow(ctx context.Context, db DB, param Param) (*sql.Row, error) {
+	return e.tpl.QueryRow(ctx, db, param)
+}
 
-		if len(r.Dest) == 0 {
-			r.Dest = append(r.Dest, &dest)
-		}
+func (e *ParamExecutor[Param]) Exec(ctx context.Context, db DB, param Param) (sql.Result, error) {
+	return e.tpl.Exec(ctx, db, param)
+}
 
-		rows, err = db.QueryContext(ctx, r.SQL.String(), r.Args...)
+func (e *ParamExecutor[Param]) RowsAffected(ctx context.Context, db DB, param Param) (int64, error) {
+	result, err := e.tpl.Exec(ctx, db, param)
+	if err != nil {
+		return 0, err
+	}
+
+	return result.RowsAffected()
+}
+
+func (e *ParamExecutor[Param]) LastInsertId(ctx context.Context, db DB, param Param) (int64, error) {
+	result, err := e.tpl.Exec(ctx, db, param)
+	if err != nil {
+		return 0, err
+	}
+
+	return result.LastInsertId()
+}
+
+func DestParam[Dest, Param any](t *Template) *DestParamExecutor[Dest, Param] {
+	return &DestParamExecutor[Dest, Param]{
+		tpl: t,
+	}
+}
+
+type DestParamExecutor[Dest, Param any] struct {
+	tpl      *Template
+	clone    func(Dest) (Dest, error)
+	validate func(Dest) error
+}
+
+func (q *DestParamExecutor[Dest, Param]) Clone(c func(Dest) (Dest, error)) *DestParamExecutor[Dest, Param] {
+	q.clone = c
+
+	return q
+}
+
+func (q *DestParamExecutor[Dest, Param]) Validate(v func(Dest) error) *DestParamExecutor[Dest, Param] {
+	q.validate = v
+
+	return q
+}
+
+func (q *DestParamExecutor[Dest, Param]) Query(ctx context.Context, db DB, param any) func(func(Dest, error) bool) {
+	var dest Dest
+
+	return func(yield func(Dest, error) bool) {
+		runner, err := q.tpl.GetRunner(ctx)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil
-			}
+			yield(dest, err)
 
-			return err
+			return
+		}
+
+		runner.Value = &dest
+
+		if err = runner.Execute(param); err != nil {
+			yield(dest, err)
+
+			return
+		}
+
+		if len(runner.Dest) == 0 {
+			runner.Dest = append(runner.Dest, &dest)
+		}
+
+		rows, err := db.QueryContext(ctx, runner.SQL.String(), runner.Args...)
+		if err != nil {
+			yield(dest, err)
+
+			return
 		}
 
 		defer rows.Close()
 
 		for rows.Next() {
-			if err = rows.Scan(r.Dest...); err != nil {
-				return err
+			if err = rows.Scan(runner.Dest...); err != nil {
+				yield(dest, err)
+
+				return
 			}
 
-			for _, m := range r.Map {
+			for _, m := range runner.Map {
 				if m == nil {
 					continue
 				}
 
 				if err = m(); err != nil {
-					return err
+					yield(dest, err)
+
+					return
 				}
 			}
 
-			values = append(values, dest)
+			if q.clone != nil {
+				dest, err = q.clone(dest)
+				if err != nil {
+					yield(dest, err)
+
+					return
+				}
+			}
+
+			if q.validate != nil {
+				err = q.validate(dest)
+				if err != nil {
+					yield(dest, err)
+
+					return
+				}
+			}
+
+			if !yield(dest, nil) {
+				return
+			}
 		}
 
 		if err = rows.Err(); err != nil {
-			return err
+			yield(dest, err)
+
+			return
 		}
 
 		if err = rows.Close(); err != nil {
-			return err
+			yield(dest, err)
+
+			return
 		}
 
-		return nil
-	})
+		if err = q.tpl.PutRunner(runner); err != nil {
+			yield(dest, err)
 
-	return values, err
+			return
+		}
+	}
+}
+
+// All retrieves all rows of the query result into a slice. It uses the Template to
+// generate the SQL query, executes it against the given database, and collects each
+// resulting row into a slice. If any error occurs during the process, it is returned.
+// Note: `Dest` must not be a pointer to a struct.
+func (q *DestParamExecutor[Dest, Param]) All(ctx context.Context, db DB, param Param) ([]Dest, error) {
+	var values = []Dest{}
+
+	for dest, err := range q.Query(ctx, db, param) {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+
+		values = append(values, dest)
+	}
+
+	return values, nil
 }
 
 // ErrTooManyRows is an error that is returned when a query expected to return a single row
 // returns more than one row. This error helps in ensuring that functions which are designed
-// to fetch a single row can handle cases where the query result contains multiple rows.
+// to  a single row can handle cases where the query result contains multiple rows.
 var ErrTooManyRows = fmt.Errorf("sqlt: too many rows")
 
-// FetchOne retrieves exactly one row of the query result and returns an error if more
+// One retrieves exactly one row of the query result and returns an error if more
 // than one row is found. It uses the Template to generate the SQL query, executes it
 // against the given database, and ensures only one resulting row is returned. If no
 // rows are found or more than one row is found, it returns an error.
 // Note: `Dest` must not be a pointer to a struct.
-func FetchOne[Dest any](ctx context.Context, t *Template, db DB, params any) (Dest, error) {
-	var (
-		dest Dest
-		err  error
-	)
+func (q *DestParamExecutor[Dest, Param]) One(ctx context.Context, db DB, param Param) (Dest, error) {
+	next, stop := iter.Pull2(q.Query(ctx, db, param))
 
-	err = t.Run(ctx, func(r *Runner) error {
-		var rows *sql.Rows
+	defer stop()
 
-		r.Value = &dest
+	dest, err, ok := next()
+	if err != nil {
+		return dest, err
+	}
 
-		if err = r.Text.Execute(r.SQL, params); err != nil {
-			return err
-		}
+	if !ok {
+		return dest, sql.ErrNoRows
+	}
 
-		if len(r.Dest) == 0 {
-			r.Dest = append(r.Dest, &dest)
-		}
+	_, err, ok = next()
+	if err != nil {
+		return dest, err
+	}
 
-		rows, err = db.QueryContext(ctx, r.SQL.String(), r.Args...)
-		if err != nil {
-			return err
-		}
+	if ok {
+		return dest, ErrTooManyRows
+	}
 
-		defer rows.Close()
-
-		if !rows.Next() {
-			return sql.ErrNoRows
-		}
-
-		if err = rows.Scan(r.Dest...); err != nil {
-			return err
-		}
-
-		for _, m := range r.Map {
-			if m == nil {
-				continue
-			}
-
-			if err = m(); err != nil {
-				return err
-			}
-		}
-
-		if rows.Next() {
-			return ErrTooManyRows
-		}
-
-		if err = rows.Err(); err != nil {
-			return err
-		}
-
-		if err = rows.Close(); err != nil {
-			return err
-		}
-
-		return nil
-	})
-
-	return dest, err
+	return dest, nil
 }
 
 var ident = "__sqlt__"

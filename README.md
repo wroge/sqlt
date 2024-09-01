@@ -3,7 +3,7 @@
 [![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/wroge/sqlt)
 [![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/wroge/sqlt.svg?style=social)](https://github.com/wroge/sqlt/tags)
 
-This package uses Go’s template engine to create a flexible and powerful SQL builder and ORM.
+This package uses Go’s template engine to create a flexible, powerful and type-safe SQL builder and ORM.
 
 ```go
 go get -u github.com/wroge/sqlt
@@ -66,22 +66,22 @@ var (
 
 		// INSERT INTO books (id, title, created_at) VALUES
 
-	insert = t.New("insert").MustParse(`
+	insert = sqlt.Param[[]string](t.New("insert").MustParse(`
 		INSERT INTO books (id, title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
 			({{ uuidv4 }}, {{ $t }}, {{ now }})
 		{{ end }}
 		RETURNING id;
-	`)
+	`))
 
-	query = t.New("query").MustParse(`
+	query = sqlt.DestParam[Book, string](t.New("query").MustParse(`
 		SELECT
 			{{ Scan Dest.ID "id" }}
 			{{ ScanString Dest.Title ", title" }}
 			{{ ScanTime Dest.CreatedAt ", created_at" }}
 		FROM books
-		WHERE INSTR(title, {{ .Search }}) > 0
-	`)
+		WHERE INSTR(title, {{ . }}) > 0
+	`))
 )
 
 func main() {
@@ -106,19 +106,17 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	//insert 261.625µs INSERT INTO books (id, title, created_at) VALUES ( $1 , $2 , $3 ) , ( $4 , $5 , $6 ) , ( $7 , $8 , $9 ) , ( $10 , $11 , $12 ) RETURNING id;
-	// [2865b686-7e56-4d92-a6f8-6c33b92f5ee0 The Bitcoin Standard 2024-08-28 20:26:48.234509 +0200 CEST m=+0.006122043 31670a37-ef93-46f9-b30f-ea465d53730e Sapiens: A Brief History of Humankind 2024-08-28 20:26:48.234515 +0200 CEST m=+0.006127709 ef5c235f-cb93-469c-a94d-c8f5888c9a14 100 Go Mistakes and How to Avoid Them 2024-08-28 20:26:48.234519 +0200 CEST m=+0.006132418 dfc56762-8e7d-4e5f-beb7-6eb577cb02e1 Mastering Bitcoin 2024-08-28 20:26:48.234524 +0200 CEST m=+0.006136793]
+	// insert 275.667µs INSERT INTO books (id, title, created_at) VALUES ( $1 , $2 , $3 ) , ( $4 , $5 , $6 ) , ( $7 , $8 , $9 ) , ( $10 , $11 , $12 ) RETURNING id;
+	// [c66a2f34-d5ab-44d1-95f9-497d086e9d84 The Bitcoin Standard 2024-09-01 12:33:01.02574 +0200 CEST m=+0.007448335 8fbc0b2b-b96f-43dc-ab25-7bcf18174c72 Sapiens: A Brief History of Humankind 2024-09-01 12:33:01.025745 +0200 CEST m=+0.007452710 e8496edf-eb35-4b36-bf60-b9e65f8df67b 100 Go Mistakes and How to Avoid Them 2024-09-01 12:33:01.025747 +0200 CEST m=+0.007455668 a9dc918e-e517-4fc8-ad06-9cc6956377b5 Mastering Bitcoin 2024-09-01 12:33:01.02575 +0200 CEST m=+0.007458585]
 
-	books, err := sqlt.FetchAll[Book](ctx, query, db, map[string]any{
-		"Search": "Bitcoin",
-	})
+	books, err := query.All(ctx, db, "Bitcoin")
 	if err != nil {
 		panic(err)
 	}
-	// query 69.25µs SELECT id , title , created_at FROM books WHERE INSTR(title, $1 ) > 0 [Bitcoin]
+	// query 62.583µs SELECT id , title , created_at FROM books WHERE INSTR(title, $1 ) > 0 [Bitcoin]
 
 	fmt.Println(books)
-	// [{2865b686-7e56-4d92-a6f8-6c33b92f5ee0 The Bitcoin Standard 2024-08-28 20:26:48.234509 +0200 CEST} {dfc56762-8e7d-4e5f-beb7-6eb577cb02e1 Mastering Bitcoin 2024-08-28 20:26:48.234524 +0200 CEST}]
+	// [{c66a2f34-d5ab-44d1-95f9-497d086e9d84 The Bitcoin Standard 2024-09-01 12:33:01.02574 +0200 CEST} {a9dc918e-e517-4fc8-ad06-9cc6956377b5 Mastering Bitcoin 2024-09-01 12:33:01.02575 +0200 CEST}]
 }
 ```
 
@@ -127,15 +125,15 @@ func main() {
 [https://github.com/wroge/vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture)
 
 ```
-go test -bench . -benchmem .                   
+go test -bench . -benchmem .  
 goos: darwin
 goarch: arm64
 pkg: github.com/wroge/sqlt
 cpu: Apple M3 Pro
-BenchmarkSqltAll-12                26454             85048 ns/op           11170 B/op        107 allocs/op
-BenchmarkSquirrelAll-12            33936             93216 ns/op           12297 B/op        107 allocs/op
+BenchmarkSqltAll-12                32214             91547 ns/op           10935 B/op        101 allocs/op
+BenchmarkSquirrelAll-12            33460             92298 ns/op           12329 B/op        108 allocs/op
 PASS
-ok      github.com/wroge/sqlt   6.426s
+ok      github.com/wroge/sqlt   6.982s
 ```
 
 ## Inspiration

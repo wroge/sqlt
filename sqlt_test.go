@@ -15,7 +15,7 @@ import (
 )
 
 type testCase struct {
-	params         any
+	params         Param
 	expectedResult interface{}
 	tpl            *sqlt.Template
 	mockRows       *sqlmock.Rows
@@ -23,6 +23,14 @@ type testCase struct {
 	expectedSQL    string
 	expectedArgs   []driver.Value
 	expectError    bool
+}
+
+type Param struct {
+	Time    time.Time
+	Int64   int64
+	String  string
+	JSON    json.RawMessage
+	Float64 float64
 }
 
 type Result struct {
@@ -42,44 +50,44 @@ var (
 func TestStuff(t *testing.T) {
 	tests := []testCase{
 		{
-			tpl:            sqlt.New("test-1").MustParse(`SELECT {{ index . 0 }} {{ ScanInt64 Dest.Int64 }} AS int64, {{ index . 1 }} {{ ScanString Dest.String }} AS string`),
-			params:         []any{100, "hundred"},
+			tpl:            sqlt.New("test-1").MustParse(`SELECT {{ .Int64 }} {{ ScanInt64 Dest.Int64 "AS int64," }} {{ .String }} {{ ScanString Dest.String "AS string" }}`),
+			params:         Param{Int64: 100, String: "hundred"},
 			mockRows:       sqlmock.NewRows([]string{"int64", "string"}).AddRow(100, "hundred"),
 			expectedSQL:    `SELECT \? AS int64, \? AS string`,
 			expectedArgs:   []driver.Value{100, ("hundred")},
 			expectedResult: Result{Int64: 100, String: "hundred"},
 			expectError:    false,
-			testFunc:       testFetchOne[Result],
+			testFunc:       testOne,
 		},
 		{
-			tpl:            sqlt.New("test-3").MustParse(`SELECT {{ index . 0 }} {{ ScanTime Dest.Time }} AS time, {{ index . 1 }} {{ ScanJSON Dest.JSON }} AS json`),
-			params:         []any{date, []byte(`{"hundred": 100}`)},
+			tpl:            sqlt.New("test-3").MustParse(`SELECT {{ .Time }} {{ ScanTime Dest.Time "AS time," }} {{ .JSON }} {{ ScanJSON Dest.JSON "AS json" }}`),
+			params:         Param{Time: date, JSON: []byte(`{"hundred": 100}`)},
 			mockRows:       sqlmock.NewRows([]string{"time", "json"}).AddRow(date, []byte(`{"hundred": 100}`)),
 			expectedSQL:    `SELECT \? AS time, \? AS json`,
 			expectedArgs:   []driver.Value{date, []byte(`{"hundred": 100}`)},
 			expectedResult: []Result{{Time: date, JSON: []byte(`{"hundred": 100}`)}},
 			expectError:    false,
-			testFunc:       testFetchAll[Result],
+			testFunc:       testAll,
 		},
 		{
-			tpl:            sqlt.New("test-4").MustParse(`SELECT {{ index . 00 }} {{ ScanInt Dest.Int }} AS int`),
-			params:         []any{42},
+			tpl:            sqlt.New("test-4").MustParse(`SELECT {{ .Int64 }} {{ ScanInt Dest.Int "AS int" }}`),
+			params:         Param{Int64: 42},
 			mockRows:       sqlmock.NewRows([]string{"int"}).AddRow(42),
 			expectedSQL:    `SELECT \? AS int`,
 			expectedArgs:   []driver.Value{42},
 			expectedResult: Result{Int: 42},
 			expectError:    false,
-			testFunc:       testFetchOne[Result],
+			testFunc:       testOne,
 		},
 		{
-			tpl:            sqlt.New("test-6").MustParse(`SELECT {{ index . 0 }} {{ ScanFloat64 Dest.Float64 }} AS float64, {{ index . 1 }} {{ ScanJSON Dest.JSON }} AS json`),
-			params:         []any{3.14, []byte(`{"pi": 3.14}`)},
+			tpl:            sqlt.New("test-6").MustParse(`SELECT {{ .Float64 }} {{ ScanFloat64 Dest.Float64 "AS float64," }} {{ .JSON }} {{ ScanJSON Dest.JSON "AS json" }}`),
+			params:         Param{Float64: 3.14, JSON: []byte(`{"pi": 3.14}`)},
 			mockRows:       sqlmock.NewRows([]string{"float64", "json"}).AddRow(3.14, []byte(`{"pi": 3.14}`)),
 			expectedSQL:    `SELECT \? AS float64, \? AS json`,
 			expectedArgs:   []driver.Value{3.14, []byte(`{"pi": 3.14}`)},
 			expectedResult: []Result{{Float64: 3.14, JSON: []byte(`{"pi": 3.14}`)}},
 			expectError:    false,
-			testFunc:       testFetchAll[Result],
+			testFunc:       testAll,
 		},
 	}
 
@@ -102,8 +110,8 @@ func TestStuff(t *testing.T) {
 	}
 }
 
-func testFetchOne[Dest any](t *testing.T, db *sql.DB, tc testCase) {
-	result, err := sqlt.FetchOne[Dest](context.Background(), tc.tpl, db, tc.params)
+func testOne(t *testing.T, db *sql.DB, tc testCase) {
+	result, err := sqlt.DestParam[Result, Param](tc.tpl).One(context.Background(), db, tc.params)
 
 	if (err != nil) != tc.expectError {
 		t.Fatalf("expected error: %v, got: %v", tc.expectError, err)
@@ -114,8 +122,8 @@ func testFetchOne[Dest any](t *testing.T, db *sql.DB, tc testCase) {
 	}
 }
 
-func testFetchAll[Dest any](t *testing.T, db *sql.DB, tc testCase) {
-	result, err := sqlt.FetchAll[Dest](context.Background(), tc.tpl, db, tc.params)
+func testAll(t *testing.T, db *sql.DB, tc testCase) {
+	result, err := sqlt.DestParam[Result, Param](tc.tpl).All(context.Background(), db, tc.params)
 
 	if (err != nil) != tc.expectError {
 		t.Fatalf("expected error: %v, got: %v", tc.expectError, err)
@@ -132,23 +140,21 @@ func equal(a, b interface{}) bool {
 
 func BenchmarkSqltAll(b *testing.B) {
 	t := sqlt.New("first").Dollar().MustParse(`
-		SELECT {{ ScanInt64 Dest.Int64 "int64" }}, {{ ScanString Dest.String "string" }} FROM results WHERE test = {{ . }}
+		SELECT {{ ScanInt64 Dest.Int64 "int64," -}} {{ ScanString Dest.String "string" }} FROM results WHERE test = {{ .String }}
 	`)
 
-	benchmarkAll(b, func(db *sql.DB, param any) ([]Result, error) {
-		return sqlt.FetchAll[Result](context.Background(), t, db, param)
+	query := sqlt.DestParam[Result, Param](t)
+
+	benchmarkAll(b, func(db *sql.DB, params Param) ([]Result, error) {
+		return query.All(context.Background(), db, params)
 	})
 }
 
 func BenchmarkSquirrelAll(b *testing.B) {
 	sb := squirrel.Select("int64", "string").From("results").PlaceholderFormat(squirrel.Dollar)
 
-	benchmarkAll(b, func(db *sql.DB, param any) ([]Result, error) {
-		query := sb
-
-		if param != nil {
-			query = query.Where("test = ?", param)
-		}
+	benchmarkAll(b, func(db *sql.DB, params Param) ([]Result, error) {
+		query := sb.Where("test = ?", params.String)
 
 		var (
 			arr []Result
@@ -182,7 +188,7 @@ func BenchmarkSquirrelAll(b *testing.B) {
 	})
 }
 
-func benchmarkAll(b *testing.B, do func(db *sql.DB, param any) ([]Result, error)) {
+func benchmarkAll(b *testing.B, do func(db *sql.DB, param Param) ([]Result, error)) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		b.Fatalf("failed to open sqlmock database: %s", err)
@@ -201,7 +207,7 @@ func benchmarkAll(b *testing.B, do func(db *sql.DB, param any) ([]Result, error)
 					AddRow(300, "three-hundred"),
 			)
 
-		res, err := do(db, "value")
+		res, err := do(db, Param{String: "value"})
 		if err != nil {
 			b.Fatal(err)
 		}
