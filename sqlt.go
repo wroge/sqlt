@@ -492,9 +492,7 @@ func (t *Template) GetRunner(ctx context.Context) (*Runner, error) {
 	return nil, errors.New("invalid runner")
 }
 
-func (t *Template) PutRunner(r *Runner) error {
-	var err error
-
+func (t *Template) PutRunner(err error, r *Runner) error {
 	if t.afterRun != nil {
 		err = t.afterRun(err, r)
 	}
@@ -515,40 +513,52 @@ func (t *Template) PutRunner(r *Runner) error {
 
 // Exec executes a SQL command using the Template and the given context and database.
 func (t *Template) Exec(ctx context.Context, db DB, param any) (sql.Result, error) {
+	var result sql.Result
+
 	runner, err := t.GetRunner(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	defer func() {
+		err = t.PutRunner(err, runner)
+	}()
+
 	if err = runner.Execute(param); err != nil {
 		return nil, err
 	}
 
-	result, err := db.ExecContext(ctx, runner.SQL.String(), runner.Args...)
+	result, err = db.ExecContext(ctx, runner.SQL.String(), runner.Args...)
 	if err != nil {
 		return nil, err
 	}
 
-	return result, t.PutRunner(runner)
+	return result, err
 }
 
 // Query runs a SQL query using the Template and the given context and database.
 func (t *Template) Query(ctx context.Context, db DB, param any) (*sql.Rows, error) {
+	var rows *sql.Rows
+
 	runner, err := t.GetRunner(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	defer func() {
+		err = t.PutRunner(err, runner)
+	}()
+
 	if err = runner.Execute(param); err != nil {
 		return nil, err
 	}
 
-	rows, err := db.QueryContext(ctx, runner.SQL.String(), runner.Args...)
+	rows, err = db.QueryContext(ctx, runner.SQL.String(), runner.Args...)
 	if err != nil {
 		return nil, err
 	}
 
-	return rows, t.PutRunner(runner)
+	return rows, err
 }
 
 // QueryRow runs a SQL query that is expected to return a single row using the Template and the given context and database.
@@ -558,13 +568,17 @@ func (t *Template) QueryRow(ctx context.Context, db DB, param any) (*sql.Row, er
 		return nil, err
 	}
 
+	defer func() {
+		err = t.PutRunner(err, runner)
+	}()
+
 	if err = runner.Execute(param); err != nil {
 		return nil, err
 	}
 
 	row := db.QueryRowContext(ctx, runner.SQL.String(), runner.Args...)
 
-	return row, t.PutRunner(runner)
+	return row, err
 }
 
 func Param[Param any](tpl *Template) *ParamExecutor[Param] {
@@ -661,7 +675,9 @@ func (q *DestParamExecutor[Dest, Param]) Query(ctx context.Context, db DB, param
 			return
 		}
 
-		defer rows.Close()
+		defer func() {
+			err = q.tpl.PutRunner(errors.Join(err, rows.Close()), runner)
+		}()
 
 		for rows.Next() {
 			if err = rows.Scan(runner.Dest...); err != nil {
@@ -712,12 +728,6 @@ func (q *DestParamExecutor[Dest, Param]) Query(ctx context.Context, db DB, param
 		}
 
 		if err = rows.Close(); err != nil {
-			yield(dest, err)
-
-			return
-		}
-
-		if err = q.tpl.PutRunner(runner); err != nil {
 			yield(dest, err)
 
 			return
