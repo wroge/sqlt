@@ -66,7 +66,7 @@ var (
 
 		// INSERT INTO books (id, title, created_at) VALUES
 
-	insert = sqlt.Param[[]string](t.New("insert").MustParse(`
+	insert = sqlt.Typed[[]string](t.New("insert").MustParse(`
 		INSERT INTO books (id, title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
 			({{ uuidv4 }}, {{ $t }}, {{ now }})
@@ -74,7 +74,7 @@ var (
 		RETURNING id;
 	`))
 
-	query = sqlt.DestParam[Book, string](t.New("query").MustParse(`
+	query = sqlt.TypedQuery[Book, string](t.New("query").MustParse(`
 		SELECT
 			{{ Scan Dest.ID "id" }}
 			{{ ScanString Dest.Title ", title" }}
@@ -125,15 +125,15 @@ func main() {
 [https://github.com/wroge/vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture)
 
 ```
-go test -bench . -benchmem .  
+go test -bench . -benchmem .                   
 goos: darwin
 goarch: arm64
 pkg: github.com/wroge/sqlt
 cpu: Apple M3 Pro
-BenchmarkSqltAll-12                32214             91547 ns/op           10935 B/op        101 allocs/op
-BenchmarkSquirrelAll-12            33460             92298 ns/op           12329 B/op        108 allocs/op
+BenchmarkSqltAll-12                33141             86666 ns/op           10945 B/op        101 allocs/op
+BenchmarkSquirrelAll-12            35822            104785 ns/op           12323 B/op        108 allocs/op
 PASS
-ok      github.com/wroge/sqlt   6.982s
+ok      github.com/wroge/sqlt   7.576s
 ```
 
 ## Inspiration
