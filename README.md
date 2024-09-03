@@ -15,6 +15,7 @@ go get -u github.com/wroge/sqlt
 - Functions like ```ScanInt64``` generate ```sqlt.Scanner`s```, which hold pointers to the destination and optionally a mapper. These scanners are collected at execution time.
 - The ```Dest``` function is a placeholder that is replaced at execution time with the appropriate generic type.
 - SQL templates can be loaded from the filesystem using ```ParseFS``` or ```ParseFiles```.
+- ```Type``` and ```MustType``` functions do type-safe checks using: [jba/templatecheck](https://github.com/jba/templatecheck).
 
 ## Example
 
@@ -39,6 +40,10 @@ type Book struct {
 	ID        uuid.UUID
 	Title     string
 	CreatedAt time.Time
+}
+
+type Query struct {
+	Title string
 }
 
 var (
@@ -66,7 +71,7 @@ var (
 
 		// INSERT INTO books (id, title, created_at) VALUES
 
-	insert = sqlt.Typed[[]string](t.New("insert").MustParse(`
+	insert = sqlt.MustType[any, []string](t.New("insert").MustParse(`
 		INSERT INTO books (id, title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
 			({{ uuidv4 }}, {{ $t }}, {{ now }})
@@ -74,13 +79,13 @@ var (
 		RETURNING id;
 	`))
 
-	query = sqlt.TypedQuery[Book, string](t.New("query").MustParse(`
+	query = sqlt.MustType[Book, Query](t.New("query").MustParse(`
 		SELECT
 			{{ Scan Dest.ID "id" }}
 			{{ ScanString Dest.Title ", title" }}
 			{{ ScanTime Dest.CreatedAt ", created_at" }}
 		FROM books
-		WHERE INSTR(title, {{ . }}) > 0
+		WHERE INSTR(title, {{ .Title }}) > 0
 	`))
 )
 
@@ -109,7 +114,7 @@ func main() {
 	// insert 275.667µs INSERT INTO books (id, title, created_at) VALUES ( $1 , $2 , $3 ) , ( $4 , $5 , $6 ) , ( $7 , $8 , $9 ) , ( $10 , $11 , $12 ) RETURNING id;
 	// [c66a2f34-d5ab-44d1-95f9-497d086e9d84 The Bitcoin Standard 2024-09-01 12:33:01.02574 +0200 CEST m=+0.007448335 8fbc0b2b-b96f-43dc-ab25-7bcf18174c72 Sapiens: A Brief History of Humankind 2024-09-01 12:33:01.025745 +0200 CEST m=+0.007452710 e8496edf-eb35-4b36-bf60-b9e65f8df67b 100 Go Mistakes and How to Avoid Them 2024-09-01 12:33:01.025747 +0200 CEST m=+0.007455668 a9dc918e-e517-4fc8-ad06-9cc6956377b5 Mastering Bitcoin 2024-09-01 12:33:01.02575 +0200 CEST m=+0.007458585]
 
-	books, err := query.All(ctx, db, "Bitcoin")
+	books, err := query.All(ctx, db, Query{Title: "Bitcoin"})
 	if err != nil {
 		panic(err)
 	}
