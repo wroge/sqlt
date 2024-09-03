@@ -69,8 +69,6 @@ var (
 			return nil
 		})
 
-		// INSERT INTO books (id, title, created_at) VALUES
-
 	insert = sqlt.MustType[any, []string](t.New("insert").MustParse(`
 		INSERT INTO books (id, title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
