@@ -15,6 +15,8 @@ import (
 	"text/template/parse"
 	"time"
 	"unsafe"
+
+	"github.com/jba/templatecheck"
 )
 
 // DB defines the interface for database operations.
@@ -581,30 +583,45 @@ func (t *Template) QueryRow(ctx context.Context, db DB, param any) (*sql.Row, er
 	return row, err
 }
 
-func Typed[Param any](tpl *Template) *TypedExecutor[Param] {
-	return &TypedExecutor[Param]{
-		Template: tpl,
+func MustType[Dest, Param any](t *Template) *TypedExecutor[Dest, Param] {
+	tq, err := Type[Dest, Param](t)
+	if err != nil {
+		panic(err)
 	}
+
+	return tq
 }
 
-type TypedExecutor[Param any] struct {
-	Template *Template
+func Type[Dest, Param any](t *Template) (*TypedExecutor[Dest, Param], error) {
+	t.text.Funcs(template.FuncMap{
+		"Dest": func() *Dest {
+			return new(Dest)
+		},
+	})
+
+	return &TypedExecutor[Dest, Param]{
+		t: t,
+	}, templatecheck.CheckText(t.text, *new(Param))
 }
 
-func (e *TypedExecutor[Param]) Query(ctx context.Context, db DB, param Param) (*sql.Rows, error) {
-	return e.Template.Query(ctx, db, param)
+type TypedExecutor[Dest, Param any] struct {
+	t *Template
 }
 
-func (e *TypedExecutor[Param]) QueryRow(ctx context.Context, db DB, param Param) (*sql.Row, error) {
-	return e.Template.QueryRow(ctx, db, param)
+func (e *TypedExecutor[Dest, Param]) Query(ctx context.Context, db DB, param Param) (*sql.Rows, error) {
+	return e.t.Query(ctx, db, param)
 }
 
-func (e *TypedExecutor[Param]) Exec(ctx context.Context, db DB, param Param) (sql.Result, error) {
-	return e.Template.Exec(ctx, db, param)
+func (e *TypedExecutor[Dest, Param]) QueryRow(ctx context.Context, db DB, param Param) (*sql.Row, error) {
+	return e.t.QueryRow(ctx, db, param)
 }
 
-func (e *TypedExecutor[Param]) RowsAffected(ctx context.Context, db DB, param Param) (int64, error) {
-	result, err := e.Template.Exec(ctx, db, param)
+func (e *TypedExecutor[Dest, Param]) Exec(ctx context.Context, db DB, param Param) (sql.Result, error) {
+	return e.t.Exec(ctx, db, param)
+}
+
+func (e *TypedExecutor[Dest, Param]) RowsAffected(ctx context.Context, db DB, param Param) (int64, error) {
+	result, err := e.t.Exec(ctx, db, param)
 	if err != nil {
 		return 0, err
 	}
@@ -612,8 +629,8 @@ func (e *TypedExecutor[Param]) RowsAffected(ctx context.Context, db DB, param Pa
 	return result.RowsAffected()
 }
 
-func (e *TypedExecutor[Param]) LastInsertId(ctx context.Context, db DB, param Param) (int64, error) {
-	result, err := e.Template.Exec(ctx, db, param)
+func (e *TypedExecutor[Dest, Param]) LastInsertId(ctx context.Context, db DB, param Param) (int64, error) {
+	result, err := e.t.Exec(ctx, db, param)
 	if err != nil {
 		return 0, err
 	}
@@ -621,21 +638,11 @@ func (e *TypedExecutor[Param]) LastInsertId(ctx context.Context, db DB, param Pa
 	return result.LastInsertId()
 }
 
-func TypedQuery[Dest, Param any](t *Template) *TypedQuerier[Dest, Param] {
-	return &TypedQuerier[Dest, Param]{
-		Template: t,
-	}
-}
-
-type TypedQuerier[Dest, Param any] struct {
-	Template *Template
-}
-
-func (q *TypedQuerier[Dest, Param]) Iter(ctx context.Context, db DB, param any) func(func(Dest, error) bool) {
+func (q *TypedExecutor[Dest, Param]) Iter(ctx context.Context, db DB, param any) func(func(Dest, error) bool) {
 	var dest Dest
 
 	return func(yield func(Dest, error) bool) {
-		runner, err := q.Template.GetRunner(ctx)
+		runner, err := q.t.GetRunner(ctx)
 		if err != nil {
 			yield(dest, err)
 
@@ -643,7 +650,7 @@ func (q *TypedQuerier[Dest, Param]) Iter(ctx context.Context, db DB, param any) 
 		}
 
 		defer func() {
-			err = q.Template.PutRunner(err, runner)
+			err = q.t.PutRunner(err, runner)
 		}()
 
 		runner.Value = &dest
@@ -711,7 +718,7 @@ func (q *TypedQuerier[Dest, Param]) Iter(ctx context.Context, db DB, param any) 
 // generate the SQL query, executes it against the given database, and collects each
 // resulting row into a slice. If any error occurs during the process, it is returned.
 // Note: `Dest` must not be a pointer to a struct.
-func (q *TypedQuerier[Dest, Param]) All(ctx context.Context, db DB, param Param) ([]Dest, error) {
+func (q *TypedExecutor[Dest, Param]) All(ctx context.Context, db DB, param Param) ([]Dest, error) {
 	var values = []Dest{}
 
 	for dest, err := range q.Iter(ctx, db, param) {
@@ -735,7 +742,7 @@ var ErrTooManyRows = fmt.Errorf("sqlt: too many rows")
 // against the given database, and ensures only one resulting row is returned. If no
 // rows are found or more than one row is found, it returns an error.
 // Note: `Dest` must not be a pointer to a struct.
-func (q *TypedQuerier[Dest, Param]) One(ctx context.Context, db DB, param Param) (Dest, error) {
+func (q *TypedExecutor[Dest, Param]) One(ctx context.Context, db DB, param Param) (Dest, error) {
 	next, stop := iter.Pull2(q.Iter(ctx, db, param))
 
 	defer stop()

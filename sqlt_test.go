@@ -111,7 +111,7 @@ func TestStuff(t *testing.T) {
 }
 
 func testOne(t *testing.T, db *sql.DB, tc testCase) {
-	result, err := sqlt.TypedQuery[Result, Param](tc.tpl).One(context.Background(), db, tc.params)
+	result, err := sqlt.MustType[Result, Param](tc.tpl).One(context.Background(), db, tc.params)
 
 	if (err != nil) != tc.expectError {
 		t.Fatalf("expected error: %v, got: %v", tc.expectError, err)
@@ -123,7 +123,7 @@ func testOne(t *testing.T, db *sql.DB, tc testCase) {
 }
 
 func testAll(t *testing.T, db *sql.DB, tc testCase) {
-	result, err := sqlt.TypedQuery[Result, Param](tc.tpl).All(context.Background(), db, tc.params)
+	result, err := sqlt.MustType[Result, Param](tc.tpl).All(context.Background(), db, tc.params)
 
 	if (err != nil) != tc.expectError {
 		t.Fatalf("expected error: %v, got: %v", tc.expectError, err)
@@ -143,7 +143,7 @@ func BenchmarkSqltAll(b *testing.B) {
 		SELECT {{ ScanInt64 Dest.Int64 "int64," -}} {{ ScanString Dest.String "string" }} FROM results WHERE test = {{ .String }}
 	`)
 
-	query := sqlt.TypedQuery[Result, Param](t)
+	query := sqlt.MustType[Result, Param](t)
 
 	benchmarkAll(b, func(db *sql.DB, params Param) ([]Result, error) {
 		return query.All(context.Background(), db, params)
