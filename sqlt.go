@@ -19,16 +19,12 @@ import (
 	"github.com/jba/templatecheck"
 )
 
-// DB defines the interface for database operations.
-// It includes methods for querying and executing SQL commands with context support.
 type DB interface {
 	QueryContext(ctx context.Context, str string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, str string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, str string, args ...any) (sql.Result, error)
 }
 
-// InTx executes a function within a database transaction.
-// It begins a transaction, rolling back if the function returns an error or panics, and committing otherwise.
 func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) error) (err error) {
 	var tx *sql.Tx
 
@@ -48,13 +44,13 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 		}
 	}()
 
-	return do(tx)
+	err = do(tx)
+
+	return err
 }
 
-// Raw represents a raw SQL string that should not be escaped.
 type Raw string
 
-// Scanner represents a structure for mapping SQL query results into a destination variable.
 type Scanner struct {
 	SQL  string
 	Dest any
@@ -79,9 +75,26 @@ func (s *Slice[T]) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type Map[K comparable, V any] map[K]V
+
+func (m Map[K, V]) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[K]V(m))
+}
+
+func (m *Map[K, V]) UnmarshalJSON(data []byte) error {
+	var t map[K]V
+
+	if err := json.Unmarshal(data, &t); err != nil {
+		return err
+	}
+
+	*m = t
+
+	return nil
+}
+
 var ErrInvalidNilPointer = errors.New("invalid nil pointer")
 
-// Scan creates a Scanner for scanning results into the specified destination.
 func Scan[T any](dest *T, str string) (Scanner, error) {
 	if dest == nil || reflect.ValueOf(dest).IsNil() {
 		return Scanner{}, ErrInvalidNilPointer
@@ -93,7 +106,6 @@ func Scan[T any](dest *T, str string) (Scanner, error) {
 	}, nil
 }
 
-// Must returns the template if no error, otherwise it panics.
 func Must(t *Template, err error) *Template {
 	if err != nil {
 		panic(err)
@@ -102,7 +114,6 @@ func Must(t *Template, err error) *Template {
 	return t
 }
 
-// New creates a new SQL template with the specified name.
 func New(name string) *Template {
 	t := &Template{
 		text: template.New(name).Funcs(template.FuncMap{
@@ -158,6 +169,27 @@ func New(name string) *Template {
 			"ScanFloat64":  Scan[float64],
 			"ScanTime":     Scan[time.Time],
 			"ScanDuration": Scan[time.Duration],
+			"Type": func(typ string, arg any) (any, error) {
+				if got := reflect.TypeOf(arg).String(); got != typ {
+					return nil, fmt.Errorf("expected arg with type '%s' but got '%s'", typ, got)
+				}
+
+				return arg, nil
+			},
+			"NotNil": func(arg any) (any, error) {
+				if arg == nil || reflect.ValueOf(arg).IsNil() {
+					return nil, errors.New("arg is nil")
+				}
+
+				return arg, nil
+			},
+			"NotZero": func(arg any) (any, error) {
+				if arg == nil || reflect.ValueOf(arg).IsZero() {
+					return nil, errors.New("arg is zero")
+				}
+
+				return arg, nil
+			},
 		}),
 		placeholder: "?",
 	}
@@ -165,21 +197,15 @@ func New(name string) *Template {
 	return t
 }
 
-// Template provides an enhanced SQL template system, extending text/template with additional features
-// for generating and executing SQL queries. It supports custom placeholders, positional parameters,
-// and pre- and post-execution hooks. Template instances can parse SQL strings, files, and patterns
-// from various sources, and manage execution contexts using pooled Runner instances for efficiency.
 type Template struct {
 	text        *template.Template
 	beforeRun   func(runner *Runner)
 	afterRun    func(err error, runner *Runner) error
 	pool        *sync.Pool
 	placeholder string
-	size        int
 	positional  bool
 }
 
-// New initializes a new SQL template with the given name, inheriting the current template's settings.
 func (t *Template) New(name string) *Template {
 	return &Template{
 		text:        t.text.New(name),
@@ -191,12 +217,10 @@ func (t *Template) New(name string) *Template {
 	}
 }
 
-// Name returns the name of the underlying template.
 func (t *Template) Name() string {
 	return t.text.Name()
 }
 
-// Placeholder configures the template to use a specified placeholder string and positional parameter mode.
 func (t *Template) Placeholder(placeholder string, positional bool) *Template {
 	t.placeholder = placeholder
 	t.positional = positional
@@ -204,48 +228,40 @@ func (t *Template) Placeholder(placeholder string, positional bool) *Template {
 	return t
 }
 
-// Question sets the placeholder to a question mark (?) for the Template.
 func (t *Template) Question() *Template {
 	return t.Placeholder("?", false)
 }
 
-// Dollar sets the placeholder to a dollar sign ($) for the Template.
 func (t *Template) Dollar() *Template {
 	return t.Placeholder("$", true)
 }
 
-// Colon sets the placeholder to a colon (:) for the Template.
 func (t *Template) Colon() *Template {
 	return t.Placeholder(":", true)
 }
 
-// AtP sets the placeholder to @p for the Template.
 func (t *Template) AtP() *Template {
 	return t.Placeholder("@p", true)
 }
 
-// BeforeRun sets a function to be called before running the Template.
 func (t *Template) BeforeRun(handle func(runner *Runner)) *Template {
 	t.beforeRun = handle
 
 	return t
 }
 
-// AfterRun sets a function to be called after running the Template.
 func (t *Template) AfterRun(handle func(err error, runner *Runner) error) *Template {
 	t.afterRun = handle
 
 	return t
 }
 
-// Option sets options for the Template.
 func (t *Template) Option(opt ...string) *Template {
 	t.text.Option(opt...)
 
 	return t
 }
 
-// Parse parses a SQL template from the provided string and returns the Template.
 func (t *Template) Parse(str string) (*Template, error) {
 	text, err := t.text.Parse(str)
 	if err != nil {
@@ -262,12 +278,10 @@ func (t *Template) Parse(str string) (*Template, error) {
 	}, nil
 }
 
-// MustParse parses the string into the Template and panics if an error occurs.
 func (t *Template) MustParse(str string) *Template {
 	return Must(t.Parse(str))
 }
 
-// ParseFS parses files from a filesystem into the Template.
 func (t *Template) ParseFS(fsys fs.FS, patterns ...string) (*Template, error) {
 	text, err := t.text.ParseFS(fsys, patterns...)
 	if err != nil {
@@ -284,12 +298,10 @@ func (t *Template) ParseFS(fsys fs.FS, patterns ...string) (*Template, error) {
 	}, nil
 }
 
-// MustParseFS ensures that files are parsed from a filesystem into the Template successfully or panics if there's an error.
 func (t *Template) MustParseFS(fsys fs.FS, patterns ...string) *Template {
 	return Must(t.ParseFS(fsys, patterns...))
 }
 
-// ParseFiles parses the specified files into the Template.
 func (t *Template) ParseFiles(filenames ...string) (*Template, error) {
 	text, err := t.text.ParseFiles(filenames...)
 	if err != nil {
@@ -306,12 +318,10 @@ func (t *Template) ParseFiles(filenames ...string) (*Template, error) {
 	}, nil
 }
 
-// MustParseFiles ensures that the specified files are parsed into the Template successfully or panics if there's an error.
 func (t *Template) MustParseFiles(filenames ...string) *Template {
 	return Must(t.ParseFiles(filenames...))
 }
 
-// ParseGlob parses the specified glob pattern into the Template.
 func (t *Template) ParseGlob(pattern string) (*Template, error) {
 	text, err := t.text.ParseGlob(pattern)
 	if err != nil {
@@ -328,19 +338,16 @@ func (t *Template) ParseGlob(pattern string) (*Template, error) {
 	}, nil
 }
 
-// MustParseGlob ensures that the glob pattern is parsed into the Template successfully or panics if there's an error.
 func (t *Template) MustParseGlob(pattern string) *Template {
 	return Must(t.ParseGlob(pattern))
 }
 
-// Funcs registers custom functions to the template, extending its capabilities.
 func (t *Template) Funcs(fm template.FuncMap) *Template {
 	t.text.Funcs(fm)
 
 	return t
 }
 
-// Lookup retrieves a template by its name, returning an error if the template is not found.
 func (t *Template) Lookup(name string) (*Template, error) {
 	text := t.text.Lookup(name)
 	if text == nil {
@@ -357,14 +364,10 @@ func (t *Template) Lookup(name string) (*Template, error) {
 	}, nil
 }
 
-// MustLookup ensures that a template with the specified name is found successfully or panics if there's an error.
 func (t *Template) MustLookup(name string) *Template {
 	return Must(t.Lookup(name))
 }
 
-// Runner is responsible for executing a SQL template. It holds the context,
-// template, SQL buffer, arguments, destination values, and mapping functions
-// necessary for processing and executing the SQL query.
 type Runner struct {
 	Context context.Context
 	Text    *template.Template
@@ -373,6 +376,131 @@ type Runner struct {
 	Args    []any
 	Dest    []any
 	Map     []func() error
+}
+
+func (r *Runner) Query(ctx context.Context, db DB, param any) (*sql.Rows, error) {
+	if err := r.Text.Execute(r.SQL, param); err != nil {
+		return nil, err
+	}
+
+	return db.QueryContext(ctx, r.SQL.String(), r.Args...)
+}
+
+func (r *Runner) QueryRow(ctx context.Context, db DB, param any) (*sql.Row, error) {
+	if err := r.Text.Execute(r.SQL, param); err != nil {
+		return nil, err
+	}
+
+	row := db.QueryRowContext(ctx, r.SQL.String(), r.Args...)
+
+	if err := row.Err(); err != nil {
+		return nil, err
+	}
+
+	return row, nil
+}
+
+func (r *Runner) Exec(ctx context.Context, db DB, param any) (sql.Result, error) {
+	if err := r.Text.Execute(r.SQL, param); err != nil {
+		return nil, err
+	}
+
+	return db.ExecContext(ctx, r.SQL.String(), r.Args...)
+}
+
+func (r *Runner) ScanOne(ctx context.Context, db DB, param any, dest any) error {
+	next, stop := iter.Pull(r.Scan(ctx, db, param, dest))
+
+	defer stop()
+
+	err, ok := next()
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		return sql.ErrNoRows
+	}
+
+	err, ok = next()
+	if err != nil {
+		return err
+	}
+
+	if ok {
+		return ErrTooManyRows
+	}
+
+	return nil
+}
+
+func (r *Runner) Scan(ctx context.Context, db DB, param any, dest any) iter.Seq[error] {
+	return func(yield func(error) bool) {
+		r.Value = dest
+
+		if err := r.Text.Execute(r.SQL, param); err != nil {
+			yield(err)
+
+			return
+		}
+
+		if len(r.Dest) == 0 {
+			r.Dest = append(r.Dest, dest)
+		}
+
+		rows, err := db.QueryContext(ctx, r.SQL.String(), r.Args...)
+		if err != nil {
+			yield(err)
+
+			return
+		}
+
+		defer func() {
+			err = errors.Join(err, rows.Close())
+		}()
+
+		for rows.Next() {
+			if err = rows.Scan(r.Dest...); err != nil {
+				yield(err)
+
+				return
+			}
+
+			for _, m := range r.Map {
+				if m == nil {
+					continue
+				}
+
+				if err = m(); err != nil {
+					yield(err)
+
+					return
+				}
+			}
+
+			if !yield(nil) {
+				return
+			}
+		}
+
+		if err = rows.Err(); err != nil {
+			yield(err)
+
+			return
+		}
+
+		if err = rows.Close(); err != nil {
+			yield(err)
+
+			return
+		}
+	}
+}
+
+func newSQL() *SQL {
+	return &SQL{
+		buf: make([]byte, 0),
+	}
 }
 
 type SQL struct {
@@ -384,22 +512,18 @@ func (s *SQL) Write(data []byte) (int, error) {
 	bufLen := len(s.buf)
 
 	for start < len(data) {
-		// Skip leading whitespace
 		for start < len(data) && (data[start] == ' ' || data[start] == '\n' || data[start] == '\r' || data[start] == '\t') {
 			start++
 		}
 
-		// Find the end of the next word
 		end = start
 		for end < len(data) && !(data[end] == ' ' || data[end] == '\n' || data[end] == '\r' || data[end] == '\t') {
 			end++
 		}
 
-		// Append word to buffer
 		if start < end {
 			wordLen := end - start
 
-			// If the buffer has existing content, append a space before the new word
 			if bufLen > 0 {
 				s.buf = append(s.buf, ' ')
 				bufLen++
@@ -409,7 +533,6 @@ func (s *SQL) Write(data []byte) (int, error) {
 			bufLen += wordLen
 		}
 
-		// Move to the next word
 		start = end
 	}
 
@@ -418,10 +541,6 @@ func (s *SQL) Write(data []byte) (int, error) {
 
 func (s *SQL) String() string {
 	return *(*string)(unsafe.Pointer(&s.buf))
-}
-
-func (s *SQL) Len() int {
-	return len(s.buf)
 }
 
 func (s *SQL) Reset() {
@@ -439,32 +558,30 @@ func (t *Template) GetRunner(ctx context.Context) (*Runner, error) {
 
 				var r = &Runner{
 					Text: escape(text),
-					SQL: &SQL{
-						buf: make([]byte, 0, t.size),
-					},
+					SQL:  newSQL(),
 				}
 
 				r.Text.Funcs(template.FuncMap{
 					"Dest": func() any {
 						return r.Value
 					},
-					ident: func(arg any) string {
+					ident: func(arg any) Raw {
 						switch a := arg.(type) {
 						case Scanner:
 							r.Dest = append(r.Dest, a.Dest)
 							r.Map = append(r.Map, a.Map)
 
-							return a.SQL
+							return Raw(a.SQL)
 						case Raw:
-							return string(a)
+							return a
 						default:
 							r.Args = append(r.Args, arg)
 
 							if t.positional {
-								return t.placeholder + strconv.Itoa(len(r.Args))
+								return Raw(t.placeholder + strconv.Itoa(len(r.Args)))
 							}
 
-							return t.placeholder
+							return Raw(t.placeholder)
 						}
 					},
 				})
@@ -495,8 +612,8 @@ func (t *Template) PutRunner(err error, r *Runner) error {
 		err = t.afterRun(err, r)
 	}
 
-	if size := r.SQL.Len(); size > t.size {
-		t.size = size
+	if r == nil {
+		return err
 	}
 
 	r.SQL.Reset()
@@ -509,74 +626,98 @@ func (t *Template) PutRunner(err error, r *Runner) error {
 	return err
 }
 
-// Exec executes a SQL command using the Template and the given context and database.
 func (t *Template) Exec(ctx context.Context, db DB, param any) (sql.Result, error) {
-	var result sql.Result
-
-	runner, err := t.GetRunner(ctx)
+	r, err := t.GetRunner(ctx)
 	if err != nil {
-		return nil, err
+		return nil, t.PutRunner(err, r)
 	}
 
-	defer func() {
-		err = t.PutRunner(err, runner)
-	}()
-
-	if err = runner.Text.Execute(runner.SQL, param); err != nil {
-		return nil, err
-	}
-
-	result, err = db.ExecContext(ctx, runner.SQL.String(), runner.Args...)
+	result, err := r.Exec(ctx, db, param)
 	if err != nil {
-		return nil, err
+		return nil, t.PutRunner(err, r)
 	}
 
-	return result, err
+	return result, t.PutRunner(nil, r)
 }
 
-// Query runs a SQL query using the Template and the given context and database.
 func (t *Template) Query(ctx context.Context, db DB, param any) (*sql.Rows, error) {
-	var rows *sql.Rows
-
-	runner, err := t.GetRunner(ctx)
+	r, err := t.GetRunner(ctx)
 	if err != nil {
-		return nil, err
+		return nil, t.PutRunner(err, r)
 	}
 
-	defer func() {
-		err = t.PutRunner(err, runner)
-	}()
-
-	if err = runner.Text.Execute(runner.SQL, param); err != nil {
-		return nil, err
-	}
-
-	rows, err = db.QueryContext(ctx, runner.SQL.String(), runner.Args...)
+	rows, err := r.Query(ctx, db, param)
 	if err != nil {
-		return nil, err
+		return nil, t.PutRunner(err, r)
 	}
 
-	return rows, err
+	return rows, t.PutRunner(nil, r)
 }
 
-// QueryRow runs a SQL query that is expected to return a single row using the Template and the given context and database.
 func (t *Template) QueryRow(ctx context.Context, db DB, param any) (*sql.Row, error) {
-	runner, err := t.GetRunner(ctx)
+	r, err := t.GetRunner(ctx)
 	if err != nil {
-		return nil, err
+		return nil, t.PutRunner(err, r)
 	}
 
-	defer func() {
-		err = t.PutRunner(err, runner)
-	}()
-
-	if err = runner.Text.Execute(runner.SQL, param); err != nil {
-		return nil, err
+	row, err := r.QueryRow(ctx, db, param)
+	if err != nil {
+		return nil, t.PutRunner(err, r)
 	}
 
-	row := db.QueryRowContext(ctx, runner.SQL.String(), runner.Args...)
+	return row, t.PutRunner(nil, r)
+}
 
-	return row, err
+func (t *Template) RowsAffected(ctx context.Context, db DB, param any) (int64, error) {
+	r, err := t.GetRunner(ctx)
+	if err != nil {
+		return 0, t.PutRunner(err, r)
+	}
+
+	result, err := r.Exec(ctx, db, param)
+	if err != nil {
+		return 0, t.PutRunner(err, r)
+	}
+
+	aff, err := result.RowsAffected()
+	if err != nil {
+		return 0, t.PutRunner(err, r)
+	}
+
+	return aff, t.PutRunner(nil, r)
+}
+
+func (t *Template) LastInsertId(ctx context.Context, db DB, param any) (int64, error) {
+	r, err := t.GetRunner(ctx)
+	if err != nil {
+		return 0, t.PutRunner(err, r)
+	}
+
+	result, err := t.Exec(ctx, db, param)
+	if err != nil {
+		return 0, t.PutRunner(err, r)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, t.PutRunner(err, r)
+	}
+
+	return id, t.PutRunner(nil, r)
+}
+
+func (t *Template) ScanOne(ctx context.Context, db DB, param any, dest any) error {
+	r, err := t.GetRunner(ctx)
+	if err != nil {
+		return t.PutRunner(err, r)
+	}
+
+	err = r.ScanOne(ctx, db, param, dest)
+	if err != nil {
+		return t.PutRunner(err, r)
+	}
+
+	return t.PutRunner(nil, r)
 }
 
 func MustType[Dest, Param any](t *Template) *TypedTemplate[Dest, Param] {
@@ -596,176 +737,66 @@ func Type[Dest, Param any](t *Template) (*TypedTemplate[Dest, Param], error) {
 	})
 
 	return &TypedTemplate[Dest, Param]{
-		tpl: t,
+		Template: t,
 	}, templatecheck.CheckText(t.text, *new(Param))
 }
 
 type TypedTemplate[Dest, Param any] struct {
-	tpl *Template
+	Template *Template
 }
 
 func (t *TypedTemplate[Dest, Param]) Query(ctx context.Context, db DB, param Param) (*sql.Rows, error) {
-	return t.tpl.Query(ctx, db, param)
+	return t.Template.Query(ctx, db, param)
 }
 
 func (t *TypedTemplate[Dest, Param]) QueryRow(ctx context.Context, db DB, param Param) (*sql.Row, error) {
-	return t.tpl.QueryRow(ctx, db, param)
+	return t.Template.QueryRow(ctx, db, param)
 }
 
 func (t *TypedTemplate[Dest, Param]) Exec(ctx context.Context, db DB, param Param) (sql.Result, error) {
-	return t.tpl.Exec(ctx, db, param)
+	return t.Template.Exec(ctx, db, param)
 }
 
 func (t *TypedTemplate[Dest, Param]) RowsAffected(ctx context.Context, db DB, param Param) (int64, error) {
-	result, err := t.tpl.Exec(ctx, db, param)
-	if err != nil {
-		return 0, err
-	}
-
-	return result.RowsAffected()
+	return t.Template.RowsAffected(ctx, db, param)
 }
 
 func (t *TypedTemplate[Dest, Param]) LastInsertId(ctx context.Context, db DB, param Param) (int64, error) {
-	result, err := t.tpl.Exec(ctx, db, param)
-	if err != nil {
-		return 0, err
-	}
-
-	return result.LastInsertId()
+	return t.Template.LastInsertId(ctx, db, param)
 }
 
-func (t *TypedTemplate[Dest, Param]) Iter(ctx context.Context, db DB, param any) func(func(Dest, error) bool) {
-	var dest Dest
-
-	return func(yield func(Dest, error) bool) {
-		runner, err := t.tpl.GetRunner(ctx)
-		if err != nil {
-			yield(dest, err)
-
-			return
-		}
-
-		defer func() {
-			err = t.tpl.PutRunner(err, runner)
-		}()
-
-		runner.Value = &dest
-
-		if err = runner.Text.Execute(runner.SQL, param); err != nil {
-			yield(dest, err)
-
-			return
-		}
-
-		if len(runner.Dest) == 0 {
-			runner.Dest = append(runner.Dest, &dest)
-		}
-
-		rows, err := db.QueryContext(ctx, runner.SQL.String(), runner.Args...)
-		if err != nil {
-			yield(dest, err)
-
-			return
-		}
-
-		defer func() {
-			err = errors.Join(err, rows.Close())
-		}()
-
-		for rows.Next() {
-			if err = rows.Scan(runner.Dest...); err != nil {
-				yield(dest, err)
-
-				return
-			}
-
-			for _, m := range runner.Map {
-				if m == nil {
-					continue
-				}
-
-				if err = m(); err != nil {
-					yield(dest, err)
-
-					return
-				}
-			}
-
-			if !yield(dest, nil) {
-				return
-			}
-		}
-
-		if err = rows.Err(); err != nil {
-			yield(dest, err)
-
-			return
-		}
-
-		if err = rows.Close(); err != nil {
-			yield(dest, err)
-
-			return
-		}
-	}
-}
-
-// All retrieves all rows of the query result into a slice. It uses the Template to
-// generate the SQL query, executes it against the given database, and collects each
-// resulting row into a slice. If any error occurs during the process, it is returned.
-// Note: `Dest` must not be a pointer to a struct.
 func (t *TypedTemplate[Dest, Param]) All(ctx context.Context, db DB, param Param) ([]Dest, error) {
-	var values = []Dest{}
+	r, err := t.Template.GetRunner(ctx)
+	if err != nil {
+		return nil, t.Template.PutRunner(err, r)
+	}
 
-	for dest, err := range t.Iter(ctx, db, param) {
+	var (
+		values = []Dest{}
+		dest   Dest
+	)
+
+	for err := range r.Scan(ctx, db, param, &dest) {
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return nil, nil
+				return nil, t.Template.PutRunner(nil, r)
 			}
 
-			return nil, err
+			return nil, t.Template.PutRunner(err, r)
 		}
 
 		values = append(values, dest)
 	}
 
-	return values, nil
+	return values, t.Template.PutRunner(nil, r)
 }
 
-// ErrTooManyRows is an error that is returned when a query expected to return a single row
-// returns more than one row. This error helps in ensuring that functions which are designed
-// to  a single row can handle cases where the query result contains multiple rows.
 var ErrTooManyRows = fmt.Errorf("too many rows")
 
-// One retrieves exactly one row of the query result and returns an error if more
-// than one row is found. It uses the Template to generate the SQL query, executes it
-// against the given database, and ensures only one resulting row is returned. If no
-// rows are found or more than one row is found, it returns an error.
-// Note: `Dest` must not be a pointer to a struct.
-func (q *TypedTemplate[Dest, Param]) One(ctx context.Context, db DB, param Param) (Dest, error) {
-	next, stop := iter.Pull2(q.Iter(ctx, db, param))
+func (t *TypedTemplate[Dest, Param]) One(ctx context.Context, db DB, param Param) (Dest, error) {
+	var dest Dest
 
-	defer stop()
-
-	dest, err, ok := next()
-	if err != nil {
-		return dest, err
-	}
-
-	if !ok {
-		return dest, sql.ErrNoRows
-	}
-
-	_, err, ok = next()
-	if err != nil {
-		return dest, err
-	}
-
-	if ok {
-		return dest, ErrTooManyRows
-	}
-
-	return dest, nil
+	return dest, t.Template.ScanOne(ctx, db, param, &dest)
 }
 
 var ident = "__sqlt__"
@@ -789,7 +820,6 @@ func escapeTree(s *parse.Tree) *parse.Tree {
 	return s
 }
 
-// escapeNode traverses and modifies a parse.Node to add necessary escaping logic for template processing.
 func escapeNode(s *parse.Tree, n parse.Node) {
 	switch v := n.(type) {
 	case *parse.ActionNode:

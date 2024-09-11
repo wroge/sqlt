@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"text/template"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -50,40 +51,56 @@ var (
 func TestStuff(t *testing.T) {
 	tests := []testCase{
 		{
-			tpl:            sqlt.New("test-1").MustParse(`SELECT {{ .Int64 }} {{ ScanInt64 Dest.Int64 "AS int64," }} {{ .String }} {{ ScanString Dest.String "AS string" }}`),
+			tpl: sqlt.New("test-1").Dollar().Funcs(template.FuncMap{
+				"do": func(str string) string {
+					return str
+				},
+			}).MustParse(`{{ $stuff := do "HELLO" }}SELECT {{ .Int64 | Type "int64" }} {{ ScanInt64 Dest.Int64 "AS int64," }} {{ .String | Type "string" }} {{ ScanString Dest.String "AS string" }}`),
 			params:         Param{Int64: 100, String: "hundred"},
 			mockRows:       sqlmock.NewRows([]string{"int64", "string"}).AddRow(100, "hundred"),
-			expectedSQL:    `SELECT \? AS int64, \? AS string`,
+			expectedSQL:    `SELECT \$1 AS int64, \$2 AS string`,
 			expectedArgs:   []driver.Value{100, ("hundred")},
 			expectedResult: Result{Int64: 100, String: "hundred"},
 			expectError:    false,
 			testFunc:       testOne,
 		},
 		{
-			tpl:            sqlt.New("test-3").MustParse(`SELECT {{ .Time }} {{ ScanTime Dest.Time "AS time," }} {{ .JSON }} {{ ScanJSON Dest.JSON "AS json" }}`),
+			tpl: sqlt.New("test-3").Dollar().Funcs(template.FuncMap{
+				"do": func(str string) string {
+					return str
+				},
+			}).MustParse(`{{ $stuff := do "HELLO" }}SELECT {{ .Time | Type "time.Time" }} {{ ScanTime Dest.Time "AS time," }} {{ .JSON | Type "json.RawMessage" }} {{ ScanJSON Dest.JSON "AS json" }}`),
 			params:         Param{Time: date, JSON: []byte(`{"hundred": 100}`)},
 			mockRows:       sqlmock.NewRows([]string{"time", "json"}).AddRow(date, []byte(`{"hundred": 100}`)),
-			expectedSQL:    `SELECT \? AS time, \? AS json`,
+			expectedSQL:    `SELECT \$1 AS time, \$2 AS json`,
 			expectedArgs:   []driver.Value{date, []byte(`{"hundred": 100}`)},
 			expectedResult: []Result{{Time: date, JSON: []byte(`{"hundred": 100}`)}},
 			expectError:    false,
 			testFunc:       testAll,
 		},
 		{
-			tpl:            sqlt.New("test-4").MustParse(`SELECT {{ .Int64 }} {{ ScanInt Dest.Int "AS int" }}`),
+			tpl: sqlt.New("test-4").Dollar().Funcs(template.FuncMap{
+				"do": func(str string) string {
+					return str
+				},
+			}).MustParse(`{{ $stuff := do "HELLO" }}SELECT {{ .Int64 | Type "int64" }} {{ ScanInt Dest.Int "AS int" }}`),
 			params:         Param{Int64: 42},
 			mockRows:       sqlmock.NewRows([]string{"int"}).AddRow(42),
-			expectedSQL:    `SELECT \? AS int`,
+			expectedSQL:    `SELECT \$1 AS int`,
 			expectedArgs:   []driver.Value{42},
 			expectedResult: Result{Int: 42},
 			expectError:    false,
 			testFunc:       testOne,
 		},
 		{
-			tpl:            sqlt.New("test-6").MustParse(`SELECT {{ .Float64 }} {{ ScanFloat64 Dest.Float64 "AS float64," }} {{ .JSON }} {{ ScanJSON Dest.JSON "AS json" }}`),
+			tpl: sqlt.New("test-6").Dollar().Funcs(template.FuncMap{
+				"do": func(str string) string {
+					return str
+				},
+			}).MustParse(`{{ $stuff := do "HELLO" }}SELECT {{ .Float64 | Type "float64" }} {{ ScanFloat64 Dest.Float64 "AS float64," }} {{ .JSON | Type "json.RawMessage" }} {{ ScanJSON Dest.JSON "AS json" }}`),
 			params:         Param{Float64: 3.14, JSON: []byte(`{"pi": 3.14}`)},
 			mockRows:       sqlmock.NewRows([]string{"float64", "json"}).AddRow(3.14, []byte(`{"pi": 3.14}`)),
-			expectedSQL:    `SELECT \? AS float64, \? AS json`,
+			expectedSQL:    `SELECT \$1 AS float64, \$2 AS json`,
 			expectedArgs:   []driver.Value{3.14, []byte(`{"pi": 3.14}`)},
 			expectedResult: []Result{{Float64: 3.14, JSON: []byte(`{"pi": 3.14}`)}},
 			expectError:    false,

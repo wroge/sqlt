@@ -16,6 +16,7 @@ go get -u github.com/wroge/sqlt
 - The ```Dest``` function is a placeholder that is replaced at execution time with the appropriate generic type.
 - SQL templates can be loaded from the filesystem using ```ParseFS``` or ```ParseFiles```.
 - ```Type``` and ```MustType``` functions do type-safe checks using: [jba/templatecheck](https://github.com/jba/templatecheck).
+- Additionally, ```Type``` the type of the arguments.
 
 ## Example
 
@@ -70,9 +71,10 @@ var (
 		})
 
 	insert = sqlt.MustType[any, []string](t.New("insert").MustParse(`
+		{{ $now := now }}
 		INSERT INTO books (id, title, created_at) VALUES
 		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
-			({{ uuidv4 }}, {{ $t }}, {{ now }})
+			({{ uuidv4 | Type "string" }}, {{ $t | Type "string" }}, {{ $now | Type "time.Time" }})
 		{{ end }}
 		RETURNING id;
 	`))
@@ -83,7 +85,7 @@ var (
 			{{ ScanString Dest.Title ", title" }}
 			{{ ScanTime Dest.CreatedAt ", created_at" }}
 		FROM books
-		WHERE INSTR(title, {{ .Title }}) > 0
+		WHERE INSTR(title, {{ .Title | Type "string" }}) > 0
 	`))
 )
 
@@ -109,17 +111,17 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// insert 275.667µs INSERT INTO books (id, title, created_at) VALUES ( $1 , $2 , $3 ) , ( $4 , $5 , $6 ) , ( $7 , $8 , $9 ) , ( $10 , $11 , $12 ) RETURNING id;
-	// [c66a2f34-d5ab-44d1-95f9-497d086e9d84 The Bitcoin Standard 2024-09-01 12:33:01.02574 +0200 CEST m=+0.007448335 8fbc0b2b-b96f-43dc-ab25-7bcf18174c72 Sapiens: A Brief History of Humankind 2024-09-01 12:33:01.025745 +0200 CEST m=+0.007452710 e8496edf-eb35-4b36-bf60-b9e65f8df67b 100 Go Mistakes and How to Avoid Them 2024-09-01 12:33:01.025747 +0200 CEST m=+0.007455668 a9dc918e-e517-4fc8-ad06-9cc6956377b5 Mastering Bitcoin 2024-09-01 12:33:01.02575 +0200 CEST m=+0.007458585]
+	// insert 331.542µs INSERT INTO books (id, title, created_at) VALUES ( $1 , $2 , $3 ) , ( $4 , $5 , $6 ) , ( $7 , $8 , $9 ) , ( $10 , $11 , $12 ) RETURNING id;
+	// [7110b963-ef0e-446c-aa0f-75002eea16c7 The Bitcoin Standard 2024-09-10 13:25:11.559146 +0200 CEST m=+0.012192335 82304326-9b79-4180-8801-647f3acaa4d9 Sapiens: A Brief History of Humankind 2024-09-10 13:25:11.559146 +0200 CEST m=+0.012192335 165fb6c1-f707-493b-8db2-ab20ac743098 100 Go Mistakes and How to Avoid Them 2024-09-10 13:25:11.559146 +0200 CEST m=+0.012192335 a846f4af-87b1-4a5f-98a3-96c87efac522 Mastering Bitcoin 2024-09-10 13:25:11.559146 +0200 CEST m=+0.012192335]
 
 	books, err := query.All(ctx, db, Query{Title: "Bitcoin"})
 	if err != nil {
 		panic(err)
 	}
-	// query 62.583µs SELECT id , title , created_at FROM books WHERE INSTR(title, $1 ) > 0 [Bitcoin]
+	// query 98.375µs SELECT id , title , created_at FROM books WHERE INSTR(title, $1 ) > 0 [Bitcoin]
 
 	fmt.Println(books)
-	// [{c66a2f34-d5ab-44d1-95f9-497d086e9d84 The Bitcoin Standard 2024-09-01 12:33:01.02574 +0200 CEST} {a9dc918e-e517-4fc8-ad06-9cc6956377b5 Mastering Bitcoin 2024-09-01 12:33:01.02575 +0200 CEST}]
+	// [{7110b963-ef0e-446c-aa0f-75002eea16c7 The Bitcoin Standard 2024-09-10 13:25:11.559146 +0200 CEST} {a846f4af-87b1-4a5f-98a3-96c87efac522 Mastering Bitcoin 2024-09-10 13:25:11.559146 +0200 CEST}]
 }
 ```
 
@@ -128,15 +130,15 @@ func main() {
 [https://github.com/wroge/vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture)
 
 ```
-go test -bench . -benchmem .                   
+go test -bench . -benchmem ./...
 goos: darwin
 goarch: arm64
 pkg: github.com/wroge/sqlt
 cpu: Apple M3 Pro
-BenchmarkSqltAll-12                33141             86666 ns/op           10945 B/op        101 allocs/op
-BenchmarkSquirrelAll-12            35822            104785 ns/op           12323 B/op        108 allocs/op
+BenchmarkSqltAll-12                33496             89417 ns/op           10944 B/op        101 allocs/op
+BenchmarkSquirrelAll-12            36298             96829 ns/op           12304 B/op        108 allocs/op
 PASS
-ok      github.com/wroge/sqlt   7.576s
+ok      github.com/wroge/sqlt   7.404s
 ```
 
 ## Inspiration
