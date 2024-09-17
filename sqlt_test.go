@@ -16,21 +16,21 @@ import (
 )
 
 type testCase struct {
-	params         Param
 	expectedResult interface{}
 	tpl            *sqlt.Template
 	mockRows       *sqlmock.Rows
 	testFunc       func(t *testing.T, db *sql.DB, tc testCase)
 	expectedSQL    string
 	expectedArgs   []driver.Value
+	params         Param
 	expectError    bool
 }
 
 type Param struct {
 	Time    time.Time
-	Int64   int64
 	String  string
 	JSON    json.RawMessage
+	Int64   int64
 	Float64 float64
 }
 
@@ -55,7 +55,7 @@ func TestStuff(t *testing.T) {
 				"do": func(str string) string {
 					return str
 				},
-			}).MustParse(`{{ $stuff := do "HELLO" }}SELECT {{ .Int64 | Type "int64" }} {{ ScanInt64 Dest.Int64 "AS int64," }} {{ .String | Type "string" }} {{ ScanString Dest.String "AS string" }}`),
+			}).MustParse(`{{ $stuff := do "HELLO" }}SELECT {{ .Int64 }} {{ ScanInt64 Dest.Int64 "AS int64," }} {{ .String }} {{ ScanString Dest.String "AS string" }}`),
 			params:         Param{Int64: 100, String: "hundred"},
 			mockRows:       sqlmock.NewRows([]string{"int64", "string"}).AddRow(100, "hundred"),
 			expectedSQL:    `SELECT \$1 AS int64, \$2 AS string`,
@@ -69,7 +69,7 @@ func TestStuff(t *testing.T) {
 				"do": func(str string) string {
 					return str
 				},
-			}).MustParse(`{{ $stuff := do "HELLO" }}SELECT {{ .Time | Type "time.Time" }} {{ ScanTime Dest.Time "AS time," }} {{ .JSON | Type "json.RawMessage" }} {{ ScanJSON Dest.JSON "AS json" }}`),
+			}).MustParse(`{{ $stuff := do "HELLO" }}SELECT {{ .Time }} {{ ScanTime Dest.Time "AS time," }} {{ .JSON }} {{ ScanJSON Dest.JSON "AS json" }}`),
 			params:         Param{Time: date, JSON: []byte(`{"hundred": 100}`)},
 			mockRows:       sqlmock.NewRows([]string{"time", "json"}).AddRow(date, []byte(`{"hundred": 100}`)),
 			expectedSQL:    `SELECT \$1 AS time, \$2 AS json`,
@@ -83,7 +83,7 @@ func TestStuff(t *testing.T) {
 				"do": func(str string) string {
 					return str
 				},
-			}).MustParse(`{{ $stuff := do "HELLO" }}SELECT {{ .Int64 | Type "int64" }} {{ ScanInt Dest.Int "AS int" }}`),
+			}).MustParse(`{{ $stuff := do "HELLO" }} \n SELECT {{ .Int64 }} {{ ScanInt Dest.Int "AS int" }}`),
 			params:         Param{Int64: 42},
 			mockRows:       sqlmock.NewRows([]string{"int"}).AddRow(42),
 			expectedSQL:    `SELECT \$1 AS int`,
@@ -97,7 +97,7 @@ func TestStuff(t *testing.T) {
 				"do": func(str string) string {
 					return str
 				},
-			}).MustParse(`{{ $stuff := do "HELLO" }}SELECT {{ .Float64 | Type "float64" }} {{ ScanFloat64 Dest.Float64 "AS float64," }} {{ .JSON | Type "json.RawMessage" }} {{ ScanJSON Dest.JSON "AS json" }}`),
+			}).MustParse(`{{ $stuff := do "HELLO" }}   SELECT {{ .Float64 }} {{ ScanFloat64 Dest.Float64 "AS float64," }} {{ .JSON }} {{ ScanJSON Dest.JSON "AS json" }}`),
 			params:         Param{Float64: 3.14, JSON: []byte(`{"pi": 3.14}`)},
 			mockRows:       sqlmock.NewRows([]string{"float64", "json"}).AddRow(3.14, []byte(`{"pi": 3.14}`)),
 			expectedSQL:    `SELECT \$1 AS float64, \$2 AS json`,
@@ -156,11 +156,9 @@ func equal(a, b interface{}) bool {
 }
 
 func BenchmarkSqltAll(b *testing.B) {
-	t := sqlt.New("first").Dollar().MustParse(`
-		SELECT {{ ScanInt64 Dest.Int64 "int64," -}} {{ ScanString Dest.String "string" }} FROM results WHERE test = {{ .String }}
-	`)
-
-	query := sqlt.MustType[Result, Param](t)
+	query := sqlt.MustType[Result, Param](sqlt.New("first").Dollar().MustParse(`
+		SELECT {{ ScanInt64 Dest.Int64 "int64," }} {{ ScanString Dest.String "string" }} FROM results WHERE test = {{ .String }}
+	`))
 
 	benchmarkAll(b, func(db *sql.DB, params Param) ([]Result, error) {
 		return query.All(context.Background(), db, params)
@@ -230,6 +228,118 @@ func benchmarkAll(b *testing.B, do func(db *sql.DB, param Param) ([]Result, erro
 		}
 
 		if !equal(res, []Result{{Int64: 100, String: "hundred"}, {Int64: 200, String: "two-hundred"}, {Int64: 300, String: "three-hundred"}}) {
+			b.Fatal(res)
+		}
+	}
+}
+
+func BenchmarkSqltOne(b *testing.B) {
+	query := sqlt.MustType[Result, Param](sqlt.New("first").Dollar().MustParse(`
+		SELECT {{ ScanInt64 Dest.Int64 "int64," }} {{ ScanString Dest.String "string" }} FROM results WHERE test = {{ .String }}
+	`))
+
+	benchmarkOne(b, func(db *sql.DB, params Param) (Result, error) {
+		return query.One(context.Background(), db, params)
+	})
+}
+
+func BenchmarkSquirrelOne(b *testing.B) {
+	sb := squirrel.Select("int64", "string").From("results").PlaceholderFormat(squirrel.Dollar)
+
+	benchmarkOne(b, func(db *sql.DB, params Param) (Result, error) {
+		query := sb.Where("test = ?", params.String)
+
+		var res Result
+
+		row := query.RunWith(db).QueryRowContext(context.Background())
+
+		if err := row.Scan(&res.Int64, &res.String); err != nil {
+			return res, err
+		}
+
+		return res, nil
+	})
+}
+
+func benchmarkOne(b *testing.B, do func(db *sql.DB, param Param) (Result, error)) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		b.Fatalf("failed to open sqlmock database: %s", err)
+	}
+
+	defer db.Close()
+
+	b.ResetTimer()
+
+	for range b.N {
+		mock.ExpectQuery(`SELECT int64, string FROM results WHERE test = \$1`).WithArgs("value").
+			WillReturnRows(
+				sqlmock.NewRows([]string{"int64", "string"}).
+					AddRow(100, "hundred"),
+			)
+
+		res, err := do(db, Param{String: "value"})
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		if !equal(res, Result{Int64: 100, String: "hundred"}) {
+			b.Fatal(res)
+		}
+	}
+}
+
+func BenchmarkSqltFirst(b *testing.B) {
+	query := sqlt.MustType[Result, Param](sqlt.New("first").Dollar().MustParse(`
+		SELECT {{ ScanInt64 Dest.Int64 "int64," }} {{ ScanString Dest.String "string" }} FROM results WHERE test = {{ .String }}
+	`))
+
+	benchmarkFirst(b, func(db *sql.DB, params Param) (Result, error) {
+		return query.First(context.Background(), db, params)
+	})
+}
+
+func BenchmarkSquirreFirst(b *testing.B) {
+	sb := squirrel.Select("int64", "string").From("results").PlaceholderFormat(squirrel.Dollar)
+
+	benchmarkFirst(b, func(db *sql.DB, params Param) (Result, error) {
+		query := sb.Where("test = ?", params.String)
+
+		var res Result
+
+		row := query.RunWith(db).QueryRowContext(context.Background())
+
+		if err := row.Scan(&res.Int64, &res.String); err != nil {
+			return res, err
+		}
+
+		return res, nil
+	})
+}
+
+func benchmarkFirst(b *testing.B, do func(db *sql.DB, param Param) (Result, error)) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		b.Fatalf("failed to open sqlmock database: %s", err)
+	}
+
+	defer db.Close()
+
+	b.ResetTimer()
+
+	for range b.N {
+		mock.ExpectQuery(`SELECT int64, string FROM results WHERE test = \$1`).WithArgs("value").
+			WillReturnRows(
+				sqlmock.NewRows([]string{"int64", "string"}).
+					AddRow(100, "hundred"),
+			)
+
+		res, err := do(db, Param{String: "value"})
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		if !equal(res, Result{Int64: 100, String: "hundred"}) {
 			b.Fatal(res)
 		}
 	}

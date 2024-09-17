@@ -12,11 +12,10 @@ go get -u github.com/wroge/sqlt
 ## How does it work?
 
 - All input values are safely escaped and replaced with the correct placeholders at execution time.
-- Functions like ```ScanInt64``` generate ```sqlt.Scanner`s```, which hold pointers to the destination and optionally a mapper. These scanners are collected at execution time.
+- ```Scan```-functions generate ```sqlt.Scanner`s```, which hold pointers to the destination and optionally a mapper. These scanners are collected at execution time.
 - The ```Dest``` function is a placeholder that is replaced at execution time with the appropriate generic type.
 - SQL templates can be loaded from the filesystem using ```ParseFS``` or ```ParseFiles```.
 - ```Type``` and ```MustType``` functions do type-safe checks using: [jba/templatecheck](https://github.com/jba/templatecheck).
-- Additionally, ```Type``` the type of the arguments.
 
 ## Example
 
@@ -51,41 +50,41 @@ var (
 	t = sqlt.New("db").
 		Dollar().
 		Funcs(sprig.TxtFuncMap()).
-		BeforeRun(func(runner *sqlt.Runner) {
-			runner.Context = context.WithValue(runner.Context, startKey{}, time.Now())
+		BeforeRun(func(r *sqlt.Runner) {
+			r.Context = context.WithValue(r.Context, startKey{}, time.Now())
 		}).
-		AfterRun(func(err error, runner *sqlt.Runner) error {
-			var duration = time.Since(runner.Context.Value(startKey{}).(time.Time))
+		AfterRun(func(err error, r *sqlt.Runner) error {
+			var duration = time.Since(r.Context.Value(startKey{}).(time.Time))
 
 			if err != nil {
 				// apply error logging here
-				fmt.Println(err, runner.Text.Name(), duration, runner.SQL, runner.Args)
+				fmt.Println(err, r.Text.Name(), duration, r.SQL, r.Args)
 
 				return err
 			}
 
 			// apply normal logging here
-			fmt.Println(runner.Text.Name(), duration, runner.SQL, runner.Args)
+			fmt.Println(r.Text.Name(), duration, r.SQL, r.Args)
 
 			return nil
 		})
 
 	insert = sqlt.MustType[any, []string](t.New("insert").MustParse(`
-		{{ $now := now }}
 		INSERT INTO books (id, title, created_at) VALUES
-		{{ range $i, $t := . }} {{ if $i }}, {{ end }}
-			({{ uuidv4 | Type "string" }}, {{ $t | Type "string" }}, {{ $now | Type "time.Time" }})
-		{{ end }}
+		{{ range $i, $t := . -}}
+			{{ if $i }}, {{ end }}
+			({{ uuidv4 }}, {{ $t }}, {{ now }})
+		{{- end }}
 		RETURNING id;
 	`))
 
 	query = sqlt.MustType[Book, Query](t.New("query").MustParse(`
 		SELECT
-			{{ Scan Dest.ID "id" }}
-			{{ ScanString Dest.Title ", title" }}
+			{{ Scan Dest.ID "id" -}}
+			{{ ScanString Dest.Title ", title" -}}
 			{{ ScanTime Dest.CreatedAt ", created_at" }}
 		FROM books
-		WHERE INSTR(title, {{ .Title | Type "string" }}) > 0
+		WHERE INSTR(title, {{ .Title }}) > 0;
 	`))
 )
 
@@ -111,17 +110,26 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// insert 331.542µs INSERT INTO books (id, title, created_at) VALUES ( $1 , $2 , $3 ) , ( $4 , $5 , $6 ) , ( $7 , $8 , $9 ) , ( $10 , $11 , $12 ) RETURNING id;
-	// [7110b963-ef0e-446c-aa0f-75002eea16c7 The Bitcoin Standard 2024-09-10 13:25:11.559146 +0200 CEST m=+0.012192335 82304326-9b79-4180-8801-647f3acaa4d9 Sapiens: A Brief History of Humankind 2024-09-10 13:25:11.559146 +0200 CEST m=+0.012192335 165fb6c1-f707-493b-8db2-ab20ac743098 100 Go Mistakes and How to Avoid Them 2024-09-10 13:25:11.559146 +0200 CEST m=+0.012192335 a846f4af-87b1-4a5f-98a3-96c87efac522 Mastering Bitcoin 2024-09-10 13:25:11.559146 +0200 CEST m=+0.012192335]
+	// insert 262.084µs INSERT INTO books (id, title, created_at) VALUES ($1, $2, $3), ($4, $5, $6), ($7, $8, $9), ($10, $11, $12) RETURNING id;
+	// [001fa71a-bb2e-46bd-a545-0ce12a8229c1 The Bitcoin Standard 2024-09-12 20:00:19.963652 +0200 CEST m=+0.009764167 e056bec8-609d-48fc-a769-c5ff8d06bd1e Sapiens: A Brief History of Humankind 2024-09-12 20:00:19.963658 +0200 CEST m=+0.009769626 86065b16-0aa1-43f6-b589-17fbdbddeffc 100 Go Mistakes and How to Avoid Them 2024-09-12 20:00:19.963661 +0200 CEST m=+0.009773292 b7905ecc-b023-482b-b5d2-68fc26fefc1c Mastering Bitcoin 2024-09-12 20:00:19.963665 +0200 CEST m=+0.009777001]
 
 	books, err := query.All(ctx, db, Query{Title: "Bitcoin"})
 	if err != nil {
 		panic(err)
 	}
-	// query 98.375µs SELECT id , title , created_at FROM books WHERE INSTR(title, $1 ) > 0 [Bitcoin]
+	// query 77.291µs SELECT id, title, created_at FROM books WHERE INSTR(title, $1) > 0; [Bitcoin]
 
 	fmt.Println(books)
-	// [{7110b963-ef0e-446c-aa0f-75002eea16c7 The Bitcoin Standard 2024-09-10 13:25:11.559146 +0200 CEST} {a846f4af-87b1-4a5f-98a3-96c87efac522 Mastering Bitcoin 2024-09-10 13:25:11.559146 +0200 CEST}]
+	// [{001fa71a-bb2e-46bd-a545-0ce12a8229c1 The Bitcoin Standard 2024-09-12 20:00:19.963652 +0200 CEST} {b7905ecc-b023-482b-b5d2-68fc26fefc1c Mastering Bitcoin 2024-09-12 20:00:19.963665 +0200 CEST}]
+
+	book, err := query.One(ctx, db, Query{Title: "The Bitcoin Standard"})
+	if err != nil {
+		panic(err)
+	}
+	// query 29.75µs SELECT id, title, created_at FROM books WHERE INSTR(title, $1) > 0; [The Bitcoin Standard]
+
+	fmt.Println(book)
+	// {001fa71a-bb2e-46bd-a545-0ce12a8229c1 The Bitcoin Standard 2024-09-12 20:00:19.963652 +0200 CEST}
 }
 ```
 
@@ -135,10 +143,14 @@ goos: darwin
 goarch: arm64
 pkg: github.com/wroge/sqlt
 cpu: Apple M3 Pro
-BenchmarkSqltAll-12                33496             89417 ns/op           10944 B/op        101 allocs/op
-BenchmarkSquirrelAll-12            36298             96829 ns/op           12304 B/op        108 allocs/op
+BenchmarkSqltAll-12                32410             88496 ns/op           11236 B/op        108 allocs/op
+BenchmarkSquirrelAll-12            34914             92241 ns/op           12341 B/op        108 allocs/op
+BenchmarkSqltOne-12                35199             93324 ns/op           10006 B/op         96 allocs/op
+BenchmarkSquirrelOne-12            35876             93790 ns/op           11353 B/op        101 allocs/op
+BenchmarkSqltFirst-12              34674             92799 ns/op            9976 B/op         93 allocs/op
+BenchmarkSquirreFirst-12           35218             98886 ns/op           11374 B/op        101 allocs/op
 PASS
-ok      github.com/wroge/sqlt   7.404s
+ok      github.com/wroge/sqlt   21.741s
 ```
 
 ## Inspiration
