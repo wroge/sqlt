@@ -115,7 +115,12 @@ func MissingKeyError() Option {
 
 func Lookup(name string) Option {
 	return func(tpl *template.Template) (*template.Template, error) {
-		return tpl.Lookup(name), nil
+		tpl = tpl.Lookup(name)
+		if tpl == nil {
+			return nil, fmt.Errorf("template '%s' not found", name)
+		}
+
+		return tpl, nil
 	}
 }
 
@@ -167,6 +172,9 @@ func defaultTemplate() *template.Template {
 		// ident is a stub function
 		ident: func(arg any) Raw {
 			return ""
+		},
+		"Dest": func() any {
+			return nil
 		},
 		"Raw": func(str string) Raw {
 			return Raw(str)
@@ -386,11 +394,7 @@ func (s *Statement[Param]) Query(ctx context.Context, db DB, param Param) (*sql.
 }
 
 func QueryStmt[Param, Dest any](config *Config, opts ...Option) *QueryStatement[Param, Dest] {
-	tpl := defaultTemplate().Funcs(template.FuncMap{
-		"Dest": func() *Dest {
-			return new(Dest)
-		},
-	})
+	tpl := defaultTemplate()
 
 	destType := reflect.TypeFor[Dest]().Name()
 	if goodName(destType) {
