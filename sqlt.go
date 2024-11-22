@@ -264,9 +264,9 @@ func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
 	escape(tpl)
 
 	return &Statement[Param]{
-		Context: config.Context,
-		Log:     config.Log,
-		Pool: &sync.Pool{
+		ctx: config.Context,
+		log:     config.Log,
+		pool: &sync.Pool{
 			New: func() any {
 				t, err := tpl.Clone()
 				if err != nil {
@@ -302,9 +302,9 @@ func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
 }
 
 type Statement[Param any] struct {
-	Context func(ctx context.Context, runner Runner) context.Context
-	Log     func(ctx context.Context, err error, runner Runner)
-	Pool    *sync.Pool
+	ctx func(ctx context.Context, runner Runner) context.Context
+	log     func(ctx context.Context, err error, runner Runner)
+	pool    *sync.Pool
 }
 
 type Runner interface {
@@ -337,10 +337,10 @@ func runExec[Param, Result any](s *Statement[Param], ctx context.Context, param 
 		err    error
 	)
 
-	item := s.Pool.Get()
+	item := s.pool.Get()
 	if err, ok := item.(error); ok {
-		if s.Log != nil {
-			s.Log(ctx, err, nil)
+		if s.log != nil {
+			s.log(ctx, err, nil)
 		}
 
 		return result, err
@@ -348,19 +348,19 @@ func runExec[Param, Result any](s *Statement[Param], ctx context.Context, param 
 
 	runner := item.(*execRunner)
 
-	if s.Context != nil {
-		ctx = s.Context(ctx, runner)
+	if s.ctx != nil {
+		ctx = s.ctx(ctx, runner)
 	}
 
 	defer func() {
-		if s.Log != nil {
-			s.Log(ctx, err, runner)
+		if s.log != nil {
+			s.log(ctx, err, runner)
 		}
 
 		runner.writer.Reset()
 		runner.args = runner.args[:0]
 
-		s.Pool.Put(runner)
+		s.pool.Put(runner)
 	}()
 
 	if err = runner.tpl.Execute(runner.writer, param); err != nil {
