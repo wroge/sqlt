@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"reflect"
+	"runtime"
 	"strconv"
 	"sync"
 	"text/template"
@@ -246,6 +247,8 @@ func defaultTemplate() *template.Template {
 }
 
 func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
+	_, file, line, _ := runtime.Caller(1)
+
 	tpl := defaultTemplate()
 
 	var err error
@@ -265,7 +268,7 @@ func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
 
 	return &Statement[Param]{
 		ctx: config.Context,
-		log:     config.Log,
+		log: config.Log,
 		pool: &sync.Pool{
 			New: func() any {
 				t, err := tpl.Clone()
@@ -276,6 +279,8 @@ func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
 				runner := &execRunner{
 					tpl:    t,
 					writer: &writer{},
+					file:   file,
+					line:   line,
 				}
 
 				t.Funcs(template.FuncMap{
@@ -302,21 +307,25 @@ func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
 }
 
 type Statement[Param any] struct {
-	ctx func(ctx context.Context, runner Runner) context.Context
-	log     func(ctx context.Context, err error, runner Runner)
-	pool    *sync.Pool
+	ctx  func(ctx context.Context, runner Runner) context.Context
+	log  func(ctx context.Context, err error, runner Runner)
+	pool *sync.Pool
 }
 
 type Runner interface {
 	Template() *template.Template
 	SQL() fmt.Stringer
 	Args() []any
+	File() string
+	Line() int
 }
 
 type execRunner struct {
 	tpl    *template.Template
 	writer *writer
 	args   []any
+	file   string
+	line   int
 }
 
 func (r *execRunner) Template() *template.Template {
@@ -329,6 +338,14 @@ func (r *execRunner) SQL() fmt.Stringer {
 
 func (r *execRunner) Args() []any {
 	return r.args
+}
+
+func (r *execRunner) File() string {
+	return r.file
+}
+
+func (r *execRunner) Line() int {
+	return r.line
 }
 
 func runExec[Param, Result any](s *Statement[Param], ctx context.Context, param Param, exec func(ctx context.Context, runner *execRunner) (Result, error)) (Result, error) {
@@ -394,6 +411,8 @@ func (s *Statement[Param]) Query(ctx context.Context, db DB, param Param) (*sql.
 }
 
 func QueryStmt[Param, Dest any](config *Config, opts ...Option) *QueryStatement[Param, Dest] {
+	_, file, line, _ := runtime.Caller(1)
+
 	tpl := defaultTemplate()
 
 	destType := reflect.TypeFor[Dest]().Name()
@@ -433,6 +452,8 @@ func QueryStmt[Param, Dest any](config *Config, opts ...Option) *QueryStatement[
 				runner := &queryRunner[Dest]{
 					tpl:    t,
 					writer: &writer{},
+					file:   file,
+					line:   line,
 				}
 
 				if goodName(destType) {
@@ -481,6 +502,8 @@ type queryRunner[Dest any] struct {
 	dest     *Dest
 	scanners []any
 	mappers  []func() error
+	file     string
+	line     int
 }
 
 func (r *queryRunner[Dest]) Template() *template.Template {
@@ -493,6 +516,14 @@ func (r *queryRunner[Dest]) SQL() fmt.Stringer {
 
 func (r *queryRunner[Dest]) Args() []any {
 	return r.args
+}
+
+func (r *queryRunner[Dest]) File() string {
+	return r.file
+}
+
+func (r *queryRunner[Dest]) Line() int {
+	return r.line
 }
 
 type QueryStatement[Param, Dest any] struct {
