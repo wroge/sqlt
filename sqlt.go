@@ -253,7 +253,14 @@ func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
 
 	var err error
 
-	for _, opt := range append(config.Options, opts...) {
+	for _, opt := range config.Options {
+		tpl, err = opt(tpl)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	for _, opt := range opts {
 		tpl, err = opt(tpl)
 		if err != nil {
 			panic(err)
@@ -426,7 +433,14 @@ func QueryStmt[Param, Dest any](config *Config, opts ...Option) *QueryStatement[
 
 	var err error
 
-	for _, opt := range append(config.Options, opts...) {
+	for _, opt := range config.Options {
+		tpl, err = opt(tpl)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	for _, opt := range opts {
 		tpl, err = opt(tpl)
 		if err != nil {
 			panic(err)
