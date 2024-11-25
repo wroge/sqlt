@@ -174,9 +174,6 @@ func defaultTemplate() *template.Template {
 		ident: func(arg any) Raw {
 			return ""
 		},
-		"Dest": func() any {
-			return nil
-		},
 		"Raw": func(str string) Raw {
 			return Raw(str)
 		},
@@ -249,7 +246,11 @@ func defaultTemplate() *template.Template {
 func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
 	_, file, line, _ := runtime.Caller(1)
 
-	tpl := defaultTemplate()
+	tpl := defaultTemplate().Funcs(template.FuncMap{
+		"Dest": func() any {
+			return nil
+		},
+	})
 
 	var err error
 
@@ -420,7 +421,11 @@ func (s *Statement[Param]) Query(ctx context.Context, db DB, param Param) (*sql.
 func QueryStmt[Param, Dest any](config *Config, opts ...Option) *QueryStatement[Param, Dest] {
 	_, file, line, _ := runtime.Caller(1)
 
-	tpl := defaultTemplate()
+	tpl := defaultTemplate().Funcs(template.FuncMap{
+		"Dest": func() *Dest {
+			return new(Dest)
+		},
+	})
 
 	destType := reflect.TypeFor[Dest]().Name()
 	if goodName(destType) {
