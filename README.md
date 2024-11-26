@@ -44,7 +44,7 @@ type Book struct {
 	Title string
 }
 
-// insert one
+// Insert one.
 insert := sqlt.Stmt[Params](config, 
 	sqlt.Parse(`
 		INSERT INTO books (id, title) VALUES ({{ uuidv4 }}, {{ .Title }});
@@ -53,7 +53,7 @@ insert := sqlt.Stmt[Params](config,
 
 result, err := insert.Exec(ctx, db, Params{...})
 
-// insert many
+// Insert many.
 insertMany := sqlt.Stmt[[]Params](config,
 	sqlt.Parse(`
 		INSERT INTO books (id, title) VALUES
@@ -67,7 +67,7 @@ insertMany := sqlt.Stmt[[]Params](config,
 
 result, err := insertMany.Exec(ctx, db, []Params{...})
 
-// query returning id
+// Query a single column.
 insertReturning := sqlt.QueryStmt[[]Params, int64](config,
 	sqlt.Parse(`
 		INSERT INTO books (id, title) VALUES
@@ -81,7 +81,7 @@ insertReturning := sqlt.QueryStmt[[]Params, int64](config,
 
 ids, err := insertReturning.All(ctx, db, []Params{...})
 
-// mapping query result into struct
+// Map query results into a struct (multiple columns require scanners).
 query := sqlt.QueryStmt[string, Book](config,
 	sqlt.Parse(`
 		SELECT
@@ -93,7 +93,7 @@ query := sqlt.QueryStmt[string, Book](config,
 
 book, err := query.First(ctx, db, "Harry Potter")
 
-// using different dialects
+// Using different dialects.
 dialect := "postgres"
 config.Placeholder = "$"
 config.Positional = true
