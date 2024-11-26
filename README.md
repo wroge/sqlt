@@ -75,7 +75,7 @@ insertMany := sqlt.Stmt[[]Params](config,
 
 result, err := insertMany.Exec(ctx, db, []Params{...})
 
-// Query a single column.
+// Returning a single column.
 insertReturning := sqlt.QueryStmt[[]Params, int64](config,
 	sqlt.Parse(`
 		INSERT INTO books (id, title) VALUES
