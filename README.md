@@ -12,23 +12,21 @@ config := &sqlt.Config{
 		return context.WithValue(ctx, startKey{}, time.Now())
 	},
 	Log: func(ctx context.Context, err error, runner sqlt.Runner) {
-		var attrs []slog.Attr
-
-		if err != nil {
-			attrs = append(attrs, slog.String("err", err.Error()))
-		}
-
-		if start, ok := ctx.Value(startKey{}).(time.Time); ok {
-			attrs = append(attrs, slog.Duration("duration", time.Since(start)))
-		}
-
-		attrs = append(attrs,
+		attrs := append(attrs,
 			slog.String("sql", runner.SQL().String()),
 			slog.Any("args", runner.Args()),
 			slog.String("location", fmt.Sprintf("[%s:%d]", runner.File(), runner.Line())),
 		)
 
-		logger.LogAttrs(ctx, slog.LevelInfo, "log stmt", attrs...)
+		if start, ok := ctx.Value(startKey{}).(time.Time); ok {
+			attrs = append(attrs, slog.Duration("duration", time.Since(start)))
+		}
+
+		if err != nil {
+			logger.LogAttrs(ctx, slog.LevelError, err.Error(), attrs...)
+		} else {
+			logger.LogAttrs(ctx, slog.LevelInfo, "log stmt", attrs...)
+		}
 	},
 	Placeholder: "?",
 	Positional:  false,
