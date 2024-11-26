@@ -3,10 +3,17 @@
 [![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/wroge/sqlt)
 [![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/wroge/sqlt.svg?style=social)](https://github.com/wroge/sqlt/tags)
 
-This package uses Go’s template engine to create a flexible, powerful and type-safe SQL builder and ORM ([example](https://github.com/wroge/vertical-slice-architecture)).
+This package uses Go’s template engine to create a flexible, powerful and type-safe SQL builder and ORM.
+
+- Type-safety without a build step (using [templatecheck](https://github.com/jba/templatecheck)),
+- Compact and versatile query building (using well-known template functions like [sprig](https://masterminds.github.io/sprig/)),
+- Definition of struct mapping directly in the template,
+- Abstraction allows the SQL logic to be placed close to the business logic without deeply nested layers (Locality of behavior).
+
+Example: [vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture).
 
 ```go
-// config example with ? placeholder, statement logging and template functions using https://masterminds.github.io/sprig/.
+// config example with ? placeholder, statement logging and template functions using sprig.
 config := &sqlt.Config{
 	Context: func(ctx context.Context, runner sqlt.Runner) context.Context {
 		return context.WithValue(ctx, startKey{}, time.Now())
