@@ -81,7 +81,7 @@ insertReturning := sqlt.QueryStmt[[]Params, int64](config,
 
 ids, err := insertReturning.All(ctx, db, []Params{...})
 
-// query book
+// mapping query result into struct
 query := sqlt.QueryStmt[string, Book](config,
 	sqlt.Parse(`
 		SELECT
