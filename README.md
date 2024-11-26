@@ -20,11 +20,11 @@ config := &sqlt.Config{
 		return context.WithValue(ctx, startKey{}, time.Now())
 	},
 	Log: func(ctx context.Context, err error, runner sqlt.Runner) {
-		attrs := append(attrs,
+		attrs := []slog.Attr{
 			slog.String("sql", runner.SQL().String()),
 			slog.Any("args", runner.Args()),
 			slog.String("location", fmt.Sprintf("[%s:%d]", runner.File(), runner.Line())),
-		)
+		}
 
 		if start, ok := ctx.Value(startKey{}).(time.Time); ok {
 			attrs = append(attrs, slog.Duration("duration", time.Since(start)))
