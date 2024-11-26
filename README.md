@@ -81,12 +81,13 @@ insertReturning := sqlt.QueryStmt[[]Params, int64](config,
 
 ids, err := insertReturning.All(ctx, db, []Params{...})
 
-// Map query results into a struct (multiple columns require scanners).
+// Map query results into a struct (multiple columns require sqlt.Scanner's).
+// Book (alias for Dest) is a function, that returns a pointer to the destination struct.
 query := sqlt.QueryStmt[string, Book](config,
 	sqlt.Parse(`
 		SELECT
-			{{ ScanInt64 Dest.ID "id" }}
-			{{ ScanString Dest.Title ", title" }}
+			{{ ScanInt64 Book.ID "id" }}
+			{{ ScanString Book.Title ", title" }}
 		FROM books WHERE INSTR(LOWER(title), {{ lower . }}) 
 	`)
 )
