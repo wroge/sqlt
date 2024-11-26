@@ -41,6 +41,11 @@ type Params struct {
 	Title string
 }
 
+type Book struct {
+	ID    uuid.UUID
+	Title string
+}
+
 // insert one
 insert := sqlt.Stmt[Params](config, 
 	sqlt.Parse(`
@@ -77,4 +82,34 @@ insertReturning := sqlt.QueryStmt[[]Params, int64](config,
 )
 
 ids, err := insertReturning.All(ctx, db, []Params{...})
+
+// query book
+query := sqlt.QueryStmt[string, Book](config,
+	sqlt.Parse(`
+		SELECT id, title FROM books WHERE INSTR(LOWER(title), {{ lower . }}) 
+	`)
+)
+
+book, err := query.First(ctx, db, "Harry Potter")
+
+// using different dialects
+query := sqlt.QueryStmt[string, Book](config,
+	sqlt.Funcs(template.FuncMap{
+		"Dialect": func() string {
+			return "postgres"
+		},
+	}),
+	sqlt.Parse(`
+		SELECT id, title FROM books WHERE
+		{{ if eq Dialect "sqlite" }}
+			INSTR(LOWER(title), {{ lower . }})
+		{{ else if eq Dialect "postgres" }}
+			POSITION({{ lower . }} IN LOWER(title)) > 0
+		{{ else }}
+			{{ fail "invalid dialect" }}
+		{{ end }}
+	`),
+)
+
+books, err := query.All(ctx, db, "Harry Potter")
 ```
