@@ -375,6 +375,7 @@ func Stmt[Param any](opts ...Option) *Statement[Param] {
 	escape(tpl)
 
 	positional := strings.Contains(string(config.Placeholder), "%d")
+	placeholder := string(config.Placeholder)
 
 	return &Statement[Param]{
 		start: config.Start,
@@ -402,10 +403,10 @@ func Stmt[Param any](opts ...Option) *Statement[Param] {
 							runner.Args = append(runner.Args, arg)
 
 							if positional {
-								return Raw(fmt.Sprintf("%s%d", config.Placeholder, len(runner.Args)))
+								return Raw(fmt.Sprintf(placeholder, len(runner.Args)))
 							}
 
-							return Raw(config.Placeholder)
+							return Raw(placeholder)
 						}
 					},
 				})
@@ -525,6 +526,7 @@ func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
 	escape(tpl)
 
 	positional := strings.Contains(string(config.Placeholder), "%d")
+	placeholder := string(config.Placeholder)
 
 	return &QueryStatement[Param, Dest]{
 		start: config.Start,
@@ -571,10 +573,10 @@ func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
 							runner.Runner.Args = append(runner.Runner.Args, arg)
 
 							if positional {
-								return Raw(fmt.Sprintf("%s%d", config.Placeholder, len(runner.Runner.Args)))
+								return Raw(fmt.Sprintf(placeholder, len(runner.Runner.Args)))
 							}
 
-							return Raw(config.Placeholder)
+							return Raw(placeholder)
 						}
 					},
 				})
