@@ -84,7 +84,10 @@ ids, err := insertReturning.All(ctx, db, []Params{...})
 // query book
 query := sqlt.QueryStmt[string, Book](config,
 	sqlt.Parse(`
-		SELECT id, title FROM books WHERE INSTR(LOWER(title), {{ lower . }}) 
+		SELECT
+			{{ ScanInt64 Dest.ID "id" }}
+			{{ ScanString Dest.Title ", title" }}
+		FROM books WHERE INSTR(LOWER(title), {{ lower . }}) 
 	`)
 )
 
@@ -102,7 +105,10 @@ query := sqlt.QueryStmt[string, Book](config,
 		},
 	}),
 	sqlt.Parse(`
-		SELECT id, title FROM books WHERE
+		SELECT
+			{{ ScanInt64 Dest.ID "id" }}
+			{{ ScanString Dest.Title ", title" }}
+		FROM books WHERE
 		{{ if eq Dialect "sqlite" }}
 			INSTR(LOWER(title), {{ lower . }})
 		{{ else if eq Dialect "postgres" }}
