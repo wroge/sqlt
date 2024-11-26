@@ -91,10 +91,14 @@ query := sqlt.QueryStmt[string, Book](config,
 book, err := query.First(ctx, db, "Harry Potter")
 
 // using different dialects
+dialect := "postgres"
+config.Placeholder = "$"
+config.Positional = true
+
 query := sqlt.QueryStmt[string, Book](config,
 	sqlt.Funcs(template.FuncMap{
 		"Dialect": func() string {
-			return "postgres"
+			return dialect
 		},
 	}),
 	sqlt.Parse(`
