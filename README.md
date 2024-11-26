@@ -6,6 +6,7 @@
 This package uses Go’s template engine to create a flexible, powerful and type-safe SQL builder and ORM.
 
 - Type-safety without a build step (using [templatecheck](https://github.com/jba/templatecheck)),
+- Avoiding SQL injection by escaping the templates (idea first found at [mhilton/sqltemplate](https://github.com/mhilton/sqltemplate)),
 - Compact and versatile query building (using well-known template functions like [sprig](https://masterminds.github.io/sprig/)),
 - Definition of struct mapping directly in the template,
 - Abstraction allows the SQL logic to be placed close to the business logic without deeply nested layers (Locality of behavior).
