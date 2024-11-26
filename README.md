@@ -11,108 +11,103 @@ This package uses Go’s template engine to create a flexible, powerful and type
 - Definition of struct mapping directly in the template,
 - Abstraction allows the SQL logic to be placed close to the business logic without deeply nested layers (Locality of behavior).
 
-Example: [vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture).
+## Quickstart
+
+### Example 1
+
+- simple statement using sprig.
 
 ```go
-// config example with ? placeholder, statement logging and template functions using sprig.
-config := &sqlt.Config{
-	Context: func(ctx context.Context, runner sqlt.Runner) context.Context {
-		return context.WithValue(ctx, startKey{}, time.Now())
-	},
-	Log: func(ctx context.Context, err error, runner sqlt.Runner) {
-		attrs := []slog.Attr{
-			slog.String("sql", runner.SQL().String()),
-			slog.Any("args", runner.Args()),
-			slog.String("location", fmt.Sprintf("[%s:%d]", runner.File(), runner.Line())),
-		}
-
-		if start, ok := ctx.Value(startKey{}).(time.Time); ok {
-			attrs = append(attrs, slog.Duration("duration", time.Since(start)))
-		}
-
-		if err != nil {
-			logger.LogAttrs(ctx, slog.LevelError, err.Error(), attrs...)
-		} else {
-			logger.LogAttrs(ctx, slog.LevelInfo, "log stmt", attrs...)
-		}
-	},
-	Placeholder: "?",
-	Positional:  false,
-	Options: []sqlt.Option{
-		sqlt.Funcs(sprig.TxtFuncMap()),
-	},
-}
-
 type Params struct {
 	Title string
 }
 
-type Book struct {
-	ID    uuid.UUID
-	Title string
-}
-
-// Insert one.
-insert := sqlt.Stmt[Params](config, 
+insert := sqlt.Stmt[Params](
+	sqlt.Funcs(sprig.TxtFuncMap()),
 	sqlt.Parse(`
 		INSERT INTO books (id, title) VALUES ({{ uuidv4 }}, {{ .Title }});
 	`),
 )
 
-result, err := insert.Exec(ctx, db, Params{...})
+result, err := insert.Exec(ctx, db, Params{})
+```
 
-// Insert many.
-insertMany := sqlt.Stmt[[]Params](config,
+### Example 2
+
+- using a slice as input param.
+
+```go
+insert := sqlt.Stmt[[]Params](
+	sqlt.Funcs(sprig.TxtFuncMap()),
 	sqlt.Parse(`
 		INSERT INTO books (id, title) VALUES
 			{{ range $i, $p := . }} 
-			 	{{ if $i }}, {{ end }}
+					{{ if $i }}, {{ end }}
 				({{ uuidv4 }}, {{ $p.Title }})
 			{{ end }}
 		;
 	`),
 )
 
-result, err := insertMany.Exec(ctx, db, []Params{...})
+result, err := insert.Exec(ctx, db, []Params{})
+```
 
-// Returning a single column.
-insertReturning := sqlt.QueryStmt[[]Params, int64](config,
+### Example 3
+
+- returning a single column.
+
+```go
+query := sqlt.QueryStmt[[]Params, int64](
+	sqlt.Funcs(sprig.TxtFuncMap()),
 	sqlt.Parse(`
 		INSERT INTO books (id, title) VALUES
 			{{ range $i, $p := . }} 
-			 	{{ if $i }}, {{ end }}
+					{{ if $i }}, {{ end }}
 				({{ uuidv4 }}, {{ $p.Title }})
 			{{ end }}
 		RETURNING id;
 	`),
 )
 
-ids, err := insertReturning.All(ctx, db, []Params{...})
+ids, err := query.All(ctx, db, []Params{})
+```
 
-// Map query results into a struct (multiple columns require sqlt.Scanner's).
-// Book (alias for Dest) is a function, that returns a pointer to the destination struct.
-query := sqlt.QueryStmt[string, Book](config,
+### Example 4
+
+- query multplie columns using scanners.
+
+```go
+type Book struct {
+	ID    uuid.UUID
+	Title string
+}
+
+query := sqlt.QueryStmt[string, Book](
+	sqlt.Funcs(sprig.TxtFuncMap()),
 	sqlt.Parse(`
 		SELECT
 			{{ ScanInt64 Book.ID "id" }}
 			{{ ScanString Book.Title ", title" }}
 		FROM books WHERE INSTR(LOWER(title), {{ lower . }}) 
-	`)
+	`),
 )
 
 book, err := query.First(ctx, db, "Harry Potter")
+```
 
-// Using different dialects.
-dialect := "postgres"
-config.Placeholder = "$"
-config.Positional = true
+### Example 5
 
-query := sqlt.QueryStmt[string, Book](config,
+- supports different placeholders and multiple sql dialects.
+
+```go
+query := sqlt.QueryStmt[string, Book](
+	sqlt.Dollar(),
 	sqlt.Funcs(template.FuncMap{
 		"Dialect": func() string {
-			return dialect
+			return "postgres"
 		},
 	}),
+	sqlt.Funcs(sprig.TxtFuncMap()),
 	sqlt.Parse(`
 		SELECT
 			{{ ScanInt64 Dest.ID "id" }}
@@ -130,3 +125,65 @@ query := sqlt.QueryStmt[string, Book](config,
 
 books, err := query.All(ctx, db, "Harry Potter")
 ```
+
+### Example 6
+
+- outsourcing options into a config for reusability.
+- applying logging or monitoring at the end of each "run".
+
+```go
+type StartTime struct{}
+
+config := sqlt.Config{
+	Start: func(runner *sqlt.Runner) {
+		runner.Context = context.WithValue(runner.Context, StartTime{}, time.Now())
+	},
+	End: func(err error, runner *sqlt.Runner) {
+		level := slog.LevelInfo
+
+		if err != nil {
+			level = slog.LevelError
+		}
+
+		slog.Log(runner.Context, level, "log stmt",
+			"err", err,
+			"sql", runner.SQL,
+			"args", runner.Args,
+			"location", fmt.Sprintf("[%s:%d]", runner.File, runner.Line),
+			"duration", time.Since(runner.Context.Value(StartTime{}).(time.Time)),
+		)
+	},
+	Placeholder: sqlt.Dollar(),
+	TemplateOptions: []sqlt.TemplateOption{
+		sqlt.Funcs(template.FuncMap{
+			"Dialect": func() string {
+				return "postgres"
+			},
+		}),
+		sqlt.Funcs(sprig.TxtFuncMap()),
+	},
+}
+
+query := sqlt.QueryStmt[string, Book](
+	config,
+	sqlt.Parse(`
+		SELECT
+			{{ ScanInt64 Dest.ID "id" }}
+			{{ ScanString Dest.Title ", title" }}
+		FROM books WHERE
+		{{ if eq Dialect "sqlite" }}
+			INSTR(LOWER(title), {{ lower . }})
+		{{ else if eq Dialect "postgres" }}
+			POSITION({{ lower . }} IN LOWER(title)) > 0
+		{{ else }}
+			{{ fail "invalid dialect" }}
+		{{ end }}
+	`),
+)
+
+book, err := query.One(ctx, db, "Harry Potter")
+```
+
+## Any more Questions?
+
+- Take a look into this example project: [vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture).

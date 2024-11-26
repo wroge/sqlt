@@ -10,7 +10,7 @@ import (
 	"io/fs"
 	"reflect"
 	"runtime"
-	"strconv"
+	"strings"
 	"sync"
 	"text/template"
 	"text/template/parse"
@@ -50,71 +50,130 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 	return err
 }
 
-type Config struct {
-	Context     func(ctx context.Context, runner Runner) context.Context
-	Log         func(ctx context.Context, err error, runner Runner)
-	Placeholder string
-	Positional  bool
-	Options     []Option
+type Option interface {
+	Configure(config *Config)
 }
 
-type Option func(tpl *template.Template) (*template.Template, error)
+type Config struct {
+	Start           Start
+	End             End
+	Placeholder     Placeholder
+	TemplateOptions []TemplateOption
+}
 
-func New(name string) Option {
+func (c Config) Configure(config *Config) {
+	if c.Start != nil {
+		config.Start = c.Start
+	}
+
+	if c.End != nil {
+		config.End = c.End
+	}
+
+	if c.Placeholder != "" {
+		config.Placeholder = c.Placeholder
+	}
+
+	if len(c.TemplateOptions) > 0 {
+		config.TemplateOptions = append(config.TemplateOptions, c.TemplateOptions...)
+	}
+}
+
+type Start func(runner *Runner)
+
+func (s Start) Configure(config *Config) {
+	config.Start = s
+}
+
+type End func(err error, runner *Runner)
+
+func (e End) Configure(config *Config) {
+	config.End = e
+}
+
+type Placeholder string
+
+func (p Placeholder) Configure(config *Config) {
+	config.Placeholder = p
+}
+
+func Dollar() Placeholder {
+	return "$%d"
+}
+
+func Colon() Placeholder {
+	return ":%d"
+}
+
+func AtP() Placeholder {
+	return "@p%d"
+}
+
+func Question() Placeholder {
+	return "?"
+}
+
+type TemplateOption func(tpl *template.Template) (*template.Template, error)
+
+func (to TemplateOption) Configure(config *Config) {
+	config.TemplateOptions = append(config.TemplateOptions, to)
+}
+
+func New(name string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.New(name), nil
 	}
 }
 
-func Parse(text string) Option {
+func Parse(text string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Parse(text)
 	}
 }
 
-func ParseFS(fs fs.FS, patterns ...string) Option {
+func ParseFS(fs fs.FS, patterns ...string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseFS(fs, patterns...)
 	}
 }
 
-func ParseFiles(filenames ...string) Option {
+func ParseFiles(filenames ...string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseFiles(filenames...)
 	}
 }
 
-func ParseGlob(pattern string) Option {
+func ParseGlob(pattern string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseGlob(pattern)
 	}
 }
 
-func Funcs(fm template.FuncMap) Option {
+func Funcs(fm template.FuncMap) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Funcs(fm), nil
 	}
 }
 
-func MissingKeyInvalid() Option {
+func MissingKeyInvalid() TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Option("missingkey=invalid"), nil
 	}
 }
 
-func MissingKeyZero() Option {
+func MissingKeyZero() TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Option("missingkey=zero"), nil
 	}
 }
 
-func MissingKeyError() Option {
+func MissingKeyError() TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Option("missingkey=error"), nil
 	}
 }
 
-func Lookup(name string) Option {
+func Lookup(name string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		tpl = tpl.Lookup(name)
 		if tpl == nil {
@@ -243,26 +302,67 @@ func defaultTemplate() *template.Template {
 	})
 }
 
-func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
+type Runner struct {
+	Context  context.Context
+	Template *template.Template
+	SQL      *SQL
+	Args     []any
+	File     string
+	Line     int
+}
+
+func (r *Runner) Reset() {
+	r.Context = nil
+	r.SQL.Reset()
+	r.Args = r.Args[:0]
+}
+
+func (r *Runner) Exec(db DB, param any) (sql.Result, error) {
+	if err := r.Template.Execute(r.SQL, param); err != nil {
+		return nil, err
+	}
+
+	return db.ExecContext(r.Context, r.SQL.String(), r.Args...)
+}
+
+func (r *Runner) Query(db DB, param any) (*sql.Rows, error) {
+	if err := r.Template.Execute(r.SQL, param); err != nil {
+		return nil, err
+	}
+
+	return db.QueryContext(r.Context, r.SQL.String(), r.Args...)
+}
+
+func (r *Runner) QueryRow(db DB, param any) (*sql.Row, error) {
+	if err := r.Template.Execute(r.SQL, param); err != nil {
+		return nil, err
+	}
+
+	return db.QueryRowContext(r.Context, r.SQL.String(), r.Args...), nil
+}
+
+func Stmt[Param any](opts ...Option) *Statement[Param] {
 	_, file, line, _ := runtime.Caller(1)
 
-	tpl := defaultTemplate().Funcs(template.FuncMap{
-		"Dest": func() any {
-			return nil
-		},
-	})
-
-	var err error
-
-	for _, opt := range config.Options {
-		tpl, err = opt(tpl)
-		if err != nil {
-			panic(err)
-		}
+	config := &Config{
+		Placeholder: "?",
 	}
 
 	for _, opt := range opts {
-		tpl, err = opt(tpl)
+		opt.Configure(config)
+	}
+
+	var (
+		tpl = defaultTemplate().Funcs(template.FuncMap{
+			"Dest": func() any {
+				return nil
+			},
+		})
+		err error
+	)
+
+	for _, to := range config.TemplateOptions {
+		tpl, err = to(tpl)
 		if err != nil {
 			panic(err)
 		}
@@ -274,21 +374,23 @@ func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
 
 	escape(tpl)
 
+	positional := strings.Contains(string(config.Placeholder), "%d")
+
 	return &Statement[Param]{
-		ctx: config.Context,
-		log: config.Log,
+		start: config.Start,
+		end:   config.End,
 		pool: &sync.Pool{
 			New: func() any {
 				t, err := tpl.Clone()
 				if err != nil {
-					return err
+					panic(err)
 				}
 
-				runner := &execRunner{
-					tpl:    t,
-					writer: &writer{},
-					file:   file,
-					line:   line,
+				runner := &Runner{
+					Template: t,
+					SQL:      &SQL{},
+					File:     file,
+					Line:     line,
 				}
 
 				t.Funcs(template.FuncMap{
@@ -297,10 +399,10 @@ func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
 						case Raw:
 							return a
 						default:
-							runner.args = append(runner.args, arg)
+							runner.Args = append(runner.Args, arg)
 
-							if config.Positional {
-								return Raw(config.Placeholder + strconv.Itoa(len(runner.args)))
+							if positional {
+								return Raw(fmt.Sprintf("%s%d", config.Placeholder, len(runner.Args)))
 							}
 
 							return Raw(config.Placeholder)
@@ -315,138 +417,102 @@ func Stmt[Param any](config *Config, opts ...Option) *Statement[Param] {
 }
 
 type Statement[Param any] struct {
-	ctx  func(ctx context.Context, runner Runner) context.Context
-	log  func(ctx context.Context, err error, runner Runner)
-	pool *sync.Pool
+	start func(runner *Runner)
+	end   func(err error, runner *Runner)
+	pool  *sync.Pool
 }
 
-type Runner interface {
-	Template() *template.Template
-	SQL() fmt.Stringer
-	Args() []any
-	File() string
-	Line() int
-}
+func (s *Statement[Param]) Get(ctx context.Context) *Runner {
+	runner := s.pool.Get().(*Runner)
 
-type execRunner struct {
-	tpl    *template.Template
-	writer *writer
-	args   []any
-	file   string
-	line   int
-}
+	runner.Context = ctx
 
-func (r *execRunner) Template() *template.Template {
-	return r.tpl
-}
-
-func (r *execRunner) SQL() fmt.Stringer {
-	return r.writer
-}
-
-func (r *execRunner) Args() []any {
-	return r.args
-}
-
-func (r *execRunner) File() string {
-	return r.file
-}
-
-func (r *execRunner) Line() int {
-	return r.line
-}
-
-func runExec[Param, Result any](s *Statement[Param], ctx context.Context, param Param, exec func(ctx context.Context, runner *execRunner) (Result, error)) (Result, error) {
-	var (
-		result Result
-		err    error
-	)
-
-	item := s.pool.Get()
-	if err, ok := item.(error); ok {
-		if s.log != nil {
-			s.log(ctx, err, nil)
-		}
-
-		return result, err
+	if s.start != nil {
+		s.start(runner)
 	}
 
-	runner := item.(*execRunner)
+	return runner
+}
 
-	if s.ctx != nil {
-		ctx = s.ctx(ctx, runner)
+func (s *Statement[Param]) Put(err error, runner *Runner) {
+	if s.end != nil {
+		s.end(err, runner)
 	}
 
-	defer func() {
-		if s.log != nil {
-			s.log(ctx, err, runner)
-		}
+	runner.Reset()
 
-		runner.writer.Reset()
-		runner.args = runner.args[:0]
-
-		s.pool.Put(runner)
-	}()
-
-	if err = runner.tpl.Execute(runner.writer, param); err != nil {
-		return result, err
-	}
-
-	result, err = exec(ctx, runner)
-	if err != nil {
-		return result, err
-	}
-
-	return result, err
+	s.pool.Put(runner)
 }
 
-func (s *Statement[Param]) Exec(ctx context.Context, db DB, param Param) (sql.Result, error) {
-	return runExec(s, ctx, param, func(ctx context.Context, runner *execRunner) (sql.Result, error) {
-		return db.ExecContext(ctx, runner.writer.String(), runner.args...)
-	})
+func (s *Statement[Param]) Exec(ctx context.Context, db DB, param Param) (result sql.Result, err error) {
+	runner := s.Get(ctx)
+
+	defer s.Put(err, runner)
+
+	return runner.Exec(db, param)
 }
 
-func (s *Statement[Param]) QueryRow(ctx context.Context, db DB, param Param) (*sql.Row, error) {
-	return runExec(s, ctx, param, func(ctx context.Context, runner *execRunner) (*sql.Row, error) {
-		return db.QueryRowContext(ctx, runner.writer.String(), runner.args...), nil
-	})
+func (s *Statement[Param]) QueryRow(ctx context.Context, db DB, param Param) (row *sql.Row, err error) {
+	runner := s.Get(ctx)
+
+	defer s.Put(err, runner)
+
+	return runner.QueryRow(db, param)
 }
 
-func (s *Statement[Param]) Query(ctx context.Context, db DB, param Param) (*sql.Rows, error) {
-	return runExec(s, ctx, param, func(ctx context.Context, runner *execRunner) (*sql.Rows, error) {
-		return db.QueryContext(ctx, runner.writer.String(), runner.args...)
-	})
+func (s *Statement[Param]) Query(ctx context.Context, db DB, param Param) (rows *sql.Rows, err error) {
+	runner := s.Get(ctx)
+
+	defer s.Put(err, runner)
+
+	return runner.Query(db, param)
 }
 
-func QueryStmt[Param, Dest any](config *Config, opts ...Option) *QueryStatement[Param, Dest] {
+type QueryRunner[Dest any] struct {
+	Runner  *Runner
+	Dest    *Dest
+	Values  []any
+	Mappers []func() error
+}
+
+func (qr *QueryRunner[Dest]) Reset() {
+	qr.Runner.Reset()
+	qr.Values = qr.Values[:0]
+	qr.Mappers = qr.Mappers[:0]
+}
+
+func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
 	_, file, line, _ := runtime.Caller(1)
 
-	tpl := defaultTemplate().Funcs(template.FuncMap{
-		"Dest": func() *Dest {
-			return new(Dest)
-		},
-	})
+	config := &Config{
+		Placeholder: "?",
+	}
+
+	for _, opt := range opts {
+		opt.Configure(config)
+	}
+
+	var (
+		tpl = defaultTemplate().Funcs(template.FuncMap{
+			"Dest": func() *Dest {
+				return new(Dest)
+			},
+		})
+		err error
+	)
 
 	destType := reflect.TypeFor[Dest]().Name()
+
 	if goodName(destType) {
-		tpl = tpl.Funcs(template.FuncMap{
+		tpl.Funcs(template.FuncMap{
 			destType: func() *Dest {
 				return new(Dest)
 			},
 		})
 	}
 
-	var err error
-
-	for _, opt := range config.Options {
-		tpl, err = opt(tpl)
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	for _, opt := range opts {
-		tpl, err = opt(tpl)
+	for _, to := range config.TemplateOptions {
+		tpl, err = to(tpl)
 		if err != nil {
 			panic(err)
 		}
@@ -458,49 +524,54 @@ func QueryStmt[Param, Dest any](config *Config, opts ...Option) *QueryStatement[
 
 	escape(tpl)
 
+	positional := strings.Contains(string(config.Placeholder), "%d")
+
 	return &QueryStatement[Param, Dest]{
-		ctx: config.Context,
-		log: config.Log,
+		start: config.Start,
+		end:   config.End,
 		pool: &sync.Pool{
 			New: func() any {
 				t, err := tpl.Clone()
 				if err != nil {
-					return err
+					panic(err)
 				}
 
-				runner := &queryRunner[Dest]{
-					tpl:    t,
-					writer: &writer{},
-					file:   file,
-					line:   line,
+				runner := &QueryRunner[Dest]{
+					Runner: &Runner{
+						Template: t,
+						SQL:      &SQL{},
+						File:     file,
+						Line:     line,
+					},
+					Dest: new(Dest),
 				}
 
 				if goodName(destType) {
 					t.Funcs(template.FuncMap{
 						destType: func() *Dest {
-							return runner.dest
+							return runner.Dest
 						},
 					})
 				}
 
 				t.Funcs(template.FuncMap{
 					"Dest": func() *Dest {
-						return runner.dest
+						return runner.Dest
 					},
 					ident: func(arg any) Raw {
 						switch a := arg.(type) {
 						case Raw:
 							return a
 						case Scanner:
-							runner.scanners = append(runner.scanners, a.Value)
-							runner.mappers = append(runner.mappers, a.Map)
+							runner.Values = append(runner.Values, a.Value)
+							runner.Mappers = append(runner.Mappers, a.Map)
 
 							return Raw(a.SQL)
 						default:
-							runner.args = append(runner.args, arg)
+							runner.Runner.Args = append(runner.Runner.Args, arg)
 
-							if config.Positional {
-								return Raw(config.Placeholder + strconv.Itoa(len(runner.args)))
+							if positional {
+								return Raw(fmt.Sprintf("%s%d", config.Placeholder, len(runner.Runner.Args)))
 							}
 
 							return Raw(config.Placeholder)
@@ -514,235 +585,165 @@ func QueryStmt[Param, Dest any](config *Config, opts ...Option) *QueryStatement[
 	}
 }
 
-type queryRunner[Dest any] struct {
-	tpl      *template.Template
-	writer   *writer
-	args     []any
-	dest     *Dest
-	scanners []any
-	mappers  []func() error
-	file     string
-	line     int
-}
-
-func (r *queryRunner[Dest]) Template() *template.Template {
-	return r.tpl
-}
-
-func (r *queryRunner[Dest]) SQL() fmt.Stringer {
-	return r.writer
-}
-
-func (r *queryRunner[Dest]) Args() []any {
-	return r.args
-}
-
-func (r *queryRunner[Dest]) File() string {
-	return r.file
-}
-
-func (r *queryRunner[Dest]) Line() int {
-	return r.line
-}
-
 type QueryStatement[Param, Dest any] struct {
-	ctx  func(ctx context.Context, runner Runner) context.Context
-	log  func(ctx context.Context, err error, runner Runner)
-	pool *sync.Pool
+	start func(runner *Runner)
+	end   func(err error, runner *Runner)
+	pool  *sync.Pool
 }
 
-func runQuery[Param, Dest, Result any](s *QueryStatement[Param, Dest], ctx context.Context, param Param, exec func(ctx context.Context, runner *queryRunner[Dest]) (Result, error)) (Result, error) {
-	var (
-		result Result
-		err    error
-	)
+func (qs *QueryStatement[Param, Dest]) Start(ctx context.Context) *QueryRunner[Dest] {
+	runner := qs.pool.Get().(*QueryRunner[Dest])
 
-	item := s.pool.Get()
-	if err, ok := item.(error); ok {
-		if s.log != nil {
-			s.log(ctx, err, nil)
-		}
+	runner.Runner.Context = ctx
 
-		return result, err
+	if qs.start != nil {
+		qs.start(runner.Runner)
 	}
 
-	runner := item.(*queryRunner[Dest])
+	return runner
+}
 
-	if s.ctx != nil {
-		ctx = s.ctx(ctx, runner)
+func (qs *QueryStatement[Param, Dest]) End(err error, runner *QueryRunner[Dest]) {
+	if qs.end != nil {
+		qs.end(err, runner.Runner)
 	}
 
-	runner.dest = new(Dest)
+	runner.Reset()
+
+	qs.pool.Put(runner)
+}
+
+func (qs *QueryStatement[Param, Dest]) All(ctx context.Context, db DB, param Param) (result []Dest, err error) {
+	runner := qs.Start(ctx)
+
+	defer qs.End(err, runner)
+
+	var rows *sql.Rows
+
+	rows, err = runner.Runner.Query(db, param)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(runner.Values) == 0 {
+		runner.Values = []any{runner.Dest}
+	}
 
 	defer func() {
-		if s.log != nil {
-			s.log(ctx, err, runner)
-		}
-
-		runner.writer.Reset()
-		runner.args = runner.args[:0]
-		runner.scanners = runner.scanners[:0]
-		runner.mappers = runner.mappers[:0]
-
-		s.pool.Put(runner)
+		err = errors.Join(err, rows.Close())
 	}()
 
-	if err = runner.tpl.Execute(runner.writer, param); err != nil {
-		return result, err
-	}
+	for rows.Next() {
+		if err = rows.Scan(runner.Values...); err != nil {
+			return nil, err
+		}
 
-	if len(runner.scanners) == 0 {
-		runner.scanners = []any{runner.dest}
-	}
+		for _, m := range runner.Mappers {
+			if m == nil {
+				continue
+			}
 
-	result, err = exec(ctx, runner)
-	if err != nil {
-		return result, err
+			if err = m(); err != nil {
+				return nil, err
+			}
+		}
+
+		result = append(result, *runner.Dest)
 	}
 
 	return result, err
 }
 
-func (qs *QueryStatement[Param, Dest]) All(ctx context.Context, db DB, param Param) ([]Dest, error) {
-	return runQuery(qs, ctx, param, func(ctx context.Context, runner *queryRunner[Dest]) ([]Dest, error) {
-		rows, err := db.QueryContext(ctx, runner.writer.String(), runner.args...)
-		if err != nil {
-			return nil, err
-		}
-
-		defer func() {
-			err = errors.Join(err, rows.Close())
-		}()
-
-		var result []Dest
-
-		for rows.Next() {
-			if err = rows.Scan(runner.scanners...); err != nil {
-				return nil, err
-			}
-
-			for _, m := range runner.mappers {
-				if m == nil {
-					continue
-				}
-
-				if err = m(); err != nil {
-					return nil, err
-				}
-			}
-
-			result = append(result, *runner.dest)
-		}
-
-		return result, err
-	})
-}
-
-func (qs *QueryStatement[Param, Dest]) Limit(ctx context.Context, db DB, param Param, limit int) ([]Dest, error) {
-	return runQuery(qs, ctx, param, func(ctx context.Context, runner *queryRunner[Dest]) ([]Dest, error) {
-		rows, err := db.QueryContext(ctx, runner.writer.String(), runner.args...)
-		if err != nil {
-			return nil, err
-		}
-
-		defer func() {
-			err = errors.Join(err, rows.Close())
-		}()
-
-		var result []Dest
-
-		for rows.Next() {
-			if err = rows.Scan(runner.scanners...); err != nil {
-				return nil, err
-			}
-
-			for _, m := range runner.mappers {
-				if m == nil {
-					continue
-				}
-
-				if err = m(); err != nil {
-					return nil, err
-				}
-			}
-
-			result = append(result, *runner.dest)
-		}
-
-		return result, err
-	})
-}
-
 var ErrTooManyRows = errors.New("too many rows")
 
-func (qs *QueryStatement[Param, Dest]) One(ctx context.Context, db DB, param Param) (Dest, error) {
-	return runQuery(qs, ctx, param, func(ctx context.Context, runner *queryRunner[Dest]) (Dest, error) {
-		rows, err := db.QueryContext(ctx, runner.writer.String(), runner.args...)
-		if err != nil {
-			return *runner.dest, err
+func (qs *QueryStatement[Param, Dest]) One(ctx context.Context, db DB, param Param) (result Dest, err error) {
+	runner := qs.Start(ctx)
+
+	defer qs.End(err, runner)
+
+	var rows *sql.Rows
+
+	rows, err = runner.Runner.Query(db, param)
+	if err != nil {
+		return *runner.Dest, err
+	}
+
+	if len(runner.Values) == 0 {
+		runner.Values = []any{runner.Dest}
+	}
+
+	defer func() {
+		err = errors.Join(err, rows.Close())
+	}()
+
+	if !rows.Next() {
+		return *runner.Dest, sql.ErrNoRows
+	}
+
+	err = rows.Scan(runner.Values...)
+	if err != nil {
+		return *runner.Dest, err
+	}
+
+	for _, m := range runner.Mappers {
+		if m == nil {
+			continue
 		}
 
-		defer func() {
-			err = errors.Join(err, rows.Close())
-		}()
-
-		if !rows.Next() {
-			return *runner.dest, sql.ErrNoRows
+		if err = m(); err != nil {
+			return *runner.Dest, err
 		}
+	}
 
-		err = rows.Scan(runner.scanners...)
-		if err != nil {
-			return *runner.dest, err
-		}
+	if rows.Next() {
+		return *runner.Dest, ErrTooManyRows
+	}
 
-		for _, m := range runner.mappers {
-			if m == nil {
-				continue
-			}
-
-			if err = m(); err != nil {
-				return *runner.dest, err
-			}
-		}
-
-		if rows.Next() {
-			return *runner.dest, ErrTooManyRows
-		}
-
-		return *runner.dest, err
-	})
+	return *runner.Dest, err
 }
 
-func (qs *QueryStatement[Param, Dest]) First(ctx context.Context, db DB, param Param) (Dest, error) {
-	return runQuery(qs, ctx, param, func(ctx context.Context, runner *queryRunner[Dest]) (Dest, error) {
-		err := db.QueryRowContext(ctx, runner.writer.String(), runner.args...).Scan(runner.scanners...)
-		if err != nil {
-			return *runner.dest, err
+func (qs *QueryStatement[Param, Dest]) First(ctx context.Context, db DB, param Param) (result Dest, err error) {
+	runner := qs.Start(ctx)
+
+	defer qs.End(err, runner)
+
+	var row *sql.Row
+
+	row, err = runner.Runner.QueryRow(db, param)
+	if err != nil {
+		return *runner.Dest, err
+	}
+
+	if len(runner.Values) == 0 {
+		runner.Values = []any{runner.Dest}
+	}
+
+	if err = row.Scan(runner.Values...); err != nil {
+		return *runner.Dest, err
+	}
+
+	for _, m := range runner.Mappers {
+		if m == nil {
+			continue
 		}
 
-		for _, m := range runner.mappers {
-			if m == nil {
-				continue
-			}
-
-			if err = m(); err != nil {
-				return *runner.dest, err
-			}
+		if err = m(); err != nil {
+			return *runner.Dest, err
 		}
+	}
 
-		return *runner.dest, nil
-	})
+	return *runner.Dest, nil
 }
 
-type writer struct {
+type SQL struct {
 	data []byte
 }
 
-func (w *writer) Reset() {
+func (w *SQL) Reset() {
 	w.data = w.data[:0]
 }
 
-func (w *writer) Write(data []byte) (int, error) {
+func (w *SQL) Write(data []byte) (int, error) {
 	for _, b := range data {
 		switch b {
 		case ' ', '\n', '\r', '\t':
@@ -757,8 +758,12 @@ func (w *writer) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-func (w *writer) String() string {
-	if len(w.data) > 0 && w.data[len(w.data)-1] == ' ' {
+func (w *SQL) String() string {
+	if len(w.data) == 0 {
+		return ""
+	}
+
+	if w.data[len(w.data)-1] == ' ' {
 		return string(w.data[:len(w.data)-1])
 	}
 
