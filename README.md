@@ -29,7 +29,7 @@ insert := sqlt.Stmt[Params](
 	`),
 )
 
-result, err := insert.Exec(ctx, db, Params{})
+result, err := insert.Exec(ctx, db, Params{ID: 1, Title: "Harry Potter"})
 ```
 
 ### Example 2
