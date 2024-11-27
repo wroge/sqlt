@@ -15,17 +15,17 @@ This package uses Go’s template engine to create a flexible, powerful and type
 
 ### Example 1
 
-- simple statement using sprig.
+- simple insert statement.
 
 ```go
 type Params struct {
+	ID    int64
 	Title string
 }
 
 insert := sqlt.Stmt[Params](
-	sqlt.Funcs(sprig.TxtFuncMap()),
 	sqlt.Parse(`
-		INSERT INTO books (id, title) VALUES ({{ uuidv4 }}, {{ .Title }});
+		INSERT INTO books (id, title) VALUES ({{ .ID }}, {{ .Title }});
 	`),
 )
 
@@ -38,12 +38,11 @@ result, err := insert.Exec(ctx, db, Params{})
 
 ```go
 insert := sqlt.Stmt[[]Params](
-	sqlt.Funcs(sprig.TxtFuncMap()),
 	sqlt.Parse(`
 		INSERT INTO books (id, title) VALUES
 			{{ range $i, $p := . }} 
-					{{ if $i }}, {{ end }}
-				({{ uuidv4 }}, {{ $p.Title }})
+				{{ if $i }}, {{ end }}
+				({{ $p.ID }}, {{ $p.Title }})
 			{{ end }}
 		;
 	`),
@@ -54,16 +53,15 @@ result, err := insert.Exec(ctx, db, []Params{})
 
 ### Example 3
 
-- returning a single column.
+- returning a single column (for example auto incrementing id).
 
 ```go
 query := sqlt.QueryStmt[[]Params, int64](
-	sqlt.Funcs(sprig.TxtFuncMap()),
 	sqlt.Parse(`
-		INSERT INTO books (id, title) VALUES
+		INSERT INTO books (title) VALUES
 			{{ range $i, $p := . }} 
-					{{ if $i }}, {{ end }}
-				({{ uuidv4 }}, {{ $p.Title }})
+				{{ if $i }}, {{ end }}
+				({{ $p.Title }})
 			{{ end }}
 		RETURNING id;
 	`),
@@ -75,6 +73,7 @@ ids, err := query.All(ctx, db, []Params{})
 ### Example 4
 
 - query multplie columns using scanners.
+- use ```lower``` function from sprig.
 
 ```go
 type Book struct {
