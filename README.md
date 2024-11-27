@@ -15,7 +15,7 @@ This package uses Go’s template engine to create a flexible, powerful and type
 
 ### Example 1
 
-- simple insert statement.
+- using a simple insert statement.
 
 ```go
 type Params struct {
@@ -34,7 +34,7 @@ result, err := insert.Exec(ctx, db, Params{})
 
 ### Example 2
 
-- using a slice as input param.
+- using a slice of structs as input param.
 
 ```go
 insert := sqlt.Stmt[[]Params](
@@ -48,7 +48,10 @@ insert := sqlt.Stmt[[]Params](
 	`),
 )
 
-result, err := insert.Exec(ctx, db, []Params{})
+result, err := insert.Exec(ctx, db, []Params{
+	{ID: 1, Title: "Harry Potter"},
+	{ID: 1, Title: "Lord of the Rings"},
+})
 ```
 
 ### Example 3
@@ -56,24 +59,24 @@ result, err := insert.Exec(ctx, db, []Params{})
 - returning a single column (for example auto incrementing id).
 
 ```go
-query := sqlt.QueryStmt[[]Params, int64](
+query := sqlt.QueryStmt[[]string, int64](
 	sqlt.Parse(`
 		INSERT INTO books (title) VALUES
-			{{ range $i, $p := . }} 
+			{{ range $i, $t := . }} 
 				{{ if $i }}, {{ end }}
-				({{ $p.Title }})
+				({{ $t }})
 			{{ end }}
 		RETURNING id;
 	`),
 )
 
-ids, err := query.All(ctx, db, []Params{})
+ids, err := query.All(ctx, db, []string{"Harry Potter", "Lord of the Rings"})
 ```
 
 ### Example 4
 
-- query multplie columns using scanners.
-- use ```lower``` function from sprig.
+- querying multiple columns using scanners.
+- using ```lower``` function from sprig.
 
 ```go
 type Book struct {
@@ -96,7 +99,7 @@ book, err := query.First(ctx, db, "Harry Potter")
 
 ### Example 5
 
-- supports different placeholders and multiple sql dialects.
+- supporting different placeholders and multiple sql dialects.
 
 ```go
 query := sqlt.QueryStmt[string, Book](
