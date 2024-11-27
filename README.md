@@ -30,6 +30,7 @@ insert := sqlt.Stmt[Params](
 )
 
 result, err := insert.Exec(ctx, db, Params{ID: 1, Title: "Harry Potter"})
+// INSERT INTO books (id, title) VALUES (?, ?); [1 "Harry Potter"]
 ```
 
 ### Example 2
@@ -50,8 +51,9 @@ insert := sqlt.Stmt[[]Params](
 
 result, err := insert.Exec(ctx, db, []Params{
 	{ID: 1, Title: "Harry Potter"},
-	{ID: 1, Title: "Lord of the Rings"},
+	{ID: 2, Title: "Lord of the Rings"},
 })
+// INSERT INTO books (id, title) VALUES (?, ?), (?, ?); [1 "Harry Potter" 2 "Lord of the Rings"]
 ```
 
 ### Example 3
@@ -71,6 +73,7 @@ query := sqlt.QueryStmt[[]string, int64](
 )
 
 ids, err := query.All(ctx, db, []string{"Harry Potter", "Lord of the Rings"})
+// INSERT INTO books (title) VALUES (?), (?); ["Harry Potter" "Lord of the Rings"]
 ```
 
 ### Example 4
@@ -90,11 +93,12 @@ query := sqlt.QueryStmt[string, Book](
 		SELECT
 			{{ ScanInt64 Book.ID "id" }}
 			{{ ScanString Book.Title ", title" }}
-		FROM books WHERE INSTR(LOWER(title), {{ lower . }}) 
+		FROM books WHERE INSTR(LOWER(title), {{ lower . }});
 	`),
 )
 
 book, err := query.First(ctx, db, "Harry Potter")
+// SELECT id, title FROM books WHERE INSTR(LOWER(title), ?); ["harry potter"]
 ```
 
 ### Example 5
@@ -121,11 +125,12 @@ query := sqlt.QueryStmt[string, Book](
 			POSITION({{ lower . }} IN LOWER(title)) > 0
 		{{ else }}
 			{{ fail "invalid dialect" }}
-		{{ end }}
+		{{ end }};
 	`),
 )
 
 books, err := query.All(ctx, db, "Harry Potter")
+// SELECT id, title FROM books WHERE POSITION($1 IN LOWER(title)) > 0; ["harry potter"]
 ```
 
 ### Example 6
@@ -179,11 +184,12 @@ query := sqlt.QueryStmt[string, Book](
 			POSITION({{ lower . }} IN LOWER(title)) > 0
 		{{ else }}
 			{{ fail "invalid dialect" }}
-		{{ end }}
+		{{ end }};
 	`),
 )
 
 book, err := query.One(ctx, db, "Harry Potter")
+// SELECT id, title FROM books WHERE POSITION($1 IN LOWER(title)) > 0; ["harry potter"]
 ```
 
 ## Any more Questions?
