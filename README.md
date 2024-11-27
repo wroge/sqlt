@@ -78,7 +78,7 @@ ids, err := query.All(ctx, db, []string{"Harry Potter", "Lord of the Rings"})
 
 ### Example 4
 
-- querying multiple columns using scanners (```Book``` and the alias ```Dest``` functions are pointers to the destination struct).
+- querying multiple columns using scanners (```Book``` (and the alias ```Dest```) function returns the pointer to the destination struct).
 - using ```lower``` function from sprig.
 
 ```go
