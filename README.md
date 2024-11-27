@@ -78,7 +78,7 @@ ids, err := query.All(ctx, db, []string{"Harry Potter", "Lord of the Rings"})
 
 ### Example 4
 
-- querying multiple columns using scanners.
+- querying multiple columns using scanners (```Book``` and the alias ```Dest``` functions are pointers to the destination struct).
 - using ```lower``` function from sprig.
 
 ```go
@@ -186,6 +186,37 @@ query := sqlt.QueryStmt[string, Book](
 			{{ fail "invalid dialect" }}
 		{{ end }};
 	`),
+)
+
+book, err := query.One(ctx, db, "Harry Potter")
+// SELECT id, title FROM books WHERE POSITION($1 IN LOWER(title)) > 0; ["harry potter"]
+```
+
+### Example 7
+
+- Loading templates from a file (queries.go.tpl).
+
+```go
+{{ define "query" }}
+	SELECT
+		{{ ScanInt64 Dest.ID "id" }}
+		{{ ScanString Dest.Title ", title" }}
+	FROM books WHERE
+	{{ if eq Dialect "sqlite" }}
+		INSTR(LOWER(title), {{ lower . }})
+	{{ else if eq Dialect "postgres" }}
+		POSITION({{ lower . }} IN LOWER(title)) > 0
+	{{ else }}
+		{{ fail "invalid dialect" }}
+	{{ end }};
+{{ end }}
+```
+
+```go
+query := sqlt.QueryStmt[string, Book](
+	config,
+	sqlt.ParseFiles("queries.go.tpl"),
+	sqlt.Lookup("query"),
 )
 
 book, err := query.One(ctx, db, "Harry Potter")
