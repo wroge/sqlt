@@ -216,13 +216,21 @@ func ScanJSON[T any](dest *T, str string) (Scanner, error) {
 		SQL:   str,
 		Value: &data,
 		Map: func() error {
+			var d T
+
 			if len(data) == 0 || bytes.Equal(data, null) {
-				*dest = *new(T)
+				*dest = d
 
 				return nil
 			}
 
-			return json.Unmarshal(data, dest)
+			if err := json.Unmarshal(data, &d); err != nil {
+				return err
+			}
+
+			*dest = d
+
+			return nil
 		},
 	}, nil
 }
