@@ -225,6 +225,8 @@ func ScanJSON[T any](dest *T, str string) (Scanner, error) {
 			}
 
 			if err := json.Unmarshal(data, &d); err != nil {
+				*dest = d
+
 				return err
 			}
 
@@ -252,25 +254,6 @@ func defaultTemplate() *template.Template {
 			return Scanner{
 				SQL:   str,
 				Value: value,
-			}, nil
-		},
-		"ScanJSON": func(value json.Unmarshaler, str string) (Scanner, error) {
-			if value == nil {
-				return Scanner{}, errors.New("invalid nil pointer")
-			}
-
-			var data []byte
-
-			return Scanner{
-				SQL:   str,
-				Value: &data,
-				Map: func() error {
-					if err := value.UnmarshalJSON(data); err != nil {
-						return err
-					}
-
-					return nil
-				},
 			}, nil
 		},
 		"ScanString":    Scan[string],
