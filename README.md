@@ -9,7 +9,7 @@ import "github.com/wroge/sqlt"
 
 `sqlt` uses Go's template engine to create a flexible, powerful and type-safe SQL builder and ORM.
 
-## Type-Safety without a build step
+## Type-Safety without a Build Step
 
 - Define SQL statements on a global level using options like `New`, `Parse`, `ParseFiles`, `ParseFS`, `ParseGlob`, `Funcs` and `Lookup`.
 - **Templates are checked via [jba/templatecheck](https://github.com/jba/templatecheck) at runtime**.
@@ -107,7 +107,7 @@ books, err := queryBooks.All(ctx, db, "The Hobbit")
 // SELECT id, title FROM books WHERE POSITION($1 IN LOWER(title)) > 0; ["the hobbit"]
 ```
 
-## Outsourcing options into a Config
+## Outsourcing Options into a Config
 
 - All options can be injected via a config struct for reusability.
 - `Start` and `End` functions allows **monitoring and logging** of your sql queries.
@@ -155,3 +155,4 @@ var queryBooks = sqlt.QueryStmt[string, Book](
 ## Any more Questions?
 
 - Take a look into my [vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture) example project.
+- The template escape function is stolen from [mhilton/sqltemplate](https://github.com/mhilton/sqltemplate).
