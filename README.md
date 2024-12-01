@@ -54,8 +54,7 @@ var queryBooks = sqlt.QueryStmt[Query, Book](
 		WHERE title = {{ .Titel }};
 	`),
 )
-
-// panic: template: query_books:6:19: checking "query_books" at <.Titel>: can't use field Titel in type main.Query
+// panic: location: [/.../main.go:17]: template: query_books:6:19: checking "query_books" at <.Titel>: can't use field Titel in type main.Query
 
 var queryID = sqlt.QueryStmt[string, int64](
 	sqlt.Parse(`SELECT id FROM books WHERE title = {{ . }};`),
@@ -129,7 +128,7 @@ var config = sqlt.Config{
 		runner.Context = context.WithValue(runner.Context, StartTime{}, time.Now())
 	},
 	End: func(err error, runner *sqlt.Runner) {
-		fmt.Println("sql=%s duration=%s", runner.SQL, time.Since(runner.Context.Value(StartTime{}).(time.Time)))
+		fmt.Println("location=[%s] sql=%s duration=%s", runner.Location, runner.SQL, time.Since(runner.Context.Value(StartTime{}).(time.Time)))
 	},
 }
 

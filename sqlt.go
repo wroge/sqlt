@@ -298,8 +298,7 @@ type Runner struct {
 	Template *template.Template
 	SQL      *SQL
 	Args     []any
-	File     string
-	Line     int
+	Location string
 }
 
 func (r *Runner) Reset() {
@@ -355,12 +354,12 @@ func Stmt[Param any](opts ...Option) *Statement[Param] {
 	for _, to := range config.TemplateOptions {
 		tpl, err = to(tpl)
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
 		}
 	}
 
 	if err = templatecheck.CheckText(tpl, *new(Param)); err != nil {
-		panic(err)
+		panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
 	}
 
 	escape(tpl)
@@ -375,14 +374,13 @@ func Stmt[Param any](opts ...Option) *Statement[Param] {
 			New: func() any {
 				t, err := tpl.Clone()
 				if err != nil {
-					panic(err)
+					panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
 				}
 
 				runner := &Runner{
 					Template: t,
 					SQL:      &SQL{},
-					File:     file,
-					Line:     line,
+					Location: fmt.Sprintf("%s:%d", file, line),
 				}
 
 				t.Funcs(template.FuncMap{
@@ -506,12 +504,12 @@ func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
 	for _, to := range config.TemplateOptions {
 		tpl, err = to(tpl)
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
 		}
 	}
 
 	if err = templatecheck.CheckText(tpl, *new(Param)); err != nil {
-		panic(err)
+		panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
 	}
 
 	escape(tpl)
@@ -526,15 +524,14 @@ func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
 			New: func() any {
 				t, err := tpl.Clone()
 				if err != nil {
-					panic(err)
+					panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
 				}
 
 				runner := &QueryRunner[Dest]{
 					Runner: &Runner{
 						Template: t,
 						SQL:      &SQL{},
-						File:     file,
-						Line:     line,
+						Location: fmt.Sprintf("%s:%d", file, line),
 					},
 					Dest: new(Dest),
 				}
