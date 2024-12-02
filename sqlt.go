@@ -762,7 +762,7 @@ func (w *SQL) String() string {
 
 var ident = "___sqlt___"
 
-// stolen from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
+// copied from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
 func escape(text *template.Template) {
 	for _, tpl := range text.Templates() {
 		if tpl.Tree.Root == nil {

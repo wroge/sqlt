@@ -1,4 +1,4 @@
-# sqlt - Go Template SQL Builder & ORM
+# sqlt: A Go Template-Based SQL Builder and ORM
 
 [![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/wroge/sqlt)
 [![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/wroge/sqlt.svg?style=social)](https://github.com/wroge/sqlt/tags)
@@ -7,16 +7,16 @@
 import "github.com/wroge/sqlt"
 ```
 
-`sqlt` uses Go's template engine to create a flexible, powerful and type-safe SQL builder and ORM.
+`sqlt` uses Go’s template engine to create a flexible, powerful, and type-safe SQL builder and ORM.
 
 ## Type-Safety without a Build Step
 
-- Define SQL statements on a global level using options like `New`, `Parse`, `ParseFiles`, `ParseFS`, `ParseGlob`, `Funcs` and `Lookup`.
-- **Templates are checked via [jba/templatecheck](https://github.com/jba/templatecheck) at runtime**.
-- Statements can be executed using `Exec`, `Query` or `QueryRow`.
-- Query statements can be executed using `First`, `One` or `All`.
-- `Scan` functions can be used to map columns to struct fields (`Scan` for `sql.Scanner's`, `ScanInt64` for `int64`, `ScanString` for `string`, `ScanTime` for `time.Time`, `ScanStringP` for `*string`, etc.).
-- Queries that return a **single column, can omit** the `Scan` function.
+- Define SQL statements at the global level using functions like `New`, `Parse`, `ParseFiles`, `ParseFS`, `ParseGlob`, `Funcs` and `Lookup`.
+- **Templates are validated via [jba/templatecheck](https://github.com/jba/templatecheck) during application startup**.
+- Execute statements using methods such as `Exec`, `Query` or `QueryRow`.
+- Execute query statements using `First`, `One` or `All`.
+- Use `Scan` functions to map columns to struct fields (`Scan` for `sql.Scanner's`, `ScanInt64` for `int64`, `ScanString` for `string`, `ScanTime` for `time.Time`, `ScanStringP` for `*string`, etc.).
+- Single-column queries do not require `Scan` functions.
 
 ```go
 type Insert struct {
@@ -72,10 +72,10 @@ id, err := queryID.One(ctx, db, "The Hobbit")
 
 ## Support for multiple Dialects and Placeholders
 
-- **Templates are escaped and not vulnerable to SQL injection**.
-- Any static (`?`) or positional (go format string with `%d`) placeholder can be used.
+- **Templates are escaped, ensuring the package is not vulnerable to SQL injection**.
+- You can use both static placeholders (`?`) and positional placeholders (Go format strings like `%d`).
 - This package **supports any template functions** (like `lower` or `fail` from [Masterminds/sprig](https://github.com/Masterminds/sprig)).
-- Multiple dialects can be used by injecting template functions.
+- Multiple dialects can be used by implementing your own template functions.
 
 ```go
 var queryBooks = sqlt.QueryStmt[string, Book](
@@ -108,8 +108,8 @@ books, err := queryBooks.All(ctx, db, "The Hobbit")
 
 ## Outsourcing Options into a Config
 
-- All options can be injected via a config struct for reusability.
-- `Start` and `End` functions allows **monitoring and logging** of your sql queries.
+- All options can be grouped into a configuration struct for reusability.
+- The `Start` and `End` functions enable monitoring and logging of SQL queries.
 
 ```go
 type StartTime struct{}
@@ -128,7 +128,7 @@ var config = sqlt.Config{
 		runner.Context = context.WithValue(runner.Context, StartTime{}, time.Now())
 	},
 	End: func(err error, runner *sqlt.Runner) {
-		fmt.Println("location=[%s] sql=%s duration=%s", runner.Location, runner.SQL, time.Since(runner.Context.Value(StartTime{}).(time.Time)))
+		fmt.Println("location=%s, sql=%s, duration=%s", runner.Location, runner.SQL, time.Since(runner.Context.Value(StartTime{}).(time.Time)))
 	},
 }
 
@@ -154,4 +154,4 @@ var queryBooks = sqlt.QueryStmt[string, Book](
 ## Any more Questions?
 
 - Take a look into my [vertical-slice-architecture](https://github.com/wroge/vertical-slice-architecture) example project.
-- The template escape function is stolen from [mhilton/sqltemplate](https://github.com/mhilton/sqltemplate).
+- The template escape function is adapted from [mhilton/sqltemplate](https://github.com/mhilton/sqltemplate).
