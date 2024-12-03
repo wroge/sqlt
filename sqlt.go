@@ -20,12 +20,14 @@ import (
 	"github.com/jba/templatecheck"
 )
 
+// DB is implemented by *sql.DB and, *sql.Tx.
 type DB interface {
 	QueryContext(ctx context.Context, str string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, str string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, str string, args ...any) (sql.Result, error)
 }
 
+// InTx simplifies the execution of multiple queries in a transaction.
 func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) error) (err error) {
 	var tx *sql.Tx
 
@@ -50,10 +52,12 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 	return err
 }
 
+// Options are used to configure the statements.
 type Option interface {
 	Configure(config *Config)
 }
 
+// Config groups the available options.
 type Config struct {
 	Start           Start
 	End             End
@@ -61,6 +65,7 @@ type Config struct {
 	TemplateOptions []TemplateOption
 }
 
+// Configure implements the Option interface.
 func (c Config) Configure(config *Config) {
 	if c.Start != nil {
 		config.Start = c.Start
@@ -79,100 +84,122 @@ func (c Config) Configure(config *Config) {
 	}
 }
 
+// Start is executed when a Runner is returned from a statement pool.
 type Start func(runner *Runner)
 
+// Configure implements the Option interface.
 func (s Start) Configure(config *Config) {
 	config.Start = s
 }
 
+// End is executed when a Runner is put back into a statement pool.
 type End func(err error, runner *Runner)
 
+// Configure implements the Option interface.
 func (e End) Configure(config *Config) {
 	config.End = e
 }
 
+// Placeholder can be static or positional using a go-formatted string ('%d').
 type Placeholder string
 
+// Configure implements the Option interface.
 func (p Placeholder) Configure(config *Config) {
 	config.Placeholder = p
 }
 
+// Dollar is a positional placeholder.
 func Dollar() Placeholder {
 	return "$%d"
 }
 
+// Colon is a positional placeholder.
 func Colon() Placeholder {
 	return ":%d"
 }
 
+// AtP is a positional placeholder.
 func AtP() Placeholder {
 	return "@p%d"
 }
 
+// Question is a static placeholder.
 func Question() Placeholder {
 	return "?"
 }
 
+// TemplateOption can be used to configure the template of a statement.
 type TemplateOption func(tpl *template.Template) (*template.Template, error)
 
+// Configure implements the Option interface.
 func (to TemplateOption) Configure(config *Config) {
 	config.TemplateOptions = append(config.TemplateOptions, to)
 }
 
+// New is equivalent to the method from text/template.
 func New(name string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.New(name), nil
 	}
 }
 
+// Parse is equivalent to the method from text/template.
 func Parse(text string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Parse(text)
 	}
 }
 
+// ParseFS is equivalent to the method from text/template.
 func ParseFS(fs fs.FS, patterns ...string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseFS(fs, patterns...)
 	}
 }
 
+// ParseFiles is equivalent to the method from text/template.
 func ParseFiles(filenames ...string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseFiles(filenames...)
 	}
 }
 
+// ParseGlob is equivalent to the method from text/template.
 func ParseGlob(pattern string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseGlob(pattern)
 	}
 }
 
+// Funcs is equivalent to the method from text/template.
 func Funcs(fm template.FuncMap) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Funcs(fm), nil
 	}
 }
 
+// MissingKeyInvalid is equivalent to the method 'Option("missingkey=invalid")' from text/template.
 func MissingKeyInvalid() TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Option("missingkey=invalid"), nil
 	}
 }
 
+// MissingKeyZero is equivalent to the method 'Option("missingkey=zero")' from text/template.
 func MissingKeyZero() TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Option("missingkey=zero"), nil
 	}
 }
 
+// MissingKeyError is equivalent to the method 'Option("missingkey=error")' from text/template.
 func MissingKeyError() TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Option("missingkey=error"), nil
 	}
 }
 
+// Lookup is equivalent to the method from text/template.
 func Lookup(name string) TemplateOption {
 	return func(tpl *template.Template) (*template.Template, error) {
 		tpl = tpl.Lookup(name)
@@ -184,14 +211,19 @@ func Lookup(name string) TemplateOption {
 	}
 }
 
+// Raw is used to write strings directly into the sql output.
+// It should be used carefully.
 type Raw string
 
+// A Scanner is used to map columns to struct fields.
+// Value should be a pointer to a struct field.
 type Scanner struct {
 	Value any
 	Map   func() error
 	SQL   string
 }
 
+// Scan is a Scanner for values, that can be used directly with your sql driver.
 func Scan[T any](dest *T, str string) (Scanner, error) {
 	if dest == nil {
 		return Scanner{}, errors.New("invalid nil pointer")
@@ -205,6 +237,7 @@ func Scan[T any](dest *T, str string) (Scanner, error) {
 
 var null = []byte("null")
 
+// ScanJSON is a Scanner to unmarshal byte strings into T.
 func ScanJSON[T any](dest *T, str string) (Scanner, error) {
 	if dest == nil {
 		return Scanner{}, errors.New("invalid nil pointer")
@@ -293,6 +326,7 @@ func defaultTemplate() *template.Template {
 	})
 }
 
+// Runner groups the relevant data for each 'run' of a Statement.
 type Runner struct {
 	Context  context.Context
 	Template *template.Template
@@ -301,12 +335,14 @@ type Runner struct {
 	Location string
 }
 
+// Reset the Runner for the next run of a statement.
 func (r *Runner) Reset() {
 	r.Context = nil
 	r.SQL.Reset()
 	r.Args = r.Args[:0]
 }
 
+// Exec creates and execute the sql query using ExecContext.
 func (r *Runner) Exec(db DB, param any) (sql.Result, error) {
 	if err := r.Template.Execute(r.SQL, param); err != nil {
 		return nil, err
@@ -315,6 +351,7 @@ func (r *Runner) Exec(db DB, param any) (sql.Result, error) {
 	return db.ExecContext(r.Context, r.SQL.String(), r.Args...)
 }
 
+// Query creates and execute the sql query using QueryContext.
 func (r *Runner) Query(db DB, param any) (*sql.Rows, error) {
 	if err := r.Template.Execute(r.SQL, param); err != nil {
 		return nil, err
@@ -323,6 +360,7 @@ func (r *Runner) Query(db DB, param any) (*sql.Rows, error) {
 	return db.QueryContext(r.Context, r.SQL.String(), r.Args...)
 }
 
+// Query creates and execute the sql query using QueryRow.
 func (r *Runner) QueryRow(db DB, param any) (*sql.Row, error) {
 	if err := r.Template.Execute(r.SQL, param); err != nil {
 		return nil, err
@@ -331,6 +369,8 @@ func (r *Runner) QueryRow(db DB, param any) (*sql.Row, error) {
 	return db.QueryRowContext(r.Context, r.SQL.String(), r.Args...), nil
 }
 
+// Stmt creates a type-safe Statement using variadic options.
+// Invalid templates panic.
 func Stmt[Param any](opts ...Option) *Statement[Param] {
 	_, file, line, _ := runtime.Caller(1)
 
@@ -406,12 +446,14 @@ func Stmt[Param any](opts ...Option) *Statement[Param] {
 	}
 }
 
+// Statements is a Runner pool and a type-safe sql executor.
 type Statement[Param any] struct {
 	start func(runner *Runner)
 	end   func(err error, runner *Runner)
 	pool  *sync.Pool
 }
 
+// Get a Runner from the pool and execute the start option.
 func (s *Statement[Param]) Get(ctx context.Context) *Runner {
 	runner := s.pool.Get().(*Runner)
 
@@ -424,6 +466,7 @@ func (s *Statement[Param]) Get(ctx context.Context) *Runner {
 	return runner
 }
 
+// Put a Runner into the pool and execute the end option.
 func (s *Statement[Param]) Put(err error, runner *Runner) {
 	if s.end != nil {
 		s.end(err, runner)
@@ -434,6 +477,7 @@ func (s *Statement[Param]) Put(err error, runner *Runner) {
 	s.pool.Put(runner)
 }
 
+// Exec takes a runner and executes it.
 func (s *Statement[Param]) Exec(ctx context.Context, db DB, param Param) (result sql.Result, err error) {
 	runner := s.Get(ctx)
 
@@ -442,6 +486,7 @@ func (s *Statement[Param]) Exec(ctx context.Context, db DB, param Param) (result
 	return runner.Exec(db, param)
 }
 
+// QueryRow takes a runner and queries a row.
 func (s *Statement[Param]) QueryRow(ctx context.Context, db DB, param Param) (row *sql.Row, err error) {
 	runner := s.Get(ctx)
 
@@ -450,6 +495,7 @@ func (s *Statement[Param]) QueryRow(ctx context.Context, db DB, param Param) (ro
 	return runner.QueryRow(db, param)
 }
 
+// Query takes a runner and queries rows.
 func (s *Statement[Param]) Query(ctx context.Context, db DB, param Param) (rows *sql.Rows, err error) {
 	runner := s.Get(ctx)
 
@@ -458,6 +504,7 @@ func (s *Statement[Param]) Query(ctx context.Context, db DB, param Param) (rows 
 	return runner.Query(db, param)
 }
 
+// QueryRunner groups the relevant data for each 'run' of a QueryStatement.
 type QueryRunner[Dest any] struct {
 	Runner  *Runner
 	Dest    *Dest
@@ -465,12 +512,16 @@ type QueryRunner[Dest any] struct {
 	Mappers []func() error
 }
 
+// Reset the QueryRunner for the next run of a statement.
 func (qr *QueryRunner[Dest]) Reset() {
 	qr.Runner.Reset()
 	qr.Values = qr.Values[:0]
 	qr.Mappers = qr.Mappers[:0]
 }
 
+// QueryStmt creates a type-safe QueryStatement using variadic options.
+// Define the mapping of a column to a struct field here using the Scan functions.
+// Invalid templates panic.
 func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
 	_, file, line, _ := runtime.Caller(1)
 
@@ -575,13 +626,15 @@ func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
 	}
 }
 
+// QueryStatement is a QueryRunner pool and a type-safe sql query executor.
 type QueryStatement[Param, Dest any] struct {
 	start func(runner *Runner)
 	end   func(err error, runner *Runner)
 	pool  *sync.Pool
 }
 
-func (qs *QueryStatement[Param, Dest]) Start(ctx context.Context) *QueryRunner[Dest] {
+// Get a QueryRunner from the pool and execute the start option.
+func (qs *QueryStatement[Param, Dest]) Get(ctx context.Context) *QueryRunner[Dest] {
 	runner := qs.pool.Get().(*QueryRunner[Dest])
 
 	runner.Runner.Context = ctx
@@ -593,7 +646,8 @@ func (qs *QueryStatement[Param, Dest]) Start(ctx context.Context) *QueryRunner[D
 	return runner
 }
 
-func (qs *QueryStatement[Param, Dest]) End(err error, runner *QueryRunner[Dest]) {
+// Put a QueryRunner into the pool and execute the end option.
+func (qs *QueryStatement[Param, Dest]) Put(err error, runner *QueryRunner[Dest]) {
 	if qs.end != nil {
 		qs.end(err, runner.Runner)
 	}
@@ -603,10 +657,11 @@ func (qs *QueryStatement[Param, Dest]) End(err error, runner *QueryRunner[Dest])
 	qs.pool.Put(runner)
 }
 
+// All returns a slice of Dest for each row.
 func (qs *QueryStatement[Param, Dest]) All(ctx context.Context, db DB, param Param) (result []Dest, err error) {
-	runner := qs.Start(ctx)
+	runner := qs.Get(ctx)
 
-	defer qs.End(err, runner)
+	defer qs.Put(err, runner)
 
 	var rows *sql.Rows
 
@@ -644,12 +699,14 @@ func (qs *QueryStatement[Param, Dest]) All(ctx context.Context, db DB, param Par
 	return result, err
 }
 
+// ErrTooManyRows is returned from One, when there are more than one rows.
 var ErrTooManyRows = errors.New("too many rows")
 
+// One returns exactly one Dest. If there is more than one row in the result set, ErrTooManyRows is returned.
 func (qs *QueryStatement[Param, Dest]) One(ctx context.Context, db DB, param Param) (result Dest, err error) {
-	runner := qs.Start(ctx)
+	runner := qs.Get(ctx)
 
-	defer qs.End(err, runner)
+	defer qs.Put(err, runner)
 
 	var rows *sql.Rows
 
@@ -692,10 +749,11 @@ func (qs *QueryStatement[Param, Dest]) One(ctx context.Context, db DB, param Par
 	return *runner.Dest, err
 }
 
+// First returns the first row mapped into Dest.
 func (qs *QueryStatement[Param, Dest]) First(ctx context.Context, db DB, param Param) (result Dest, err error) {
-	runner := qs.Start(ctx)
+	runner := qs.Get(ctx)
 
-	defer qs.End(err, runner)
+	defer qs.Put(err, runner)
 
 	var row *sql.Row
 
@@ -725,14 +783,17 @@ func (qs *QueryStatement[Param, Dest]) First(ctx context.Context, db DB, param P
 	return *runner.Dest, nil
 }
 
+// SQL implements io.Writer and fmt.Stringer.
 type SQL struct {
 	data []byte
 }
 
+// Reset the internal byte slice.
 func (w *SQL) Reset() {
 	w.data = w.data[:0]
 }
 
+// Write implements the io.Writer interface.
 func (w *SQL) Write(data []byte) (int, error) {
 	for _, b := range data {
 		switch b {
@@ -748,6 +809,7 @@ func (w *SQL) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// String implements the fmt.Stringer interface.
 func (w *SQL) String() string {
 	if len(w.data) == 0 {
 		return ""
@@ -815,6 +877,7 @@ func escapeNode(s *parse.Tree, n parse.Node) {
 	}
 }
 
+// copied from the text/template package.
 func goodName(name string) bool {
 	if name == "" {
 		return false
