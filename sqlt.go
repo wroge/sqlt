@@ -38,10 +38,13 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 
 	defer func() {
 		if p := recover(); p != nil {
-			tx.Rollback()
-			panic(p)
+			if err = tx.Rollback(); err != nil {
+				panic(fmt.Errorf("%w: %v", err, p))
+			} else {
+				panic(p)
+			}
 		} else if err != nil {
-			tx.Rollback()
+			panic(errors.Join(err, tx.Rollback()))
 		} else {
 			err = tx.Commit()
 		}
