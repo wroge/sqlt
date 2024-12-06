@@ -481,7 +481,9 @@ func (s *Statement[Param]) Put(err error, runner *Runner) {
 func (s *Statement[Param]) Exec(ctx context.Context, db DB, param Param) (result sql.Result, err error) {
 	runner := s.Get(ctx)
 
-	defer s.Put(err, runner)
+	defer func() {
+		s.Put(err, runner)
+	}()
 
 	return runner.Exec(db, param)
 }
@@ -490,7 +492,9 @@ func (s *Statement[Param]) Exec(ctx context.Context, db DB, param Param) (result
 func (s *Statement[Param]) QueryRow(ctx context.Context, db DB, param Param) (row *sql.Row, err error) {
 	runner := s.Get(ctx)
 
-	defer s.Put(err, runner)
+	defer func() {
+		s.Put(err, runner)
+	}()
 
 	return runner.QueryRow(db, param)
 }
@@ -499,7 +503,9 @@ func (s *Statement[Param]) QueryRow(ctx context.Context, db DB, param Param) (ro
 func (s *Statement[Param]) Query(ctx context.Context, db DB, param Param) (rows *sql.Rows, err error) {
 	runner := s.Get(ctx)
 
-	defer s.Put(err, runner)
+	defer func() {
+		s.Put(err, runner)
+	}()
 
 	return runner.Query(db, param)
 }
@@ -661,7 +667,9 @@ func (qs *QueryStatement[Param, Dest]) Put(err error, runner *QueryRunner[Dest])
 func (qs *QueryStatement[Param, Dest]) All(ctx context.Context, db DB, param Param) (result []Dest, err error) {
 	runner := qs.Get(ctx)
 
-	defer qs.Put(err, runner)
+	defer func() {
+		qs.Put(err, runner)
+	}()
 
 	var rows *sql.Rows
 
@@ -706,7 +714,9 @@ var ErrTooManyRows = errors.New("too many rows")
 func (qs *QueryStatement[Param, Dest]) One(ctx context.Context, db DB, param Param) (result Dest, err error) {
 	runner := qs.Get(ctx)
 
-	defer qs.Put(err, runner)
+	defer func() {
+		qs.Put(err, runner)
+	}()
 
 	var rows *sql.Rows
 
@@ -753,7 +763,9 @@ func (qs *QueryStatement[Param, Dest]) One(ctx context.Context, db DB, param Par
 func (qs *QueryStatement[Param, Dest]) First(ctx context.Context, db DB, param Param) (result Dest, err error) {
 	runner := qs.Get(ctx)
 
-	defer qs.Put(err, runner)
+	defer func() {
+		qs.Put(err, runner)
+	}()
 
 	var row *sql.Row
 
