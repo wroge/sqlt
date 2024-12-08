@@ -44,7 +44,7 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 				panic(p)
 			}
 		} else if err != nil {
-			panic(errors.Join(err, tx.Rollback()))
+			err = errors.Join(err, tx.Rollback())
 		} else {
 			err = tx.Commit()
 		}
@@ -377,6 +377,8 @@ func (r *Runner) QueryRow(db DB, param any) (*sql.Row, error) {
 func Stmt[Param any](opts ...Option) *Statement[Param] {
 	_, file, line, _ := runtime.Caller(1)
 
+	location := fmt.Sprintf("%s:%d", file, line)
+
 	config := &Config{
 		Placeholder: "?",
 	}
@@ -397,12 +399,12 @@ func Stmt[Param any](opts ...Option) *Statement[Param] {
 	for _, to := range config.TemplateOptions {
 		tpl, err = to(tpl)
 		if err != nil {
-			panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
+			panic(fmt.Errorf("location: [%s]: %w", location, err))
 		}
 	}
 
 	if err = templatecheck.CheckText(tpl, *new(Param)); err != nil {
-		panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
+		panic(fmt.Errorf("location: [%s]: %w", location, err))
 	}
 
 	escape(tpl)
@@ -417,13 +419,13 @@ func Stmt[Param any](opts ...Option) *Statement[Param] {
 			New: func() any {
 				t, err := tpl.Clone()
 				if err != nil {
-					panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
+					panic(fmt.Errorf("location: [%s]: %w", location, err))
 				}
 
 				runner := &Runner{
 					Template: t,
 					SQL:      &SQL{},
-					Location: fmt.Sprintf("%s:%d", file, line),
+					Location: location,
 				}
 
 				t.Funcs(template.FuncMap{
@@ -831,7 +833,7 @@ func (w *SQL) String() string {
 	}
 
 	if w.data[len(w.data)-1] == ' ' {
-		return string(w.data[:len(w.data)-1])
+		w.data = w.data[:len(w.data)-1]
 	}
 
 	return string(w.data)

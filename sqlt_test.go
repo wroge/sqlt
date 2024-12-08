@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"testing"
 	"text/template"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/spf13/afero"
 	"github.com/wroge/sqlt"
 )
 
@@ -75,13 +77,17 @@ func TestOne(t *testing.T) {
 	}
 }
 
-func TestOneError(t *testing.T) {
+func TestOneErrorInTx(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	mock.ExpectQuery("SELECT id, title FROM books WHERE title = ?").WithArgs("TEST").WillReturnError(errors.New("ERROR"))
+	mock.ExpectBegin()
+
+	mock.ExpectQuery("SELECT id, title FROM books WHERE title = @p1").WithArgs("TEST").WillReturnError(errors.New("ERROR"))
+
+	mock.ExpectRollback()
 
 	type Param struct {
 		Title string
@@ -98,6 +104,7 @@ func TestOneError(t *testing.T) {
 				t.Fail()
 			}
 		}),
+		sqlt.AtP(),
 		sqlt.Parse(`
 			SELECT
 				{{ ScanInt64 Dest.ID "id" }}
@@ -106,8 +113,200 @@ func TestOneError(t *testing.T) {
 		`),
 	)
 
-	_, err = stmt.One(context.Background(), db, Param{Title: "TEST"})
-	if err == nil || err.Error() != "ERROR" {
+	_ = sqlt.InTx(context.Background(), nil, db, func(db sqlt.DB) error {
+		_, err = stmt.One(context.Background(), db, Param{Title: "TEST"})
+		if err == nil || err.Error() != "ERROR" {
+			t.Fail()
+		}
+
+		return err
+	})
+}
+
+func TestOneParseError(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("The code did not panic")
+		}
+	}()
+
+	type Param struct {
+		Title string
+	}
+
+	type Book struct {
+		ID    int64
+		Title string
+	}
+
+	_ = sqlt.QueryStmt[Param, Book](
+		sqlt.End(func(err error, runner *sqlt.Runner) {
+			if err == nil || err.Error() != "ERROR" {
+				t.Fail()
+			}
+		}),
+		sqlt.New("query"),
+		sqlt.Parse(`
+			SELECT
+				{{ ScanInt64 Dest.ID "id" }}
+				{{- ScanString Dest.Titel ", title" }}
+			FROM books WHERE title = {{ .Title }}
+		`),
+	)
+}
+
+func TestOneLookup(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT id, title, json FROM books WHERE title = :1").WithArgs("TEST").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "title", "json"}).
+			AddRow(1, "TEST", json.RawMessage(`"data"`)),
+	)
+
+	type Param struct {
+		Title string
+	}
+
+	type Book struct {
+		ID    int64
+		Title string
+		JSON  json.RawMessage
+	}
+
+	type Key struct{}
+
+	config := sqlt.Config{
+		Placeholder: sqlt.Colon(),
+		Start: func(runner *sqlt.Runner) {
+			runner.Context = context.WithValue(runner.Context, Key{}, "VALUE")
+		},
+		End: func(err error, runner *sqlt.Runner) {
+			if v, ok := runner.Context.Value(Key{}).(string); !ok || v != "VALUE" {
+				t.Fatal(v, ok)
+			}
+
+			if runner.SQL.String() != "SELECT id, title, json FROM books WHERE title = :1" {
+				t.Fail()
+			}
+		},
+		TemplateOptions: []sqlt.TemplateOption{
+			sqlt.Funcs(template.FuncMap{
+				"ScanRawJSON": sqlt.ScanJSON[json.RawMessage],
+			}),
+		},
+	}
+
+	stmt := sqlt.QueryStmt[Param, Book](
+		config,
+		sqlt.Parse(`
+			{{ define "query" }}
+			SELECT
+				{{ ScanInt64 Dest.ID "id" }}
+				{{- ScanString Dest.Title ", title" }}
+				{{- ScanRawJSON Dest.JSON ", json" }}
+			FROM books WHERE title = {{ .Title }}
+			{{ end }}
+		`),
+		sqlt.Lookup("query"),
+	)
+
+	book, err := stmt.One(context.Background(), db, Param{Title: "TEST"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if book.ID != 1 || book.Title != "TEST" || string(book.JSON) != `"data"` {
+		t.Fail()
+	}
+}
+
+type FS struct {
+	FS afero.Fs
+}
+
+// Open implements fs.FS.
+func (f FS) Open(name string) (fs.File, error) {
+	return f.FS.Open(name)
+}
+
+func TestOneFile(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT id, title, json FROM books WHERE title = ?").WithArgs("TEST").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "title", "json"}).
+			AddRow(1, "TEST", json.RawMessage(`"data"`)),
+	)
+
+	type Param struct {
+		Title string
+	}
+
+	type Book struct {
+		ID    int64
+		Title string
+		JSON  json.RawMessage
+	}
+
+	fs := afero.NewOsFs()
+
+	file, err := fs.Create("/tmp/query.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer file.Close()
+
+	_, err = file.Write([]byte(`
+		SELECT
+			{{ ScanInt64 Dest.ID "id" }}
+			{{- ScanString Dest.Title ", title" }}
+			{{- ScanRawJSON Dest.JSON ", json" }}
+		FROM books WHERE title = {{ .Title }}
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type Key struct{}
+
+	config := sqlt.Config{
+		Start: func(runner *sqlt.Runner) {
+			runner.Context = context.WithValue(runner.Context, Key{}, "VALUE")
+		},
+		End: func(err error, runner *sqlt.Runner) {
+			if v, ok := runner.Context.Value(Key{}).(string); !ok || v != "VALUE" {
+				t.Fatal(v, ok)
+			}
+
+			if runner.SQL.String() != "SELECT id, title, json FROM books WHERE title = ?" {
+				t.Fail()
+			}
+		},
+		TemplateOptions: []sqlt.TemplateOption{
+			sqlt.Funcs(template.FuncMap{
+				"ScanRawJSON": sqlt.ScanJSON[json.RawMessage],
+			}),
+		},
+	}
+
+	stmt := sqlt.QueryStmt[Param, Book](
+		config,
+		sqlt.ParseFS(FS{FS: fs}, "/tmp/query.sql"),
+		sqlt.Lookup("query.sql"),
+	)
+
+	book, err := stmt.One(context.Background(), db, Param{Title: "TEST"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if book.ID != 1 || book.Title != "TEST" || string(book.JSON) != `"data"` {
 		t.Fail()
 	}
 }
@@ -294,6 +493,9 @@ func TestExec(t *testing.T) {
 
 	config := sqlt.Config{
 		Placeholder: sqlt.Dollar(),
+		TemplateOptions: []sqlt.TemplateOption{
+			sqlt.MissingKeyZero(),
+		},
 	}
 
 	stmt := sqlt.Stmt[Book](
@@ -335,6 +537,7 @@ func TestQueryRow(t *testing.T) {
 
 	stmt := sqlt.Stmt[Book](
 		config,
+		sqlt.MissingKeyInvalid(),
 		sqlt.Parse(`
 			INSERT INTO books (title, json) VALUES ({{ .Title }}, {{ .JSON }}) RETURNING id;
 		`),
@@ -362,7 +565,7 @@ func TestQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mock.ExpectQuery("INSERT INTO books (title, json) VALUES ($1, $2) , ($3, $4) RETURNING id;").WithArgs("TEST", json.RawMessage(`"data"`), "TEST 2", json.RawMessage(`"data 2"`)).WillReturnRows(
+	mock.ExpectQuery("INSERT INTO books (title, json) VALUES (?, ?) , (?, ?) RETURNING id;").WithArgs("TEST", json.RawMessage(`"data"`), "TEST 2", json.RawMessage(`"data 2"`)).WillReturnRows(
 		sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2),
 	)
 
@@ -373,7 +576,10 @@ func TestQuery(t *testing.T) {
 	}
 
 	config := sqlt.Config{
-		Placeholder: sqlt.Dollar(),
+		Placeholder: sqlt.Question(),
+		TemplateOptions: []sqlt.TemplateOption{
+			sqlt.MissingKeyError(),
+		},
 	}
 
 	stmt := sqlt.Stmt[[]Book](
@@ -410,5 +616,66 @@ func TestQuery(t *testing.T) {
 
 	if len(ids) != 2 {
 		t.Fail()
+	}
+}
+
+func TestOneSingleColumnInTx(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectBegin()
+
+	mock.ExpectQuery("SELECT id FROM books WHERE title = ?").WithArgs("TEST").WillReturnRows(
+		sqlmock.NewRows([]string{"id"}).
+			AddRow(1),
+	)
+
+	mock.ExpectCommit()
+
+	type Param struct {
+		Title string
+	}
+
+	type Key struct{}
+
+	config := sqlt.Config{
+		Start: func(runner *sqlt.Runner) {
+			runner.Context = context.WithValue(runner.Context, Key{}, "VALUE")
+		},
+		End: func(err error, runner *sqlt.Runner) {
+			if v, ok := runner.Context.Value(Key{}).(string); !ok || v != "VALUE" {
+				t.Fatal(v, ok)
+			}
+
+			if runner.SQL.String() != "SELECT id FROM books WHERE title = ?" {
+				t.Fail()
+			}
+		},
+	}
+
+	stmt := sqlt.QueryStmt[Param, int64](
+		config,
+		sqlt.Question(),
+		sqlt.Parse(`
+			SELECT {{ Raw "id" }} FROM books WHERE title = {{ .Title }}
+		`),
+	)
+
+	err = sqlt.InTx(context.Background(), nil, db, func(db sqlt.DB) error {
+		id, err := stmt.One(context.Background(), db, Param{Title: "TEST"})
+		if err != nil {
+			return err
+		}
+
+		if id != 1 {
+			t.Fail()
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
