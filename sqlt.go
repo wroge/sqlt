@@ -242,7 +242,7 @@ var null = []byte("null")
 
 // ScanJSON is a Scanner to unmarshal byte strings into T.
 func ScanJSON[T any](dest *T, str string) (Scanner, error) {
-	var data sql.RawBytes
+	var data []byte
 
 	return Scanner{
 		SQL:   str,
