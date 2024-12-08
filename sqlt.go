@@ -232,10 +232,6 @@ type Scanner struct {
 
 // Scan is a Scanner for values, that can be used directly with your sql driver.
 func Scan[T any](dest *T, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, errors.New("invalid nil pointer")
-	}
-
 	return Scanner{
 		SQL:   str,
 		Value: dest,
@@ -246,11 +242,7 @@ var null = []byte("null")
 
 // ScanJSON is a Scanner to unmarshal byte strings into T.
 func ScanJSON[T any](dest *T, str string) (Scanner, error) {
-	if dest == nil {
-		return Scanner{}, errors.New("invalid nil pointer")
-	}
-
-	var data []byte
+	var data sql.RawBytes
 
 	return Scanner{
 		SQL:   str,
