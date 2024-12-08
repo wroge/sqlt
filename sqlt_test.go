@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"testing"
 	"text/template"
@@ -158,8 +159,17 @@ func TestOneErrorInTx(t *testing.T) {
 		Title string
 	}
 
+	type Key struct{}
+
 	stmt := sqlt.QueryStmt[Param, Book](
+		sqlt.Start(func(runner *sqlt.Runner) {
+			runner.Context = context.WithValue(runner.Context, Key{}, "VALUE")
+		}),
 		sqlt.End(func(err error, runner *sqlt.Runner) {
+			if runner.Context.Value(Key{}) != any("VALUE") {
+				t.Fail()
+			}
+
 			if err == nil || err.Error() != "ERROR" {
 				t.Fail()
 			}
@@ -976,6 +986,73 @@ func TestMapError(t *testing.T) {
 
 	_, err = stmt.First(context.Background(), db, "TEST")
 	if err == nil || err.Error() != "ERROR" {
+		t.Fatal(err)
+	}
+}
+
+func TestQueryStmtPanic(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("id").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(2))
+	mock.ExpectQuery("id").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(2))
+	mock.ExpectQuery("id").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(2))
+
+	stmt := sqlt.QueryStmt[string, int64](
+		sqlt.Funcs(template.FuncMap{
+			"MyScanner": func(value *int64, str string) sqlt.Scanner {
+				return sqlt.Scanner{
+					SQL:   str,
+					Value: value,
+					Map: func() error {
+						panic(errors.New("ERROR"))
+					},
+				}
+			},
+		}),
+		sqlt.Parse(`{{ MyScanner Dest "id" }}`),
+	)
+
+	_, err = stmt.All(context.Background(), db, "TEST")
+	if err == nil || err.Error() != "ERROR" {
+		t.Fatal(err)
+	}
+
+	_, err = stmt.One(context.Background(), db, "TEST")
+	if err == nil || err.Error() != "ERROR" {
+		t.Fatal(err)
+	}
+
+	_, err = stmt.First(context.Background(), db, "TEST")
+	if err == nil || err.Error() != "ERROR" {
+		t.Fatal(err)
+	}
+}
+
+func TestStmtPanic(t *testing.T) {
+	stmt := sqlt.Stmt[string](
+		sqlt.Funcs(template.FuncMap{
+			"Test": func() sqlt.Raw {
+				panic(fmt.Errorf("ERROR"))
+			},
+		}),
+		sqlt.Parse(`{{ Test }}`),
+	)
+
+	_, err := stmt.Exec(context.Background(), nil, "TEST")
+	if err == nil || err.Error() != `template: :1:3: executing "" at <Test>: error calling Test: ERROR` {
+		t.Fatal(err)
+	}
+
+	_, err = stmt.Query(context.Background(), nil, "TEST")
+	if err == nil || err.Error() != `template: :1:3: executing "" at <Test>: error calling Test: ERROR` {
+		t.Fatal(err)
+	}
+
+	_, err = stmt.QueryRow(context.Background(), nil, "TEST")
+	if err == nil || err.Error() != `template: :1:3: executing "" at <Test>: error calling Test: ERROR` {
 		t.Fatal(err)
 	}
 }

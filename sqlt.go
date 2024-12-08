@@ -37,20 +37,26 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 	}
 
 	defer func() {
-		if p := recover(); p != nil {
-			if err = tx.Rollback(); err != nil {
-				panic(fmt.Errorf("%w: %v", err, p))
-			} else {
-				panic(p)
-			}
-		} else if err != nil {
-			err = errors.Join(err, tx.Rollback())
+		if r := recover(); r != nil || err != nil {
+			err = errors.Join(err, toErr(r), tx.Rollback())
 		} else {
 			err = tx.Commit()
 		}
 	}()
 
 	return do(tx)
+}
+
+func toErr(r any) error {
+	if r == nil {
+		return nil
+	}
+
+	if perr, ok := r.(error); ok {
+		return perr
+	}
+
+	return fmt.Errorf("%v", r)
 }
 
 // Options are used to configure the statements.
@@ -470,6 +476,7 @@ func (s *Statement[Param]) Get(ctx context.Context) *Runner {
 }
 
 // Put a Runner into the pool and execute the end option.
+// This function should be called within a defer block to recover from panics.
 func (s *Statement[Param]) Put(err error, runner *Runner) {
 	if s.end != nil {
 		s.end(err, runner)
@@ -485,6 +492,10 @@ func (s *Statement[Param]) Exec(ctx context.Context, db DB, param Param) (result
 	runner := s.Get(ctx)
 
 	defer func() {
+		if r := recover(); r != nil {
+			err = errors.Join(err, toErr(r))
+		}
+
 		s.Put(err, runner)
 	}()
 
@@ -496,6 +507,10 @@ func (s *Statement[Param]) QueryRow(ctx context.Context, db DB, param Param) (ro
 	runner := s.Get(ctx)
 
 	defer func() {
+		if r := recover(); r != nil {
+			err = errors.Join(err, toErr(r))
+		}
+
 		s.Put(err, runner)
 	}()
 
@@ -507,6 +522,10 @@ func (s *Statement[Param]) Query(ctx context.Context, db DB, param Param) (rows 
 	runner := s.Get(ctx)
 
 	defer func() {
+		if r := recover(); r != nil {
+			err = errors.Join(err, toErr(r))
+		}
+
 		s.Put(err, runner)
 	}()
 
@@ -533,6 +552,8 @@ func (qr *QueryRunner[Dest]) Reset() {
 // Invalid templates panic.
 func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
 	_, file, line, _ := runtime.Caller(1)
+
+	location := fmt.Sprintf("%s:%d", file, line)
 
 	config := &Config{
 		Placeholder: "?",
@@ -564,12 +585,12 @@ func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
 	for _, to := range config.TemplateOptions {
 		tpl, err = to(tpl)
 		if err != nil {
-			panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
+			panic(fmt.Errorf("location: [%s]: %w", location, err))
 		}
 	}
 
 	if err = templatecheck.CheckText(tpl, *new(Param)); err != nil {
-		panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
+		panic(fmt.Errorf("location: [%s]: %w", location, err))
 	}
 
 	escape(tpl)
@@ -584,14 +605,14 @@ func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
 			New: func() any {
 				t, err := tpl.Clone()
 				if err != nil {
-					panic(fmt.Errorf("location: [%s:%d]: %w", file, line, err))
+					panic(fmt.Errorf("clone: location: [%s]: %w", location, err))
 				}
 
 				runner := &QueryRunner[Dest]{
 					Runner: &Runner{
 						Template: t,
 						SQL:      &SQL{},
-						Location: fmt.Sprintf("%s:%d", file, line),
+						Location: location,
 					},
 					Dest: new(Dest),
 				}
@@ -656,6 +677,7 @@ func (qs *QueryStatement[Param, Dest]) Get(ctx context.Context) *QueryRunner[Des
 }
 
 // Put a QueryRunner into the pool and execute the end option.
+// This function should be called within a defer block to recover from panics.
 func (qs *QueryStatement[Param, Dest]) Put(err error, runner *QueryRunner[Dest]) {
 	if qs.end != nil {
 		qs.end(err, runner.Runner)
@@ -671,6 +693,10 @@ func (qs *QueryStatement[Param, Dest]) All(ctx context.Context, db DB, param Par
 	runner := qs.Get(ctx)
 
 	defer func() {
+		if r := recover(); r != nil {
+			err = errors.Join(err, toErr(r))
+		}
+
 		qs.Put(err, runner)
 	}()
 
@@ -718,6 +744,10 @@ func (qs *QueryStatement[Param, Dest]) One(ctx context.Context, db DB, param Par
 	runner := qs.Get(ctx)
 
 	defer func() {
+		if r := recover(); r != nil {
+			err = errors.Join(err, toErr(r))
+		}
+		
 		qs.Put(err, runner)
 	}()
 
@@ -767,6 +797,10 @@ func (qs *QueryStatement[Param, Dest]) First(ctx context.Context, db DB, param P
 	runner := qs.Get(ctx)
 
 	defer func() {
+		if r := recover(); r != nil {
+			err = errors.Join(err, toErr(r))
+		}
+
 		qs.Put(err, runner)
 	}()
 
