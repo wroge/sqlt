@@ -50,9 +50,7 @@ func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) e
 		}
 	}()
 
-	err = do(tx)
-
-	return err
+	return do(tx)
 }
 
 // Options are used to configure the statements.
