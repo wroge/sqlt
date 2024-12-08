@@ -853,7 +853,7 @@ func TestQuery(t *testing.T) {
 	}
 }
 
-func TestOneSingleColumnInTx(t *testing.T) {
+func TestSingleColumnInTx(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {
 		t.Fatal(err)
@@ -861,10 +861,12 @@ func TestOneSingleColumnInTx(t *testing.T) {
 
 	mock.ExpectBegin()
 
-	mock.ExpectQuery("SELECT id FROM books WHERE title = ?").WithArgs("TEST").WillReturnRows(
-		sqlmock.NewRows([]string{"id"}).
-			AddRow(1),
-	)
+	for range 3 {
+		mock.ExpectQuery("SELECT id FROM books WHERE title = ?").WithArgs("TEST").WillReturnRows(
+			sqlmock.NewRows([]string{"id"}).
+				AddRow(1),
+		)
+	}
 
 	mock.ExpectCommit()
 
@@ -904,6 +906,24 @@ func TestOneSingleColumnInTx(t *testing.T) {
 		}
 
 		if id != 1 {
+			t.Fail()
+		}
+
+		id, err = stmt.First(context.Background(), db, Param{Title: "TEST"})
+		if err != nil {
+			return err
+		}
+
+		if id != 1 {
+			t.Fail()
+		}
+
+		ids, err := stmt.All(context.Background(), db, Param{Title: "TEST"})
+		if err != nil {
+			return err
+		}
+
+		if len(ids) != 1 {
 			t.Fail()
 		}
 

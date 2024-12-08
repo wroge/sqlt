@@ -476,7 +476,6 @@ func (s *Statement[Param]) Get(ctx context.Context) *Runner {
 }
 
 // Put a Runner into the pool and execute the end option.
-// This function should be called within a defer block to recover from panics.
 func (s *Statement[Param]) Put(err error, runner *Runner) {
 	if s.end != nil {
 		s.end(err, runner)
@@ -677,7 +676,6 @@ func (qs *QueryStatement[Param, Dest]) Get(ctx context.Context) *QueryRunner[Des
 }
 
 // Put a QueryRunner into the pool and execute the end option.
-// This function should be called within a defer block to recover from panics.
 func (qs *QueryStatement[Param, Dest]) Put(err error, runner *QueryRunner[Dest]) {
 	if qs.end != nil {
 		qs.end(err, runner.Runner)
@@ -747,7 +745,7 @@ func (qs *QueryStatement[Param, Dest]) One(ctx context.Context, db DB, param Par
 		if r := recover(); r != nil {
 			err = errors.Join(err, toErr(r))
 		}
-		
+
 		qs.Put(err, runner)
 	}()
 
