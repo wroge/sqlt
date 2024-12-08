@@ -2,6 +2,7 @@ package sqlt_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -74,6 +75,65 @@ func TestOne(t *testing.T) {
 
 	if book.ID != 1 || book.Title != "TEST" || string(book.JSON) != `"data"` {
 		t.Fail()
+	}
+}
+
+func TestErrNoRows(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT id, title, json FROM books WHERE title = ?").WithArgs("TEST").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "title", "json"}),
+	)
+
+	type Param struct {
+		Title string
+	}
+
+	type Book struct {
+		ID    int64
+		Title string
+		JSON  json.RawMessage
+	}
+
+	type Key struct{}
+
+	config := sqlt.Config{
+		Start: func(runner *sqlt.Runner) {
+			runner.Context = context.WithValue(runner.Context, Key{}, "VALUE")
+		},
+		End: func(err error, runner *sqlt.Runner) {
+			if v, ok := runner.Context.Value(Key{}).(string); !ok || v != "VALUE" {
+				t.Fatal(v, ok)
+			}
+
+			if runner.SQL.String() != "SELECT id, title, json FROM books WHERE title = ?" {
+				t.Fail()
+			}
+		},
+		TemplateOptions: []sqlt.TemplateOption{
+			sqlt.Funcs(template.FuncMap{
+				"ScanRawJSON": sqlt.ScanJSON[json.RawMessage],
+			}),
+		},
+	}
+
+	stmt := sqlt.QueryStmt[Param, Book](
+		config,
+		sqlt.Parse(`
+			SELECT
+				{{ ScanInt64 Dest.ID "id" }}
+				{{- ScanString Dest.Title ", title" }}
+				{{- ScanRawJSON Dest.JSON ", json" }}
+			FROM books WHERE title = {{ .Title }}
+		`),
+	)
+
+	_, err = stmt.One(context.Background(), db, Param{Title: "TEST"})
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal(err)
 	}
 }
 
@@ -314,7 +374,7 @@ func TestOneFile(t *testing.T) {
 	}
 }
 
-func TestOneFS(t *testing.T) {
+func TestOneGlob(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {
 		t.Fatal(err)
@@ -348,6 +408,88 @@ func TestOneFS(t *testing.T) {
 		SELECT
 			{{ ScanInt64 Dest.ID "id" }}
 			{{- ScanString Dest.Title ", title" }}
+			{{- ScanRawJSON Dest.JSON ", json" }}
+		FROM books 
+		{{ with .Title }}
+			WHERE title = {{ . }}
+		{{ end }}
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type Key struct{}
+
+	config := sqlt.Config{
+		Start: func(runner *sqlt.Runner) {
+			runner.Context = context.WithValue(runner.Context, Key{}, "VALUE")
+		},
+		End: func(err error, runner *sqlt.Runner) {
+			if v, ok := runner.Context.Value(Key{}).(string); !ok || v != "VALUE" {
+				t.Fatal(v, ok)
+			}
+
+			if runner.SQL.String() != "SELECT id, title, json FROM books WHERE title = ?" {
+				t.Fail()
+			}
+		},
+		TemplateOptions: []sqlt.TemplateOption{
+			sqlt.Funcs(template.FuncMap{
+				"ScanRawJSON": sqlt.ScanJSON[json.RawMessage],
+			}),
+		},
+	}
+
+	stmt := sqlt.QueryStmt[Param, Book](
+		config,
+		sqlt.ParseGlob("/tmp/query.sql"),
+		sqlt.Lookup("query.sql"),
+	)
+
+	book, err := stmt.One(context.Background(), db, Param{Title: "TEST"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if book.ID != 1 || book.Title != "TEST" || string(book.JSON) != `"data"` {
+		t.Fail()
+	}
+}
+
+func TestOneFS(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT id, title, json FROM books WHERE title = ?").WithArgs("TEST").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "title", "json"}).
+			AddRow(1, "TEST", json.RawMessage(`"data"`)),
+	)
+
+	type Param struct {
+		Title string
+	}
+
+	type Book struct {
+		ID    int64
+		Title sql.Null[string]
+		JSON  json.RawMessage
+	}
+
+	fs := afero.NewOsFs()
+
+	file, err := fs.Create("/tmp/query.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer file.Close()
+
+	_, err = file.Write([]byte(`
+		SELECT
+			{{ ScanInt64 Dest.ID "id" }}
+			{{- Scan Dest.Title ", title" }}
 			{{- ScanRawJSON Dest.JSON ", json" }}
 		FROM books WHERE title = {{ .Title }}
 	`))
@@ -388,7 +530,7 @@ func TestOneFS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if book.ID != 1 || book.Title != "TEST" || string(book.JSON) != `"data"` {
+	if book.ID != 1 || book.Title.V != "TEST" || string(book.JSON) != `"data"` {
 		t.Fail()
 	}
 }
@@ -773,4 +915,67 @@ func TestLookupError(t *testing.T) {
 		sqlt.Parse(`TEXT`),
 		sqlt.Lookup("name"),
 	)
+}
+
+func TestExecError(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectExec("EXEC").WillReturnError(errors.New("ERROR"))
+
+	stmt := sqlt.Stmt[string](
+		sqlt.End(func(err error, runner *sqlt.Runner) {
+			if err == nil || err.Error() != "ERROR" {
+				t.Fail()
+			}
+		}),
+		sqlt.Parse(`EXEC`),
+	)
+
+	_, err = stmt.Exec(context.Background(), db, "TEST")
+	if err == nil || err.Error() != "ERROR" {
+		t.Fail()
+	}
+}
+
+func TestScanError(t *testing.T) {
+	stmt := sqlt.Stmt[string](
+		sqlt.Parse(`{{ Scan nil "column" }}`),
+	)
+
+	_, err := stmt.Exec(context.Background(), nil, "TEST")
+	if err == nil {
+		t.Fail()
+	}
+}
+
+func TestMapError(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("id").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(2))
+
+	stmt := sqlt.QueryStmt[string, int64](
+		sqlt.Funcs(template.FuncMap{
+			"MyScanner": func(value *int64, str string) sqlt.Scanner {
+				return sqlt.Scanner{
+					SQL:   str,
+					Value: value,
+					Map: func() error {
+						return errors.New("ERROR")
+					},
+				}
+			},
+		}),
+		sqlt.Parse(`{{ MyScanner Dest "id" }}`),
+	)
+
+	_, err = stmt.First(context.Background(), db, "TEST")
+	if err == nil || err.Error() != "ERROR" {
+		t.Fatal(err)
+	}
 }
