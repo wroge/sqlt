@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"strings"
 	"testing"
 	"text/template"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/spf13/afero"
@@ -194,6 +196,49 @@ func TestErrNoRows(t *testing.T) {
 
 	_, err = stmt.One(context.Background(), db, Param{Title: "TEST"})
 	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal(err)
+	}
+}
+
+func TestErrTooManyRows(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT id FROM books WHERE title = ?").WithArgs("TEST").WillReturnRows(
+		sqlmock.NewRows([]string{"id"}).
+			AddRow(1).
+			AddRow(2),
+	)
+
+	type Param struct {
+		Title string
+	}
+
+	type Book struct {
+		ID int64
+	}
+
+	config := sqlt.Config{
+		TemplateOptions: []sqlt.TemplateOption{
+			sqlt.Funcs(template.FuncMap{
+				"ScanRawJSON": sqlt.ScanJSON[json.RawMessage],
+			}),
+		},
+	}
+
+	stmt := sqlt.QueryStmt[Param, Book](
+		config,
+		sqlt.Parse(`
+			SELECT
+				{{ ScanInt64 Dest.ID "id" }}
+			FROM books WHERE title = {{ .Title }}
+		`),
+	)
+
+	_, err = stmt.One(context.Background(), db, Param{Title: "TEST"})
+	if !errors.Is(err, sqlt.ErrTooManyRows) {
 		t.Fatal(err)
 	}
 }
@@ -794,6 +839,9 @@ func TestExec(t *testing.T) {
 
 	stmt := sqlt.Stmt[Book](
 		config,
+		sqlt.Start(func(runner *sqlt.Runner) {
+			runner.Context, _ = context.WithTimeout(runner.Context, time.Second)
+		}),
 		sqlt.Parse(`
 			INSERT INTO books (id, title, json) VALUES ({{ .ID }}, {{ .Title }}, {{ .JSON }});
 		`),
@@ -1133,6 +1181,71 @@ func TestStmtPanic(t *testing.T) {
 
 	_, err = stmt.QueryRow(context.Background(), nil, "TEST")
 	if err == nil || err.Error() != `template: :1:3: executing "" at <Test>: error calling Test: ERROR` {
+		t.Fatal(err)
+	}
+}
+
+func TestInTxPanic(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+
+	err = sqlt.InTx(context.Background(), nil, db, func(db sqlt.DB) error {
+		panic("unexpected panic")
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "unexpected panic") {
+		t.Fatalf("expected panic error, got %v", err)
+	}
+}
+
+func TestQueryRunnerQueryRowError(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT id FROM table WHERE id = ?").WillReturnError(errors.New("query error"))
+
+	stmt := sqlt.Stmt[string](
+		sqlt.Parse(`SELECT id FROM table WHERE id = {{ . }}`),
+	)
+
+	_, err = stmt.QueryRow(context.Background(), db, "123")
+	if err == nil || !strings.Contains(err.Error(), "query error") {
+		t.Fatal(err)
+	}
+}
+
+func TestSQLWriteWhitespace(t *testing.T) {
+	sql := &sqlt.SQL{}
+	_, err := sql.Write([]byte("    "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql.String() != "" {
+		t.Fatal("expected empty SQL string")
+	}
+}
+
+func TestStmtExecMissingParams(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectExec("INSERT INTO table (column) VALUES (?)").WithArgs().WillReturnError(errors.New("missing parameters"))
+
+	stmt := sqlt.Stmt[string](
+		sqlt.Parse(`INSERT INTO table (column) VALUES ({{ . }})`),
+	)
+
+	_, err = stmt.Exec(context.Background(), db, "")
+	if err == nil || !strings.Contains(err.Error(), "missing parameters") {
 		t.Fatal(err)
 	}
 }

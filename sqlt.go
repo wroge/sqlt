@@ -505,7 +505,12 @@ func (s *Statement[Param]) QueryRow(ctx context.Context, db DB, param Param) (ro
 		s.Put(err, runner)
 	}()
 
-	return runner.QueryRow(db, param)
+	row, err = runner.QueryRow(db, param)
+	if err != nil {
+		return row, err
+	}
+
+	return row, row.Err()
 }
 
 // Query takes a runner and queries rows.
@@ -866,11 +871,9 @@ var ident = "___sqlt___"
 // copied from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
 func escape(text *template.Template) {
 	for _, tpl := range text.Templates() {
-		if tpl.Tree.Root == nil {
-			continue
+		if tpl.Tree.Root != nil {
+			escapeNode(tpl.Tree, tpl.Tree.Root)
 		}
-
-		escapeNode(tpl.Tree, tpl.Tree.Root)
 	}
 }
 

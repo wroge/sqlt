@@ -1,4 +1,4 @@
-# sqlt: A Go Template-Based SQL Builder and ORM
+# A Go Template-Based SQL Builder and ORM
 
 [![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/wroge/sqlt)
 [![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/wroge/sqlt.svg?style=social)](https://github.com/wroge/sqlt/tags)
@@ -12,7 +12,7 @@ import "github.com/wroge/sqlt"
 
 ## Type-Safety without a Build Step
 
-- Define SQL statements at the global level using functions like `New`, `Parse`, `ParseFiles`, `ParseFS`, `ParseGlob`, `Funcs` and `Lookup`.
+- Define SQL statements at the global level using options like `New`, `Parse`, `ParseFiles`, `ParseFS`, `ParseGlob`, `Funcs` and `Lookup`.
 - **Templates are validated via [jba/templatecheck](https://github.com/jba/templatecheck) during application startup**.
 - Execute statements using methods such as `Exec`, `Query` or `QueryRow`.
 - Execute query statements using `First`, `One` or `All`.
