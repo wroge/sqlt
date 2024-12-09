@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 	"text/template"
-	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/spf13/afero"
@@ -840,7 +839,7 @@ func TestExec(t *testing.T) {
 	stmt := sqlt.Stmt[Book](
 		config,
 		sqlt.Start(func(runner *sqlt.Runner) {
-			runner.Context, _ = context.WithTimeout(runner.Context, time.Second)
+			runner.Context = context.WithoutCancel(runner.Context)
 		}),
 		sqlt.Parse(`
 			INSERT INTO books (id, title, json) VALUES ({{ .ID }}, {{ .Title }}, {{ .JSON }});
