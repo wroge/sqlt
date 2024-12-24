@@ -28,11 +28,10 @@ type Insert struct {
 var insertBooks = sqlt.Stmt[[]Insert](
 	sqlt.Parse(`
 		INSERT INTO books (id, title) VALUES
-			{{ range $i, $v := . }} 
-				{{ if $i }}, {{ end }}
-				({{ $v.ID }}, {{ $v.Title }})
-			{{ end }}
-		RETURNING id;
+		{{ range $i, $v := . }} 
+			{{ if $i }}, {{ end }}
+			({{ $v.ID }}, {{ $v.Title }})
+		{{ end }};
 	`),
 )
 
