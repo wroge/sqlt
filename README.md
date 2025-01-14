@@ -1,4 +1,4 @@
-# A Go Template-Based SQL Builder and ORM
+# A Go Template-Based SQL Builder and Struct Mapper
 
 [![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/wroge/sqlt)
 [![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/wroge/sqlt.svg?style=social)](https://github.com/wroge/sqlt/tags)
@@ -8,7 +8,7 @@
 import "github.com/wroge/sqlt"
 ```
 
-`sqlt` uses Go’s template engine to create a flexible, powerful, and type-safe SQL builder and ORM.
+`sqlt` uses Go’s template engine to create a flexible, powerful, and type-safe SQL builder and struct mapper.
 
 ## Type-Safety without a Build Step
 
@@ -73,7 +73,7 @@ id, err := queryID.One(ctx, db, "The Hobbit")
 ## Support for multiple Dialects and Placeholders
 
 - **Templates are escaped, ensuring the package is not vulnerable to SQL injection**.
-- You can use both static placeholders (`?`) and positional placeholders (Go format strings like `%d`).
+- You can use both static placeholders (`?`) and positional placeholders (Go format strings like `$%d`).
 - This package **supports any template functions** (like `lower` or `fail` from [Masterminds/sprig](https://github.com/Masterminds/sprig)).
 - Multiple dialects can be used by implementing your own template functions.
 
