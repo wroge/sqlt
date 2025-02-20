@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func ExampleOne() {
+func Example_one() {
 	var (
 		ctx    = context.Background()
 		create = sqlt.Exec[any](sqlt.Parse(`CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT);`))
@@ -47,7 +47,7 @@ func ExampleOne() {
 	// Output: 2
 }
 
-func ExampleTwo() {
+func Example_two() {
 	type Book struct {
 		ID    int64
 		Title string
