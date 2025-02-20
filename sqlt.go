@@ -1,213 +1,228 @@
 package sqlt
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"text/template"
 	"text/template/parse"
 	"time"
-	"unicode"
 
+	"github.com/cespare/xxhash/v2"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/jba/templatecheck"
 )
 
-// DB is implemented by *sql.DB and, *sql.Tx.
+// DB is the interface of *sql.DB and *sql.Tx.
 type DB interface {
-	QueryContext(ctx context.Context, str string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, str string, args ...any) *sql.Row
-	ExecContext(ctx context.Context, str string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, sql string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, sql string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, sql string, args ...any) (sql.Result, error)
 }
 
-// InTx simplifies the execution of multiple queries in a transaction.
-func InTx(ctx context.Context, opts *sql.TxOptions, db *sql.DB, do func(db DB) error) (err error) {
-	var tx *sql.Tx
+// Raw lets template functions insert SQL directly.
+// Use with caution to prevent SQL injection.
+type Raw string
 
-	tx, err = db.BeginTx(ctx, opts)
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		if r := recover(); r != nil || err != nil {
-			err = errors.Join(err, toErr(r), tx.Rollback())
-		} else {
-			err = tx.Commit()
-		}
-	}()
-
-	return do(tx)
+// Scanner maps SQL columns to Dest.
+// If reusable, Dest can be reused for each sql.Rows.Next().
+type Scanner[Dest any] struct {
+	Mapper   Mapper[Dest]
+	Reusable bool
+	SQL      string
 }
 
-func toErr(r any) error {
-	if r == nil {
-		return nil
-	}
+// Mapper maps a destination pointer with an optional transformation.
+type Mapper[Dest any] func(dest *Dest) (any, func() error)
 
-	if perr, ok := r.(error); ok {
-		return perr
-	}
-
-	return fmt.Errorf("%v", r)
-}
-
-// Options are used to configure the statements.
+// Option is implemented by Config, Placeholders, Templates, etc.
 type Option interface {
 	Configure(config *Config)
 }
 
-// Config groups the available options.
+// Config holds all configuration options.
 type Config struct {
-	Start           Start
-	End             End
-	Placeholder     Placeholder
-	TemplateOptions []TemplateOption
+	Placeholder Placeholder
+	Templates   []Template
+	Log         Log
+	Cache       *Cache
+	Hasher      Hasher
 }
 
-// Configure implements the Option interface.
+// Configure applies Config settings.
 func (c Config) Configure(config *Config) {
-	if c.Start != nil {
-		config.Start = c.Start
-	}
-
-	if c.End != nil {
-		config.End = c.End
-	}
-
 	if c.Placeholder != "" {
 		config.Placeholder = c.Placeholder
 	}
 
-	if len(c.TemplateOptions) > 0 {
-		config.TemplateOptions = append(config.TemplateOptions, c.TemplateOptions...)
+	if len(c.Templates) > 0 {
+		config.Templates = append(config.Templates, c.Templates...)
+	}
+
+	if c.Log != nil {
+		config.Log = c.Log
+	}
+
+	if c.Cache != nil {
+		config.Cache = c.Cache
+	}
+
+	if c.Hasher != nil {
+		config.Hasher = c.Hasher
 	}
 }
 
-// Start is executed when a Runner is returned from a statement pool.
-type Start func(runner *Runner)
-
-// Configure implements the Option interface.
-func (s Start) Configure(config *Config) {
-	config.Start = s
+// Cache controls expression caching.
+// Size ≤ 0 means unlimited cache.
+// Expiration ≤ 0 prevents expiration.
+type Cache struct {
+	Size       int
+	Expiration time.Duration
 }
 
-// End is executed when a Runner is put back into a statement pool.
-type End func(err error, runner *Runner)
-
-// Configure implements the Option interface.
-func (e End) Configure(config *Config) {
-	config.End = e
+// Configure applies Config settings.
+func (c *Cache) Configure(config *Config) {
+	config.Cache = c
 }
 
-// Placeholder can be static or positional using a go-formatted string ('%d').
+// NoCache disables caching.
+func NoCache() *Cache {
+	return nil
+}
+
+// NoExpirationCache enables a non-expiring cache.
+func NoExpirationCache(size int) *Cache {
+	return &Cache{
+		Size:       size,
+		Expiration: 0,
+	}
+}
+
+// UnlimitedSizeCache enables an unlimited-size cache.
+func UnlimitedSizeCache(expiration time.Duration) *Cache {
+	return &Cache{
+		Size:       0,
+		Expiration: expiration,
+	}
+}
+
+// Hasher generates cache keys for parameters.
+type Hasher func(param any, writer io.Writer) error
+
+// Configure applies Config settings.
+func (h Hasher) Configure(config *Config) {
+	config.Hasher = h
+}
+
+// DefaultHasher encodes parameters as JSON for caching.
+func DefaultHasher() Hasher {
+	return func(param any, writer io.Writer) error {
+		return json.NewEncoder(writer).Encode(param)
+	}
+}
+
+// Placeholder defines static or positional (`%d`) placeholders.
+// Default: `'?'`.
 type Placeholder string
 
-// Configure implements the Option interface.
+// Configure applies Config settings.
 func (p Placeholder) Configure(config *Config) {
 	config.Placeholder = p
 }
 
-// Dollar is a positional placeholder.
-func Dollar() Placeholder {
-	return "$%d"
+const (
+	// Question is the default placeholder.
+	Question Placeholder = "?"
+	// Dollar uses positional placeholders ($1, $2).
+	Dollar Placeholder = "$%d"
+	// Colon uses positional placeholders (:1, :2).
+	Colon Placeholder = ":%d"
+	// AtP uses positional placeholders (@p1, @p2).
+	AtP Placeholder = "@p%d"
+)
+
+// Template modifies a text/template.Template.
+type Template func(t *template.Template) (*template.Template, error)
+
+// Configure applies Config settings.
+func (to Template) Configure(config *Config) {
+	config.Templates = append(config.Templates, to)
 }
 
-// Colon is a positional placeholder.
-func Colon() Placeholder {
-	return ":%d"
-}
-
-// AtP is a positional placeholder.
-func AtP() Placeholder {
-	return "@p%d"
-}
-
-// Question is a static placeholder.
-func Question() Placeholder {
-	return "?"
-}
-
-// TemplateOption can be used to configure the template of a statement.
-type TemplateOption func(tpl *template.Template) (*template.Template, error)
-
-// Configure implements the Option interface.
-func (to TemplateOption) Configure(config *Config) {
-	config.TemplateOptions = append(config.TemplateOptions, to)
-}
-
-// New is equivalent to the method from text/template.
-func New(name string) TemplateOption {
+// Name creates a named template.
+func Name(name string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.New(name), nil
 	}
 }
 
-// Parse is equivalent to the method from text/template.
-func Parse(text string) TemplateOption {
+// Parse parses a template string.
+func Parse(text string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Parse(text)
 	}
 }
 
-// ParseFS is equivalent to the method from text/template.
-func ParseFS(fs fs.FS, patterns ...string) TemplateOption {
+// ParseFS loads templates from a filesystem.
+func ParseFS(fs fs.FS, patterns ...string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseFS(fs, patterns...)
 	}
 }
 
-// ParseFiles is equivalent to the method from text/template.
-func ParseFiles(filenames ...string) TemplateOption {
+// ParseFiles loads templates from files.
+func ParseFiles(filenames ...string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseFiles(filenames...)
 	}
 }
 
-// ParseGlob is equivalent to the method from text/template.
-func ParseGlob(pattern string) TemplateOption {
+// ParseGlob loads templates matching a pattern.
+func ParseGlob(pattern string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseGlob(pattern)
 	}
 }
 
-// Funcs is equivalent to the method from text/template.
-func Funcs(fm template.FuncMap) TemplateOption {
+// Funcs adds custom functions to a template.
+func Funcs(fm template.FuncMap) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Funcs(fm), nil
 	}
 }
 
-// MissingKeyInvalid is equivalent to the method 'Option("missingkey=invalid")' from text/template.
-func MissingKeyInvalid() TemplateOption {
+// MissingKeyInvalid treats missing keys as errors.
+func MissingKeyInvalid() Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Option("missingkey=invalid"), nil
 	}
 }
 
-// MissingKeyZero is equivalent to the method 'Option("missingkey=zero")' from text/template.
-func MissingKeyZero() TemplateOption {
+// MissingKeyZero replaces missing keys with zero values.
+func MissingKeyZero() Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Option("missingkey=zero"), nil
 	}
 }
 
-// MissingKeyError is equivalent to the method 'Option("missingkey=error")' from text/template.
-func MissingKeyError() TemplateOption {
+// MissingKeyError throws an error on missing keys.
+func MissingKeyError() Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Option("missingkey=error"), nil
 	}
 }
 
-// Lookup is equivalent to the method from text/template.
-func Lookup(name string) TemplateOption {
+// Lookup retrieves a named template.
+func Lookup(name string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		tpl = tpl.Lookup(name)
 		if tpl == nil {
@@ -218,692 +233,739 @@ func Lookup(name string) TemplateOption {
 	}
 }
 
-// Raw is used to write strings directly into the sql output.
-// It should be used carefully.
-type Raw string
+// Log can be used to apply logging.
+type Log func(ctx context.Context, info Info)
 
-// A Scanner is used to map columns to struct fields.
-// Value should be a pointer to a struct field.
-type Scanner struct {
-	Value any
-	Map   func() error
-	SQL   string
+// Configure applies Config settings.
+func (l Log) Configure(config *Config) {
+	config.Log = l
 }
 
-// Scan is a Scanner for values, that can be used directly with your sql driver.
-func Scan[T any](dest *T, str string) (Scanner, error) {
-	return Scanner{
-		SQL:   str,
-		Value: dest,
-	}, nil
-}
-
-var null = []byte("null")
-
-// ScanJSON is a Scanner to unmarshal byte strings into T.
-func ScanJSON[T any](dest *T, str string) (Scanner, error) {
-	var data []byte
-
-	return Scanner{
-		SQL:   str,
-		Value: &data,
-		Map: func() error {
-			var d T
-
-			if len(data) == 0 || bytes.Equal(data, null) {
-				*dest = d
-
-				return nil
-			}
-
-			if err := json.Unmarshal(data, &d); err != nil {
-				*dest = d
-
-				return err
-			}
-
-			*dest = d
-
-			return nil
-		},
-	}, nil
-}
-
-func defaultTemplate() *template.Template {
-	return template.New("").Funcs(template.FuncMap{
-		// ident is a stub function
-		ident: func(arg any) Raw {
-			return ""
-		},
-		"Raw": func(str string) Raw {
-			return Raw(str)
-		},
-		"Scan": func(value sql.Scanner, str string) (Scanner, error) {
-			if value == nil {
-				return Scanner{}, errors.New("invalid nil pointer")
-			}
-
-			return Scanner{
-				SQL:   str,
-				Value: value,
-			}, nil
-		},
-		"ScanString":    Scan[string],
-		"ScanBytes":     Scan[[]byte],
-		"ScanInt":       Scan[int],
-		"ScanInt8":      Scan[int8],
-		"ScanInt16":     Scan[int16],
-		"ScanInt32":     Scan[int32],
-		"ScanInt64":     Scan[int64],
-		"ScanUint":      Scan[uint],
-		"ScanUint8":     Scan[uint8],
-		"ScanUint16":    Scan[uint16],
-		"ScanUint32":    Scan[uint32],
-		"ScanUint64":    Scan[uint64],
-		"ScanBool":      Scan[bool],
-		"ScanFloat32":   Scan[float32],
-		"ScanFloat64":   Scan[float64],
-		"ScanTime":      Scan[time.Time],
-		"ScanDuration":  Scan[time.Duration],
-		"ScanStringP":   Scan[*string],
-		"ScanBytesP":    Scan[*[]byte],
-		"ScanIntP":      Scan[*int],
-		"ScanInt8P":     Scan[*int8],
-		"ScanInt16P":    Scan[*int16],
-		"ScanInt32P":    Scan[*int32],
-		"ScanInt64P":    Scan[*int64],
-		"ScanUintP":     Scan[*uint],
-		"ScanUint8P":    Scan[*uint8],
-		"ScanUint16P":   Scan[*uint16],
-		"ScanUint32P":   Scan[*uint32],
-		"ScanUint64P":   Scan[*uint64],
-		"ScanBoolP":     Scan[*bool],
-		"ScanFloat32P":  Scan[*float32],
-		"ScanFloat64P":  Scan[*float64],
-		"ScanTimeP":     Scan[*time.Time],
-		"ScanDurationP": Scan[*time.Duration],
-	})
-}
-
-// Runner groups the relevant data for each 'run' of a Statement.
-type Runner struct {
-	Context  context.Context
-	Template *template.Template
-	SQL      *SQL
-	Args     []any
+// Info contains loggable execution details.
+type Info struct {
+	Duration time.Duration
+	Mode     Mode
+	Template string
 	Location string
+	SQL      string
+	Args     []any
+	Err      error
+	Reusable bool
+	Cached   bool
 }
 
-// Reset the Runner for the next run of a statement.
-func (r *Runner) Reset() {
-	r.Context = nil
-	r.SQL.Reset()
-	r.Args = r.Args[:0]
+// Mode identifies SQL statement types.
+type Mode string
+
+const (
+	// ExecMode for 'Exec' statements.
+	ExecMode Mode = "Exec"
+	// QueryRowMode for 'QueryRow' statements.
+	QueryRowMode Mode = "QueryRow"
+	// QueryMode for 'Query' statements.
+	QueryMode Mode = "Query"
+	// FirstMode for 'First' statements.
+	FirstMode Mode = "First"
+	// OneMode for 'One' statements.
+	OneMode Mode = "One"
+	// AllMode for 'All' statements.
+	AllMode Mode = "All"
+)
+
+// Expression represents a SQL statement with arguments and mappers.
+type Expression[Dest any] struct {
+	SQL      string
+	Args     []any
+	Mappers  []Mapper[Dest]
+	Reusable bool
 }
 
-// Exec creates and execute the sql query using ExecContext.
-func (r *Runner) Exec(db DB, param any) (sql.Result, error) {
-	if err := r.Template.Execute(r.SQL, param); err != nil {
-		return nil, err
-	}
-
-	return db.ExecContext(r.Context, r.SQL.String(), r.Args...)
-}
-
-// Query creates and execute the sql query using QueryContext.
-func (r *Runner) Query(db DB, param any) (*sql.Rows, error) {
-	if err := r.Template.Execute(r.SQL, param); err != nil {
-		return nil, err
-	}
-
-	return db.QueryContext(r.Context, r.SQL.String(), r.Args...)
-}
-
-// Query creates and execute the sql query using QueryRow.
-func (r *Runner) QueryRow(db DB, param any) (*sql.Row, error) {
-	if err := r.Template.Execute(r.SQL, param); err != nil {
-		return nil, err
-	}
-
-	return db.QueryRowContext(r.Context, r.SQL.String(), r.Args...), nil
-}
-
-// Stmt creates a type-safe Statement using variadic options.
-// Invalid templates panic.
-func Stmt[Param any](opts ...Option) *Statement[Param] {
-	_, file, line, _ := runtime.Caller(1)
-
-	location := fmt.Sprintf("%s:%d", file, line)
-
-	config := &Config{
-		Placeholder: "?",
-	}
-
-	for _, opt := range opts {
-		opt.Configure(config)
+func destMappers[Dest any](dest *Dest, mappings []Mapper[Dest]) ([]any, []func() error) {
+	if len(mappings) == 0 {
+		return []any{dest}, nil
 	}
 
 	var (
-		tpl = defaultTemplate().Funcs(template.FuncMap{
-			"Dest": func() any {
-				return nil
-			},
-		})
-		err error
+		values  = make([]any, len(mappings))
+		mappers = make([]func() error, len(mappings))
 	)
 
-	for _, to := range config.TemplateOptions {
-		tpl, err = to(tpl)
-		if err != nil {
-			panic(fmt.Errorf("location: [%s]: %w", location, err))
-		}
+	for i, m := range mappings {
+		values[i], mappers[i] = m(dest)
 	}
 
-	if err = templatecheck.CheckText(tpl, *new(Param)); err != nil {
-		panic(fmt.Errorf("location: [%s]: %w", location, err))
-	}
-
-	escape(tpl)
-
-	positional := strings.Contains(string(config.Placeholder), "%d")
-	placeholder := string(config.Placeholder)
-
-	return &Statement[Param]{
-		start: config.Start,
-		end:   config.End,
-		pool: &sync.Pool{
-			New: func() any {
-				t, err := tpl.Clone()
-				if err != nil {
-					panic(fmt.Errorf("location: [%s]: %w", location, err))
-				}
-
-				runner := &Runner{
-					Template: t,
-					SQL:      &SQL{},
-					Location: location,
-				}
-
-				t.Funcs(template.FuncMap{
-					ident: func(arg any) Raw {
-						switch a := arg.(type) {
-						case Raw:
-							return a
-						default:
-							runner.Args = append(runner.Args, arg)
-
-							if positional {
-								return Raw(fmt.Sprintf(placeholder, len(runner.Args)))
-							}
-
-							return Raw(placeholder)
-						}
-					},
-				})
-
-				return runner
-			},
-		},
-	}
+	return values, mappers
 }
 
-// Statements is a Runner pool and a type-safe sql executor.
-type Statement[Param any] struct {
-	start func(runner *Runner)
-	end   func(err error, runner *Runner)
-	pool  *sync.Pool
+// Exec runs an expression using ExecContext.
+func Exec[Param any](opts ...Option) *Statement[Param, any, sql.Result] {
+	return Stmt[Param](getLocation(), ExecMode, func(ctx context.Context, db DB, expr Expression[any]) (sql.Result, error) {
+		return db.ExecContext(ctx, expr.SQL, expr.Args...)
+	}, opts...)
 }
 
-// Get a Runner from the pool and execute the start option.
-func (s *Statement[Param]) Get(ctx context.Context) *Runner {
-	runner := s.pool.Get().(*Runner)
-
-	runner.Context = ctx
-
-	if s.start != nil {
-		s.start(runner)
-	}
-
-	return runner
+// Query runs an expression using QueryContext.
+func Query[Param any](opts ...Option) *Statement[Param, any, *sql.Rows] {
+	return Stmt[Param](getLocation(), QueryMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Rows, error) {
+		return db.QueryContext(ctx, expr.SQL, expr.Args...)
+	}, opts...)
 }
 
-// Put a Runner into the pool and execute the end option.
-func (s *Statement[Param]) Put(err error, runner *Runner) {
-	if s.end != nil {
-		s.end(err, runner)
-	}
-
-	runner.Reset()
-
-	s.pool.Put(runner)
+// QueryRow runs an expression using QueryRowContext.
+func QueryRow[Param any](opts ...Option) *Statement[Param, any, *sql.Row] {
+	return Stmt[Param](getLocation(), QueryRowMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Row, error) {
+		return db.QueryRowContext(ctx, expr.SQL, expr.Args...), nil
+	}, opts...)
 }
 
-// Exec takes a runner and executes it.
-func (s *Statement[Param]) Exec(ctx context.Context, db DB, param Param) (result sql.Result, err error) {
-	runner := s.Get(ctx)
+// First runs QueryContext and maps the first result.
+func First[Param any, Dest any](opts ...Option) *Statement[Param, Dest, Dest] {
+	return Stmt[Param](getLocation(), FirstMode, func(ctx context.Context, db DB, expr Expression[Dest]) (first Dest, err error) {
+		row := db.QueryRowContext(ctx, expr.SQL, expr.Args...)
 
-	defer func() {
-		if r := recover(); r != nil {
-			err = errors.Join(err, toErr(r))
+		values, mappers := destMappers(&first, expr.Mappers)
+
+		if err = row.Scan(values...); err != nil {
+			return first, err
 		}
 
-		s.Put(err, runner)
-	}()
-
-	return runner.Exec(db, param)
-}
-
-// QueryRow takes a runner and queries a row.
-func (s *Statement[Param]) QueryRow(ctx context.Context, db DB, param Param) (row *sql.Row, err error) {
-	runner := s.Get(ctx)
-
-	defer func() {
-		if r := recover(); r != nil {
-			err = errors.Join(err, toErr(r))
-		}
-
-		s.Put(err, runner)
-	}()
-
-	row, err = runner.QueryRow(db, param)
-	if err != nil {
-		return row, err
-	}
-
-	return row, row.Err()
-}
-
-// Query takes a runner and queries rows.
-func (s *Statement[Param]) Query(ctx context.Context, db DB, param Param) (rows *sql.Rows, err error) {
-	runner := s.Get(ctx)
-
-	defer func() {
-		if r := recover(); r != nil {
-			err = errors.Join(err, toErr(r))
-		}
-
-		s.Put(err, runner)
-	}()
-
-	return runner.Query(db, param)
-}
-
-// QueryRunner groups the relevant data for each 'run' of a QueryStatement.
-type QueryRunner[Dest any] struct {
-	Runner  *Runner
-	Dest    *Dest
-	Values  []any
-	Mappers []func() error
-}
-
-// Reset the QueryRunner for the next run of a statement.
-func (qr *QueryRunner[Dest]) Reset() {
-	qr.Runner.Reset()
-	qr.Values = qr.Values[:0]
-	qr.Mappers = qr.Mappers[:0]
-}
-
-// QueryStmt creates a type-safe QueryStatement using variadic options.
-// Define the mapping of a column to a struct field here using the Scan functions.
-// Invalid templates panic.
-func QueryStmt[Param, Dest any](opts ...Option) *QueryStatement[Param, Dest] {
-	_, file, line, _ := runtime.Caller(1)
-
-	location := fmt.Sprintf("%s:%d", file, line)
-
-	config := &Config{
-		Placeholder: "?",
-	}
-
-	for _, opt := range opts {
-		opt.Configure(config)
-	}
-
-	var (
-		tpl = defaultTemplate().Funcs(template.FuncMap{
-			"Dest": func() *Dest {
-				return new(Dest)
-			},
-		})
-		err error
-	)
-
-	destType := reflect.TypeFor[Dest]().Name()
-
-	if goodName(destType) {
-		tpl.Funcs(template.FuncMap{
-			destType: func() *Dest {
-				return new(Dest)
-			},
-		})
-	}
-
-	for _, to := range config.TemplateOptions {
-		tpl, err = to(tpl)
-		if err != nil {
-			panic(fmt.Errorf("location: [%s]: %w", location, err))
-		}
-	}
-
-	if err = templatecheck.CheckText(tpl, *new(Param)); err != nil {
-		panic(fmt.Errorf("location: [%s]: %w", location, err))
-	}
-
-	escape(tpl)
-
-	positional := strings.Contains(string(config.Placeholder), "%d")
-	placeholder := string(config.Placeholder)
-
-	return &QueryStatement[Param, Dest]{
-		start: config.Start,
-		end:   config.End,
-		pool: &sync.Pool{
-			New: func() any {
-				t, err := tpl.Clone()
-				if err != nil {
-					panic(fmt.Errorf("clone: location: [%s]: %w", location, err))
-				}
-
-				runner := &QueryRunner[Dest]{
-					Runner: &Runner{
-						Template: t,
-						SQL:      &SQL{},
-						Location: location,
-					},
-					Dest: new(Dest),
-				}
-
-				if goodName(destType) {
-					t.Funcs(template.FuncMap{
-						destType: func() *Dest {
-							return runner.Dest
-						},
-					})
-				}
-
-				t.Funcs(template.FuncMap{
-					"Dest": func() *Dest {
-						return runner.Dest
-					},
-					ident: func(arg any) Raw {
-						switch a := arg.(type) {
-						case Raw:
-							return a
-						case Scanner:
-							runner.Values = append(runner.Values, a.Value)
-							runner.Mappers = append(runner.Mappers, a.Map)
-
-							return Raw(a.SQL)
-						default:
-							runner.Runner.Args = append(runner.Runner.Args, arg)
-
-							if positional {
-								return Raw(fmt.Sprintf(placeholder, len(runner.Runner.Args)))
-							}
-
-							return Raw(placeholder)
-						}
-					},
-				})
-
-				return runner
-			},
-		},
-	}
-}
-
-// QueryStatement is a QueryRunner pool and a type-safe sql query executor.
-type QueryStatement[Param, Dest any] struct {
-	start func(runner *Runner)
-	end   func(err error, runner *Runner)
-	pool  *sync.Pool
-}
-
-// Get a QueryRunner from the pool and execute the start option.
-func (qs *QueryStatement[Param, Dest]) Get(ctx context.Context) *QueryRunner[Dest] {
-	runner := qs.pool.Get().(*QueryRunner[Dest])
-
-	runner.Runner.Context = ctx
-
-	if qs.start != nil {
-		qs.start(runner.Runner)
-	}
-
-	return runner
-}
-
-// Put a QueryRunner into the pool and execute the end option.
-func (qs *QueryStatement[Param, Dest]) Put(err error, runner *QueryRunner[Dest]) {
-	if qs.end != nil {
-		qs.end(err, runner.Runner)
-	}
-
-	runner.Reset()
-
-	qs.pool.Put(runner)
-}
-
-// All returns a slice of Dest for each row.
-func (qs *QueryStatement[Param, Dest]) All(ctx context.Context, db DB, param Param) (result []Dest, err error) {
-	runner := qs.Get(ctx)
-
-	defer func() {
-		if r := recover(); r != nil {
-			err = errors.Join(err, toErr(r))
-		}
-
-		qs.Put(err, runner)
-	}()
-
-	var rows *sql.Rows
-
-	rows, err = runner.Runner.Query(db, param)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(runner.Values) == 0 {
-		runner.Values = []any{runner.Dest}
-	}
-
-	defer func() {
-		err = errors.Join(err, rows.Close())
-	}()
-
-	for rows.Next() {
-		if err = rows.Scan(runner.Values...); err != nil {
-			return nil, err
-		}
-
-		for _, m := range runner.Mappers {
+		for _, m := range mappers {
 			if m == nil {
 				continue
 			}
 
 			if err = m(); err != nil {
-				return nil, err
+				return first, err
 			}
 		}
 
-		result = append(result, *runner.Dest)
-	}
-
-	return result, err
+		return first, nil
+	}, opts...)
 }
 
-// ErrTooManyRows is returned from One, when there are more than one rows.
-var ErrTooManyRows = errors.New("too many rows")
+// ErrTooManyRows is returned from One statements if more than one row exists.
+// This error can be wrapped and should be identified using errors.Is.
+var ErrTooManyRows = errors.New("sqlt: too many rows")
 
-// One returns exactly one Dest. If there is more than one row in the result set, ErrTooManyRows is returned.
-func (qs *QueryStatement[Param, Dest]) One(ctx context.Context, db DB, param Param) (result Dest, err error) {
-	runner := qs.Get(ctx)
-
-	defer func() {
-		if r := recover(); r != nil {
-			err = errors.Join(err, toErr(r))
+// One runs QueryContext and maps one result.
+// Returns ErrTooManyRows if multiple rows exist.
+func One[Param any, Dest any](opts ...Option) *Statement[Param, Dest, Dest] {
+	return Stmt[Param](getLocation(), OneMode, func(ctx context.Context, db DB, expr Expression[Dest]) (one Dest, err error) {
+		rows, err := db.QueryContext(ctx, expr.SQL, expr.Args...)
+		if err != nil {
+			return one, err
 		}
 
-		qs.Put(err, runner)
-	}()
+		defer func() {
+			err = errors.Join(err, rows.Close(), rows.Err())
+		}()
 
-	var rows *sql.Rows
-
-	rows, err = runner.Runner.Query(db, param)
-	if err != nil {
-		return *runner.Dest, err
-	}
-
-	if len(runner.Values) == 0 {
-		runner.Values = []any{runner.Dest}
-	}
-
-	defer func() {
-		err = errors.Join(err, rows.Close())
-	}()
-
-	if !rows.Next() {
-		return *runner.Dest, sql.ErrNoRows
-	}
-
-	err = rows.Scan(runner.Values...)
-	if err != nil {
-		return *runner.Dest, err
-	}
-
-	for _, m := range runner.Mappers {
-		if m == nil {
-			continue
+		if !rows.Next() {
+			return one, sql.ErrNoRows
 		}
 
-		if err = m(); err != nil {
-			return *runner.Dest, err
+		values, mappers := destMappers(&one, expr.Mappers)
+
+		if err = rows.Scan(values...); err != nil {
+			return one, err
 		}
-	}
 
-	if rows.Next() {
-		return *runner.Dest, ErrTooManyRows
-	}
+		for _, m := range mappers {
+			if m != nil {
+				if err = m(); err != nil {
+					return one, err
+				}
+			}
+		}
 
-	return *runner.Dest, err
+		if rows.Next() {
+			return one, ErrTooManyRows
+		}
+
+		return one, nil
+	}, opts...)
 }
 
-// First returns the first row mapped into Dest.
-func (qs *QueryStatement[Param, Dest]) First(ctx context.Context, db DB, param Param) (result Dest, err error) {
-	runner := qs.Get(ctx)
+func getLocation() string {
+	_, file, line, _ := runtime.Caller(2)
 
-	defer func() {
-		if r := recover(); r != nil {
-			err = errors.Join(err, toErr(r))
-		}
-
-		qs.Put(err, runner)
-	}()
-
-	var row *sql.Row
-
-	row, err = runner.Runner.QueryRow(db, param)
-	if err != nil {
-		return *runner.Dest, err
-	}
-
-	if len(runner.Values) == 0 {
-		runner.Values = []any{runner.Dest}
-	}
-
-	if err = row.Scan(runner.Values...); err != nil {
-		return *runner.Dest, err
-	}
-
-	for _, m := range runner.Mappers {
-		if m == nil {
-			continue
-		}
-
-		if err = m(); err != nil {
-			return *runner.Dest, err
-		}
-	}
-
-	return *runner.Dest, nil
+	return fmt.Sprintf("%s:%d", file, line)
 }
 
-// SQL implements io.Writer and fmt.Stringer.
-type SQL struct {
+// All runs QueryContext and maps the results.
+func All[Param any, Dest any](opts ...Option) *Statement[Param, Dest, []Dest] {
+	return Stmt[Param](getLocation(), AllMode, func(ctx context.Context, db DB, expr Expression[Dest]) (all []Dest, err error) {
+		rows, err := db.QueryContext(ctx, expr.SQL, expr.Args...)
+		if err != nil {
+			return nil, err
+		}
+
+		defer func() {
+			err = errors.Join(err, rows.Close(), rows.Err())
+		}()
+
+		var (
+			dest    *Dest
+			values  []any
+			mappers []func() error
+		)
+
+		if expr.Reusable {
+			dest = new(Dest)
+
+			values, mappers = destMappers(dest, expr.Mappers)
+		}
+
+		for rows.Next() {
+			if !expr.Reusable {
+				dest = new(Dest)
+
+				values, mappers = destMappers(dest, expr.Mappers)
+			}
+
+			if err = rows.Scan(values...); err != nil {
+				return nil, err
+			}
+
+			for _, m := range mappers {
+				if m != nil {
+					if err = m(); err != nil {
+						return nil, err
+					}
+				}
+			}
+
+			all = append(all, *dest)
+		}
+
+		return all, nil
+	}, opts...)
+}
+
+// Stmt can be used to define a statement using your own exec function.
+func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) *Statement[Param, Dest, Result] {
+	if location == "" {
+		location = getLocation()
+	}
+
+	config := &Config{
+		Placeholder: Question,
+		Hasher:      DefaultHasher(),
+	}
+
+	for _, o := range opts {
+		o.Configure(config)
+	}
+
+	sb := &statementBuilder[Param, Dest, Result]{
+		mode:      mode,
+		location:  location,
+		config:    config,
+		destType:  reflect.TypeFor[Dest](),
+		accessors: map[string]accessor{},
+	}
+
+	return sb.toStmt(exec)
+}
+
+// A Statement can execute the predefined template and optionally scan rows into a Result.
+type Statement[Param any, Dest any, Result any] struct {
+	name     string
+	location string
+	mode     Mode
+	hasher   Hasher
+	cache    *expirable.LRU[uint64, Expression[Dest]]
+	exec     func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)
+	pool     *sync.Pool
+	log      Log
+}
+
+var hashPool = sync.Pool{
+	New: func() any {
+		return xxhash.New()
+	},
+}
+
+// Exec executes and optionally scans rows into the result.
+func (s *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
+	var (
+		expr   Expression[Dest]
+		hash   uint64
+		cached bool
+	)
+
+	if s.log != nil {
+		now := time.Now()
+
+		defer func() {
+			s.log(ctx, Info{
+				Template: s.name,
+				Location: s.location,
+				Duration: time.Since(now),
+				Mode:     s.mode,
+				SQL:      expr.SQL,
+				Args:     expr.Args,
+				Err:      err,
+				Reusable: expr.Reusable,
+				Cached:   cached,
+			})
+		}()
+	}
+
+	if s.cache != nil {
+		hasher := hashPool.Get().(*xxhash.Digest)
+		defer func() {
+			hasher.Reset()
+			hashPool.Put(hasher)
+		}()
+
+		err = s.hasher(param, hasher)
+		if err != nil {
+			return result, err
+		}
+
+		hash = hasher.Sum64()
+
+		expr, cached = s.cache.Get(hash)
+		if cached {
+			return s.exec(ctx, db, expr)
+		}
+	}
+
+	r := s.pool.Get().(*runner[Param, Dest])
+	defer func() {
+		r.Reset()
+		s.pool.Put(r)
+	}()
+
+	expr, err = r.Expr(param)
+	if err != nil {
+		return result, err
+	}
+
+	if s.cache != nil {
+		_ = s.cache.Add(hash, expr)
+	}
+
+	return s.exec(ctx, db, expr)
+}
+
+type runner[Param any, Dest any] struct {
+	tpl       *template.Template
+	sqlWriter *sqlWriter
+	args      []any
+	reusable  bool
+	mappers   []Mapper[Dest]
+}
+
+func (r *runner[Param, Dest]) Reset() {
+	r.sqlWriter.Reset()
+	r.args = r.args[:0]
+	r.mappers = r.mappers[:0]
+}
+
+func (r *runner[Param, Dest]) Expr(param Param) (Expression[Dest], error) {
+	if err := r.tpl.Execute(r.sqlWriter, param); err != nil {
+		return Expression[Dest]{}, err
+	}
+
+	return Expression[Dest]{
+		SQL:      r.sqlWriter.String(),
+		Args:     slices.Clone(r.args),
+		Reusable: r.reusable,
+		Mappers:  slices.Clone(r.mappers),
+	}, nil
+}
+
+type sqlWriter struct {
 	data []byte
 }
 
-// Reset the internal byte slice.
-func (w *SQL) Reset() {
-	w.data = w.data[:0]
+// Reset the writer.
+func (s *sqlWriter) Reset() {
+	s.data = s.data[:0]
 }
 
-// Write implements the io.Writer interface.
-func (w *SQL) Write(data []byte) (int, error) {
+// Write implements io.Writer.
+func (s *sqlWriter) Write(data []byte) (int, error) {
 	for _, b := range data {
 		switch b {
 		case ' ', '\n', '\r', '\t':
-			if len(w.data) > 0 && w.data[len(w.data)-1] != ' ' {
-				w.data = append(w.data, ' ')
+			if len(s.data) > 0 && s.data[len(s.data)-1] != ' ' {
+				s.data = append(s.data, ' ')
 			}
 		default:
-			w.data = append(w.data, b)
+			s.data = append(s.data, b)
 		}
 	}
 
 	return len(data), nil
 }
 
-// String implements the fmt.Stringer interface.
-func (w *SQL) String() string {
-	if len(w.data) == 0 {
+// String returns the sql string from the writer.
+func (s *sqlWriter) String() string {
+	if len(s.data) == 0 {
 		return ""
 	}
 
-	if w.data[len(w.data)-1] == ' ' {
-		w.data = w.data[:len(w.data)-1]
+	if s.data[len(s.data)-1] == ' ' {
+		s.data = s.data[:len(s.data)-1]
 	}
 
-	return string(w.data)
+	return string(s.data)
 }
 
-var ident = "___sqlt___"
+var ident = "__sqlt__"
 
-// copied from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
-func escape(text *template.Template) {
-	for _, tpl := range text.Templates() {
-		if tpl.Tree.Root != nil {
-			escapeNode(tpl.Tree, tpl.Tree.Root)
+func checkType(t reflect.Type, expect string) bool {
+	if expect == "" {
+		return true
+	}
+
+	fullPath := strings.ContainsRune(expect, '/')
+	index := strings.IndexByte(expect, '.')
+	if index >= 0 {
+		if fullPath {
+			return expect[:index] == t.PkgPath()
+		}
+
+		return expect == t.String()
+	}
+
+	return expect == t.Name()
+}
+
+type accessor struct {
+	indices []int
+	typ     reflect.Type
+}
+
+func (a accessor) get(v reflect.Value) reflect.Value {
+	for _, idx := range a.indices {
+		if idx < 0 {
+			if v.IsNil() {
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+
+			v = v.Elem()
+
+			continue
+		}
+
+		v = v.Field(idx)
+	}
+
+	return v
+}
+
+type statementBuilder[Param any, Dest any, Result any] struct {
+	mode           Mode
+	location       string
+	config         *Config
+	destType       reflect.Type
+	accessors      map[string]accessor
+	accessorsMutex sync.RWMutex
+}
+
+func (sb *statementBuilder[Param, Dest, Result]) getAccessor(field string) (accessor, error) {
+	sb.accessorsMutex.RLock()
+	if acc, ok := sb.accessors[field]; ok {
+		sb.accessorsMutex.RUnlock()
+		return acc, nil
+	}
+	sb.accessorsMutex.RUnlock()
+
+	var t = sb.destType
+
+	if field == "" {
+		return accessor{typ: t}, nil
+	}
+
+	indices := []int{}
+
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+
+		indices = append(indices, -1)
+
+		continue
+	}
+
+	if t.Kind() != reflect.Struct {
+		return accessor{}, fmt.Errorf("dest type '%s' is not of kind 'struct'", t.Name())
+	}
+
+	for _, part := range strings.Split(field, ".") {
+		sf, found := t.FieldByName(part)
+		if !found {
+			return accessor{}, fmt.Errorf("field %s not found in struct %s", field, t.Name())
+		}
+
+		if !sf.IsExported() {
+			return accessor{}, fmt.Errorf("field %s in struct %s is not exported", field, t.Name())
+		}
+
+		indices = append(indices, sf.Index[0])
+		t = sf.Type
+
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+
+			indices = append(indices, -1)
+
+			continue
 		}
 	}
+
+	acc := accessor{typ: t, indices: indices}
+
+	sb.accessorsMutex.Lock()
+	sb.accessors[field] = acc
+	sb.accessorsMutex.Unlock()
+
+	return acc, nil
 }
 
-func escapeNode(s *parse.Tree, n parse.Node) {
+func (sb *statementBuilder[Param, Dest, Result]) toStmt(exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)) *Statement[Param, Dest, Result] {
+	var (
+		t = template.New("").Funcs(template.FuncMap{
+			"Raw": func(sql string) Raw { return Raw(sql) },
+			"Scan": func(field string, sql string) (Scanner[Dest], error) {
+				return sb.scan("", field, sql, false)
+			},
+			"ScanType": func(expectedType string, field string, sql string) (Scanner[Dest], error) {
+				return sb.scan(expectedType, field, sql, false)
+			},
+			"ScanJSON": func(field string, sql string) (Scanner[Dest], error) {
+				return sb.scan("", field, sql, true)
+			},
+			"ScanTypeJSON": func(expectedType string, field string, sql string) (Scanner[Dest], error) {
+				return sb.scan(expectedType, field, sql, true)
+			},
+		})
+		err error
+	)
+
+	for _, to := range sb.config.Templates {
+		t, err = to(t)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	if err = templatecheck.CheckText(t, *new(Param)); err != nil {
+		panic(err)
+	}
+
+	if err = sb.escape(t); err != nil {
+		panic(err)
+	}
+
+	t, err = t.Clone()
+	if err != nil {
+		panic(err)
+	}
+
+	var (
+		placeholder = string(sb.config.Placeholder)
+		positional  = strings.Contains(placeholder, "%d")
+	)
+
+	pool := &sync.Pool{
+		New: func() any {
+			tc, _ := t.Clone()
+
+			r := &runner[Param, Dest]{
+				tpl:       tc,
+				sqlWriter: &sqlWriter{},
+				reusable:  true,
+			}
+
+			r.tpl.Funcs(template.FuncMap{
+				ident: func(arg any) Raw {
+					switch a := arg.(type) {
+					case Raw:
+						return a
+					case Scanner[Dest]:
+						if !a.Reusable {
+							r.reusable = false
+						}
+
+						r.mappers = append(r.mappers, a.Mapper)
+
+						return Raw(a.SQL)
+					default:
+						r.args = append(r.args, arg)
+
+						if positional {
+							return Raw(fmt.Sprintf(placeholder, len(r.args)))
+						}
+
+						return Raw(placeholder)
+					}
+				},
+			})
+
+			return r
+		},
+	}
+
+	var cache *expirable.LRU[uint64, Expression[Dest]]
+
+	if sb.config.Cache != nil {
+		cache = expirable.NewLRU[uint64, Expression[Dest]](sb.config.Cache.Size, nil, sb.config.Cache.Expiration)
+	}
+
+	return &Statement[Param, Dest, Result]{
+		name:     t.Name(),
+		location: sb.location,
+		mode:     sb.mode,
+		hasher:   sb.config.Hasher,
+		cache:    cache,
+		pool:     pool,
+		log:      sb.config.Log,
+		exec:     exec,
+	}
+}
+
+func (sb *statementBuilder[Param, Dest, Result]) scan(expectType string, field string, sql string, jsonMode bool) (Scanner[Dest], error) {
+	accessor, err := sb.getAccessor(field)
+	if err != nil {
+		return Scanner[Dest]{}, err
+	}
+
+	if !checkType(accessor.typ, expectType) {
+		return Scanner[Dest]{}, fmt.Errorf("field %s expects type '%s' but got '%s'", field, expectType, accessor.typ.Name())
+	}
+
+	if jsonMode {
+		if accessor.typ.Kind() == reflect.Slice && accessor.typ.Elem().Kind() == reflect.Uint8 {
+			return Scanner[Dest]{
+				SQL:      sql,
+				Reusable: !slices.Contains(accessor.indices, -1),
+				Mapper: func(dest *Dest) (any, func() error) {
+					v := reflect.ValueOf(dest).Elem()
+
+					fieldValue := accessor.get(v)
+
+					var data []byte
+
+					return &data, func() error {
+						fieldValue.SetBytes(data)
+
+						return nil
+					}
+				},
+			}, nil
+		}
+
+		return Scanner[Dest]{
+			SQL:      sql,
+			Reusable: !slices.Contains(accessor.indices, -1),
+			Mapper: func(dest *Dest) (any, func() error) {
+				v := reflect.ValueOf(dest).Elem()
+
+				fieldValue := accessor.get(v)
+
+				var data []byte
+
+				return &data, func() error {
+					return json.Unmarshal(data, fieldValue.Addr().Interface())
+				}
+			},
+		}, nil
+	}
+
+	return Scanner[Dest]{
+		SQL:      sql,
+		Reusable: !slices.Contains(accessor.indices, -1),
+		Mapper: func(dest *Dest) (any, func() error) {
+			v := reflect.ValueOf(dest).Elem()
+
+			fieldValue := accessor.get(v)
+
+			return fieldValue.Addr().Interface(), nil
+		},
+	}, nil
+}
+
+// copied from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
+func (sb *statementBuilder[Param, Dest, Result]) escape(text *template.Template) error {
+	return sb.escapeNode(text, text.Tree, text.Tree.Root)
+}
+
+func (sb *statementBuilder[Param, Dest, Result]) escapeNode(t *template.Template, s *parse.Tree, n parse.Node) error {
 	switch v := n.(type) {
 	case *parse.ActionNode:
-		escapeNode(s, v.Pipe)
+		return sb.escapeNode(t, s, v.Pipe)
 	case *parse.IfNode:
-		escapeNode(s, v.List)
-		escapeNode(s, v.ElseList)
+		return errors.Join(
+			sb.escapeNode(t, s, v.List),
+			sb.escapeNode(t, s, v.ElseList),
+		)
 	case *parse.ListNode:
 		if v == nil {
-			return
+			return nil
 		}
 
 		for _, n := range v.Nodes {
-			escapeNode(s, n)
+			if err := sb.escapeNode(t, s, n); err != nil {
+				return err
+			}
 		}
 	case *parse.PipeNode:
 		if len(v.Decl) > 0 {
-			return
+			return nil
 		}
 
 		if len(v.Cmds) < 1 {
-			return
+			return nil
+		}
+
+		if v.Cmds[0].Args[0].String() == "Scan" || v.Cmds[0].Args[0].String() == "ScanJSON" {
+			if len(v.Cmds[0].Args) != 3 {
+				return fmt.Errorf("function '%s' has an invalid number of args", v.Cmds[0].Args[0])
+			}
+
+			node, ok := v.Cmds[0].Args[1].(*parse.StringNode)
+			if !ok {
+				return fmt.Errorf("do not set field of function '%s' dynamically", v.Cmds[0].Args[0])
+			}
+
+			_, err := sb.getAccessor(node.Text)
+			if err != nil {
+				return err
+			}
+		}
+
+		if v.Cmds[0].Args[0].String() == "ScanType" || v.Cmds[0].Args[0].String() == "ScanTypeJSON" {
+			if len(v.Cmds[0].Args) != 4 {
+				return fmt.Errorf("function '%s' has an invalid number of args", v.Cmds[0].Args[0])
+			}
+
+			node, ok := v.Cmds[0].Args[2].(*parse.StringNode)
+			if !ok {
+				return fmt.Errorf("do not set field of function '%s' dynamically", v.Cmds[0].Args[0])
+			}
+
+			acc, err := sb.getAccessor(node.Text)
+			if err != nil {
+				return err
+			}
+
+			typeNode, ok := v.Cmds[0].Args[1].(*parse.StringNode)
+			if !ok {
+				return fmt.Errorf("do not set type of function '%s' dynamically", v.Cmds[0].Args[0])
+			}
+
+			if !checkType(acc.typ, typeNode.Text) {
+				return fmt.Errorf("function '%s %s' expects type '%s' but got '%s'", v.Cmds[0].Args[0], node.Text, typeNode.Text, acc.typ.Name())
+			}
 		}
 
 		cmd := v.Cmds[len(v.Cmds)-1]
 		if len(cmd.Args) == 1 && cmd.Args[0].Type() == parse.NodeIdentifier && cmd.Args[0].(*parse.IdentifierNode).Ident == ident {
-			return
+			return nil
 		}
 
 		v.Cmds = append(v.Cmds, &parse.CommandNode{
@@ -911,27 +973,20 @@ func escapeNode(s *parse.Tree, n parse.Node) {
 			Args:     []parse.Node{parse.NewIdentifier(ident).SetTree(s).SetPos(cmd.Pos)},
 		})
 	case *parse.RangeNode:
-		escapeNode(s, v.List)
-		escapeNode(s, v.ElseList)
+		return errors.Join(
+			sb.escapeNode(t, s, v.List),
+			sb.escapeNode(t, s, v.ElseList),
+		)
 	case *parse.WithNode:
-		escapeNode(s, v.List)
-		escapeNode(s, v.ElseList)
-	}
-}
+		return errors.Join(
+			sb.escapeNode(t, s, v.List),
+			sb.escapeNode(t, s, v.ElseList),
+		)
+	case *parse.TemplateNode:
+		tpl := t.Lookup(v.Name)
 
-// copied from the text/template package.
-func goodName(name string) bool {
-	if name == "" {
-		return false
+		return sb.escapeNode(tpl, tpl.Tree, tpl.Tree.Root)
 	}
-	for i, r := range name {
-		switch {
-		case r == '_':
-		case i == 0 && !unicode.IsLetter(r):
-			return false
-		case !unicode.IsLetter(r) && !unicode.IsDigit(r):
-			return false
-		}
-	}
-	return true
+
+	return nil
 }
