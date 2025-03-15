@@ -12,10 +12,10 @@ import "github.com/wroge/sqlt"
 
 # Example
 
-- Dataset from [kaggle](https://www.kaggle.com/datasets/mohitbansal31s/pokemon-dataset)
-
 <details>
   <summary>pokemon_data_pokeapi.csv</summary>
+
+  - Dataset from [kaggle](https://www.kaggle.com/datasets/mohitbansal31s/pokemon-dataset)
 
 ```csv
 Name,Pokedex Number,Type1,Type2,Classification,Height (m),Weight (kg),Abilities,Generation,Legendary Status
@@ -927,8 +927,7 @@ Enamorus-incarnate,905,Fairy,Flying,あいぞうポケモン,1.6,48.0,"Cute-char
 ```
 </details>
 
-<details>
-  <summary>queries.sql</summary>
+- queries.sql
 
 ```sql
 {{ define "create" }}
@@ -1136,7 +1135,8 @@ Enamorus-incarnate,905,Fairy,Flying,あいぞうポケモン,1.6,48.0,"Cute-char
     ORDER BY p.number;
 {{ end }}
 ```
-</details>
+
+- Example with sqlite
 
 ```go
 package main
