@@ -3,6 +3,7 @@ package sqlt
 import (
 	"context"
 	"database/sql"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,34 +23,16 @@ import (
 	"github.com/jba/templatecheck"
 )
 
-// DB is the interface of *sql.DB and *sql.Tx.
 type DB interface {
 	QueryContext(ctx context.Context, sql string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, sql string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, sql string, args ...any) (sql.Result, error)
 }
 
-// Raw lets template functions insert SQL directly.
-// Use with caution to prevent SQL injection.
-type Raw string
-
-// Scanner maps SQL columns to Dest.
-// If reusable, Dest can be reused for each sql.Rows.Next().
-type Scanner[Dest any] struct {
-	Mapper   Mapper[Dest]
-	Reusable bool
-	SQL      string
-}
-
-// Mapper maps a destination pointer with an optional transformation.
-type Mapper[Dest any] func(dest *Dest) (any, func() error)
-
-// Option is implemented by Config, Placeholders, Templates, etc.
 type Option interface {
 	Configure(config *Config)
 }
 
-// Config holds all configuration options.
 type Config struct {
 	Placeholder Placeholder
 	Templates   []Template
@@ -58,7 +41,6 @@ type Config struct {
 	Hasher      Hasher
 }
 
-// Configure applies Config settings.
 func (c Config) Configure(config *Config) {
 	if c.Placeholder != "" {
 		config.Placeholder = c.Placeholder
@@ -243,15 +225,15 @@ func (l Log) Configure(config *Config) {
 
 // Info contains loggable execution details.
 type Info struct {
-	Duration time.Duration
-	Mode     Mode
-	Template string
-	Location string
-	SQL      string
-	Args     []any
-	Err      error
-	Reusable bool
-	Cached   bool
+	Duration    time.Duration
+	Mode        Mode
+	Template    string
+	Location    string
+	SQL         string
+	Args        []any
+	Err         error
+	Cached      bool
+	Transaction bool
 }
 
 // Mode identifies SQL statement types.
@@ -272,177 +254,239 @@ const (
 	AllMode Mode = "All"
 )
 
-// Expression represents a SQL statement with arguments and mappers.
 type Expression[Dest any] struct {
 	SQL      string
 	Args     []any
-	Mappers  []Mapper[Dest]
-	Reusable bool
+	Scanners []Scanner[Dest]
 }
 
-func destMappers[Dest any](dest *Dest, mappings []Mapper[Dest]) ([]any, []func() error) {
-	if len(mappings) == 0 {
-		return []any{dest}, nil
+func (e Expression[Dest]) DestMapper() ([]any, func(dest *Dest) error, error) {
+	if len(e.Scanners) == 0 {
+		scan, err := scan[Dest]("")
+		if err != nil {
+			return nil, nil, err
+		}
+
+		e.Scanners = []Scanner[Dest]{scan}
 	}
 
 	var (
-		values  = make([]any, len(mappings))
-		mappers = make([]func() error, len(mappings))
+		values  = make([]any, len(e.Scanners))
+		mappers = make([]func(*Dest) error, len(e.Scanners))
 	)
 
-	for i, m := range mappings {
-		values[i], mappers[i] = m(dest)
+	for i, s := range e.Scanners {
+		values[i], mappers[i] = s()
 	}
 
-	return values, mappers
+	return values, func(dest *Dest) error {
+		for _, m := range mappers {
+			if m != nil {
+				if err := m(dest); err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
+	}, nil
 }
 
-// Exec runs an expression using ExecContext.
+func (e Expression[Dest]) First(ctx context.Context, db DB) (first Dest, err error) {
+	if len(e.SQL) == 0 {
+		return first, sql.ErrNoRows
+	}
+
+	row := db.QueryRowContext(ctx, e.SQL, e.Args...)
+
+	values, mapper, err := e.DestMapper()
+	if err != nil {
+		return first, err
+	}
+
+	if err = row.Scan(values...); err != nil {
+		return first, err
+	}
+
+	if err = mapper(&first); err != nil {
+		return first, err
+	}
+
+	return first, nil
+}
+
+var ErrTooManyRows = errors.New("too many rows")
+
+func (e Expression[Dest]) One(ctx context.Context, db DB) (one Dest, err error) {
+	if len(e.SQL) == 0 {
+		return one, sql.ErrNoRows
+	}
+
+	rows, err := db.QueryContext(ctx, e.SQL, e.Args...)
+	if err != nil {
+		return one, err
+	}
+
+	defer func() {
+		err = errors.Join(err, rows.Close(), rows.Err())
+	}()
+
+	if !rows.Next() {
+		return one, sql.ErrNoRows
+	}
+
+	values, mapper, err := e.DestMapper()
+	if err != nil {
+		return one, err
+	}
+
+	if err = rows.Scan(values...); err != nil {
+		return one, err
+	}
+
+	if err = mapper(&one); err != nil {
+		return one, err
+	}
+
+	if rows.Next() {
+		return one, ErrTooManyRows
+	}
+
+	return one, nil
+}
+
+func (e Expression[Dest]) All(ctx context.Context, db DB) (all []Dest, err error) {
+	if len(e.SQL) == 0 {
+		return nil, sql.ErrNoRows
+	}
+
+	rows, err := db.QueryContext(ctx, e.SQL, e.Args...)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		err = errors.Join(err, rows.Close(), rows.Err())
+	}()
+
+	values, mapper, err := e.DestMapper()
+	if err != nil {
+		return nil, err
+	}
+
+	for rows.Next() {
+		if err = rows.Scan(values...); err != nil {
+			return nil, err
+		}
+
+		var dest Dest
+
+		if err = mapper(&dest); err != nil {
+			return nil, err
+		}
+
+		all = append(all, dest)
+	}
+
+	return all, nil
+}
+
+type Scanner[Dest any] func() (any, func(dest *Dest) error)
+
+type Raw string
+
+type ContextKey string
+
+type ContextStatement[Param any] interface {
+	ExecContext(ctx context.Context, db DB, param Param) (result context.Context, err error)
+}
+
+func Transaction[Param any](txOpts *sql.TxOptions, stmts ...ContextStatement[Param]) *TransactionStatement[Param] {
+	return &TransactionStatement[Param]{
+		txOpts: txOpts,
+		stmts:  stmts,
+	}
+}
+
+type TransactionStatement[Param any] struct {
+	txOpts *sql.TxOptions
+	stmts  []ContextStatement[Param]
+}
+
+type TxBeginner interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
+func (ts *TransactionStatement[Param]) Exec(ctx context.Context, db TxBeginner, param Param) (result context.Context, err error) {
+	tx, err := db.BeginTx(ctx, ts.txOpts)
+	if err != nil {
+		return result, err
+	}
+
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, tx.Rollback())
+		} else {
+			err = tx.Commit()
+		}
+	}()
+
+	result = ctx
+
+	for _, s := range ts.stmts {
+		ctx, err = s.ExecContext(result, tx, param)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+
+			return result, err
+		}
+
+		if ctx != result {
+			result = ctx
+		}
+	}
+
+	return result, nil
+}
+
 func Exec[Param any](opts ...Option) *Statement[Param, any, sql.Result] {
 	return Stmt[Param](getLocation(), ExecMode, func(ctx context.Context, db DB, expr Expression[any]) (sql.Result, error) {
 		return db.ExecContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
-// Query runs an expression using QueryContext.
-func Query[Param any](opts ...Option) *Statement[Param, any, *sql.Rows] {
-	return Stmt[Param](getLocation(), QueryMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Rows, error) {
-		return db.QueryContext(ctx, expr.SQL, expr.Args...)
-	}, opts...)
-}
-
-// QueryRow runs an expression using QueryRowContext.
 func QueryRow[Param any](opts ...Option) *Statement[Param, any, *sql.Row] {
 	return Stmt[Param](getLocation(), QueryRowMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Row, error) {
 		return db.QueryRowContext(ctx, expr.SQL, expr.Args...), nil
 	}, opts...)
 }
 
-// First runs QueryContext and maps the first result.
+func Query[Param any](opts ...Option) *Statement[Param, any, *sql.Rows] {
+	return Stmt[Param](getLocation(), QueryMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Rows, error) {
+		return db.QueryContext(ctx, expr.SQL, expr.Args...)
+	}, opts...)
+}
+
 func First[Param any, Dest any](opts ...Option) *Statement[Param, Dest, Dest] {
-	return Stmt[Param](getLocation(), FirstMode, func(ctx context.Context, db DB, expr Expression[Dest]) (first Dest, err error) {
-		row := db.QueryRowContext(ctx, expr.SQL, expr.Args...)
-
-		values, mappers := destMappers(&first, expr.Mappers)
-
-		if err = row.Scan(values...); err != nil {
-			return first, err
-		}
-
-		for _, m := range mappers {
-			if m == nil {
-				continue
-			}
-
-			if err = m(); err != nil {
-				return first, err
-			}
-		}
-
-		return first, nil
+	return Stmt[Param](getLocation(), FirstMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
+		return expr.First(ctx, db)
 	}, opts...)
 }
 
-// ErrTooManyRows is returned from One statements if more than one row exists.
-// This error can be wrapped and should be identified using errors.Is.
-var ErrTooManyRows = errors.New("sqlt: too many rows")
-
-// One runs QueryContext and maps one result.
-// Returns ErrTooManyRows if multiple rows exist.
 func One[Param any, Dest any](opts ...Option) *Statement[Param, Dest, Dest] {
-	return Stmt[Param](getLocation(), OneMode, func(ctx context.Context, db DB, expr Expression[Dest]) (one Dest, err error) {
-		rows, err := db.QueryContext(ctx, expr.SQL, expr.Args...)
-		if err != nil {
-			return one, err
-		}
-
-		defer func() {
-			err = errors.Join(err, rows.Close(), rows.Err())
-		}()
-
-		if !rows.Next() {
-			return one, sql.ErrNoRows
-		}
-
-		values, mappers := destMappers(&one, expr.Mappers)
-
-		if err = rows.Scan(values...); err != nil {
-			return one, err
-		}
-
-		for _, m := range mappers {
-			if m != nil {
-				if err = m(); err != nil {
-					return one, err
-				}
-			}
-		}
-
-		if rows.Next() {
-			return one, ErrTooManyRows
-		}
-
-		return one, nil
+	return Stmt[Param](getLocation(), OneMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
+		return expr.One(ctx, db)
 	}, opts...)
 }
 
-func getLocation() string {
-	_, file, line, _ := runtime.Caller(2)
-
-	return fmt.Sprintf("%s:%d", file, line)
-}
-
-// All runs QueryContext and maps the results.
 func All[Param any, Dest any](opts ...Option) *Statement[Param, Dest, []Dest] {
-	return Stmt[Param](getLocation(), AllMode, func(ctx context.Context, db DB, expr Expression[Dest]) (all []Dest, err error) {
-		rows, err := db.QueryContext(ctx, expr.SQL, expr.Args...)
-		if err != nil {
-			return nil, err
-		}
-
-		defer func() {
-			err = errors.Join(err, rows.Close(), rows.Err())
-		}()
-
-		var (
-			dest    *Dest
-			values  []any
-			mappers []func() error
-		)
-
-		if expr.Reusable {
-			dest = new(Dest)
-
-			values, mappers = destMappers(dest, expr.Mappers)
-		}
-
-		for rows.Next() {
-			if !expr.Reusable {
-				dest = new(Dest)
-
-				values, mappers = destMappers(dest, expr.Mappers)
-			}
-
-			if err = rows.Scan(values...); err != nil {
-				return nil, err
-			}
-
-			for _, m := range mappers {
-				if m != nil {
-					if err = m(); err != nil {
-						return nil, err
-					}
-				}
-			}
-
-			all = append(all, *dest)
-		}
-
-		return all, nil
+	return Stmt[Param](getLocation(), AllMode, func(ctx context.Context, db DB, expr Expression[Dest]) ([]Dest, error) {
+		return expr.All(ctx, db)
 	}, opts...)
 }
 
-// Stmt can be used to define a statement using your own exec function.
 func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) *Statement[Param, Dest, Result] {
 	if location == "" {
 		location = getLocation()
@@ -457,308 +501,43 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 		o.Configure(config)
 	}
 
-	sb := &statementBuilder[Param, Dest, Result]{
-		mode:      mode,
-		location:  location,
-		config:    config,
-		destType:  reflect.TypeFor[Dest](),
-		accessors: map[string]accessor{},
-	}
-
-	return sb.toStmt(exec)
-}
-
-// A Statement can execute the predefined template and optionally scan rows into a Result.
-type Statement[Param any, Dest any, Result any] struct {
-	name     string
-	location string
-	mode     Mode
-	hasher   Hasher
-	cache    *expirable.LRU[uint64, Expression[Dest]]
-	exec     func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)
-	pool     *sync.Pool
-	log      Log
-}
-
-var hashPool = sync.Pool{
-	New: func() any {
-		return xxhash.New()
-	},
-}
-
-// Exec executes and optionally scans rows into the result.
-func (s *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
 	var (
-		expr   Expression[Dest]
-		hash   uint64
-		cached bool
-	)
-
-	if s.log != nil {
-		now := time.Now()
-
-		defer func() {
-			s.log(ctx, Info{
-				Template: s.name,
-				Location: s.location,
-				Duration: time.Since(now),
-				Mode:     s.mode,
-				SQL:      expr.SQL,
-				Args:     expr.Args,
-				Err:      err,
-				Reusable: expr.Reusable,
-				Cached:   cached,
-			})
-		}()
-	}
-
-	if s.cache != nil {
-		hasher := hashPool.Get().(*xxhash.Digest)
-		defer func() {
-			hasher.Reset()
-			hashPool.Put(hasher)
-		}()
-
-		err = s.hasher(param, hasher)
-		if err != nil {
-			return result, err
+		scannerStore = &scannerStore[Dest]{
+			store: map[string]Scanner[Dest]{},
 		}
 
-		hash = hasher.Sum64()
-
-		expr, cached = s.cache.Get(hash)
-		if cached {
-			return s.exec(ctx, db, expr)
-		}
-	}
-
-	r := s.pool.Get().(*runner[Param, Dest])
-	defer func() {
-		r.Reset()
-		s.pool.Put(r)
-	}()
-
-	expr, err = r.Expr(param)
-	if err != nil {
-		return result, err
-	}
-
-	if s.cache != nil {
-		_ = s.cache.Add(hash, expr)
-	}
-
-	return s.exec(ctx, db, expr)
-}
-
-type runner[Param any, Dest any] struct {
-	tpl       *template.Template
-	sqlWriter *sqlWriter
-	args      []any
-	reusable  bool
-	mappers   []Mapper[Dest]
-}
-
-func (r *runner[Param, Dest]) Reset() {
-	r.sqlWriter.Reset()
-	r.args = r.args[:0]
-	r.mappers = r.mappers[:0]
-}
-
-func (r *runner[Param, Dest]) Expr(param Param) (Expression[Dest], error) {
-	if err := r.tpl.Execute(r.sqlWriter, param); err != nil {
-		return Expression[Dest]{}, err
-	}
-
-	return Expression[Dest]{
-		SQL:      r.sqlWriter.String(),
-		Args:     slices.Clone(r.args),
-		Reusable: r.reusable,
-		Mappers:  slices.Clone(r.mappers),
-	}, nil
-}
-
-type sqlWriter struct {
-	data []byte
-}
-
-// Reset the writer.
-func (s *sqlWriter) Reset() {
-	s.data = s.data[:0]
-}
-
-// Write implements io.Writer.
-func (s *sqlWriter) Write(data []byte) (int, error) {
-	for _, b := range data {
-		switch b {
-		case ' ', '\n', '\r', '\t':
-			if len(s.data) > 0 && s.data[len(s.data)-1] != ' ' {
-				s.data = append(s.data, ' ')
-			}
-		default:
-			s.data = append(s.data, b)
-		}
-	}
-
-	return len(data), nil
-}
-
-// String returns the sql string from the writer.
-func (s *sqlWriter) String() string {
-	if len(s.data) == 0 {
-		return ""
-	}
-
-	if s.data[len(s.data)-1] == ' ' {
-		s.data = s.data[:len(s.data)-1]
-	}
-
-	return string(s.data)
-}
-
-var ident = "__sqlt__"
-
-func checkType(t reflect.Type, expect string) bool {
-	if expect == "" {
-		return true
-	}
-
-	fullPath := strings.ContainsRune(expect, '/')
-	index := strings.IndexByte(expect, '.')
-	if index >= 0 {
-		if fullPath {
-			return expect[:index] == t.PkgPath()
-		}
-
-		return expect == t.String()
-	}
-
-	return expect == t.Name()
-}
-
-type accessor struct {
-	indices []int
-	typ     reflect.Type
-}
-
-func (a accessor) get(v reflect.Value) reflect.Value {
-	for _, idx := range a.indices {
-		if idx < 0 {
-			if v.IsNil() {
-				v.Set(reflect.New(v.Type().Elem()))
-			}
-
-			v = v.Elem()
-
-			continue
-		}
-
-		v = v.Field(idx)
-	}
-
-	return v
-}
-
-type statementBuilder[Param any, Dest any, Result any] struct {
-	mode           Mode
-	location       string
-	config         *Config
-	destType       reflect.Type
-	accessors      map[string]accessor
-	accessorsMutex sync.RWMutex
-}
-
-func (sb *statementBuilder[Param, Dest, Result]) getAccessor(field string) (accessor, error) {
-	sb.accessorsMutex.RLock()
-	if acc, ok := sb.accessors[field]; ok {
-		sb.accessorsMutex.RUnlock()
-		return acc, nil
-	}
-	sb.accessorsMutex.RUnlock()
-
-	var t = sb.destType
-
-	if field == "" {
-		return accessor{typ: t}, nil
-	}
-
-	indices := []int{}
-
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-
-		indices = append(indices, -1)
-
-		continue
-	}
-
-	if t.Kind() != reflect.Struct {
-		return accessor{}, fmt.Errorf("dest type '%s' is not of kind 'struct'", t.Name())
-	}
-
-	for _, part := range strings.Split(field, ".") {
-		sf, found := t.FieldByName(part)
-		if !found {
-			return accessor{}, fmt.Errorf("field %s not found in struct %s", field, t.Name())
-		}
-
-		if !sf.IsExported() {
-			return accessor{}, fmt.Errorf("field %s in struct %s is not exported", field, t.Name())
-		}
-
-		indices = append(indices, sf.Index[0])
-		t = sf.Type
-
-		for t.Kind() == reflect.Pointer {
-			t = t.Elem()
-
-			indices = append(indices, -1)
-
-			continue
-		}
-	}
-
-	acc := accessor{typ: t, indices: indices}
-
-	sb.accessorsMutex.Lock()
-	sb.accessors[field] = acc
-	sb.accessorsMutex.Unlock()
-
-	return acc, nil
-}
-
-func (sb *statementBuilder[Param, Dest, Result]) toStmt(exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)) *Statement[Param, Dest, Result] {
-	var (
 		t = template.New("").Funcs(template.FuncMap{
 			"Raw": func(sql string) Raw { return Raw(sql) },
-			"Scan": func(field string, sql string) (Scanner[Dest], error) {
-				return sb.scan("", field, sql, false)
+			"Context": func(key string) any {
+				return ContextKey(key)
 			},
-			"ScanType": func(expectedType string, field string, sql string) (Scanner[Dest], error) {
-				return sb.scan(expectedType, field, sql, false)
-			},
-			"ScanJSON": func(field string, sql string) (Scanner[Dest], error) {
-				return sb.scan("", field, sql, true)
-			},
-			"ScanTypeJSON": func(expectedType string, field string, sql string) (Scanner[Dest], error) {
-				return sb.scan(expectedType, field, sql, true)
-			},
+			"Scan":        scannerStore.scan,
+			"ScanJSON":    scannerStore.scanJSON,
+			"ScanBinary":  scannerStore.scanBinary,
+			"ScanText":    scannerStore.scanText,
+			"ScanDefault": scannerStore.scanDefault,
+			"ScanSplit":   scannerStore.scanSplit,
+			"ScanBitmask": scannerStore.scanBitmask,
+			"ScanEnum":    scannerStore.scanEnum,
+			"ScanBool":    scannerStore.scanBool,
+			"ScanTime":    scannerStore.scanTime,
 		})
 		err error
 	)
 
-	for _, to := range sb.config.Templates {
+	for _, to := range config.Templates {
 		t, err = to(t)
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("parse template at %s: %w", location, err))
 		}
 	}
 
 	if err = templatecheck.CheckText(t, *new(Param)); err != nil {
-		panic(err)
+		panic(fmt.Errorf("check template at %s: %w", location, err))
 	}
 
-	if err = sb.escape(t); err != nil {
-		panic(err)
+	if err = escapeNode[Dest](t, t.Tree.Root); err != nil {
+		panic(fmt.Errorf("escape template at %s: %w", location, err))
 	}
 
 	t, err = t.Clone()
@@ -767,7 +546,7 @@ func (sb *statementBuilder[Param, Dest, Result]) toStmt(exec func(ctx context.Co
 	}
 
 	var (
-		placeholder = string(sb.config.Placeholder)
+		placeholder = string(config.Placeholder)
 		positional  = strings.Contains(placeholder, "%d")
 	)
 
@@ -776,24 +555,28 @@ func (sb *statementBuilder[Param, Dest, Result]) toStmt(exec func(ctx context.Co
 			tc, _ := t.Clone()
 
 			r := &runner[Param, Dest]{
+				ctx:       context.Background(),
 				tpl:       tc,
 				sqlWriter: &sqlWriter{},
-				reusable:  true,
 			}
 
 			r.tpl.Funcs(template.FuncMap{
+				"Context": func(key string) any {
+					switch value := r.ctx.Value(ContextKey(key)).(type) {
+					case *any:
+						return *value
+					default:
+						return value
+					}
+				},
 				ident: func(arg any) Raw {
 					switch a := arg.(type) {
 					case Raw:
 						return a
 					case Scanner[Dest]:
-						if !a.Reusable {
-							r.reusable = false
-						}
+						r.scanners = append(r.scanners, a)
 
-						r.mappers = append(r.mappers, a.Mapper)
-
-						return Raw(a.SQL)
+						return Raw("")
 					default:
 						r.args = append(r.args, arg)
 
@@ -812,96 +595,1009 @@ func (sb *statementBuilder[Param, Dest, Result]) toStmt(exec func(ctx context.Co
 
 	var cache *expirable.LRU[uint64, Expression[Dest]]
 
-	if sb.config.Cache != nil {
-		cache = expirable.NewLRU[uint64, Expression[Dest]](sb.config.Cache.Size, nil, sb.config.Cache.Expiration)
+	if config.Cache != nil {
+		cache = expirable.NewLRU[uint64, Expression[Dest]](config.Cache.Size, nil, config.Cache.Expiration)
 	}
 
 	return &Statement[Param, Dest, Result]{
 		name:     t.Name(),
-		location: sb.location,
-		mode:     sb.mode,
-		hasher:   sb.config.Hasher,
+		location: location,
+		mode:     mode,
+		hasher:   config.Hasher,
 		cache:    cache,
 		pool:     pool,
-		log:      sb.config.Log,
+		log:      config.Log,
 		exec:     exec,
 	}
 }
 
-func (sb *statementBuilder[Param, Dest, Result]) scan(expectType string, field string, sql string, jsonMode bool) (Scanner[Dest], error) {
-	accessor, err := sb.getAccessor(field)
+type Statement[Param any, Dest any, Result any] struct {
+	name     string
+	location string
+	mode     Mode
+	hasher   Hasher
+	cache    *expirable.LRU[uint64, Expression[Dest]]
+	exec     func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)
+	pool     *sync.Pool
+	log      Log
+}
+
+func (s *Statement[Param, Dest, Result]) ExecContext(ctx context.Context, db DB, param Param) (result context.Context, err error) {
+	res, err := s.Exec(ctx, db, param)
 	if err != nil {
-		return Scanner[Dest]{}, err
+		return result, err
 	}
 
-	if !checkType(accessor.typ, expectType) {
-		return Scanner[Dest]{}, fmt.Errorf("field %s expects type '%s' but got '%s'", field, expectType, accessor.typ.Name())
-	}
-
-	if jsonMode {
-		if accessor.typ.Kind() == reflect.Slice && accessor.typ.Elem().Kind() == reflect.Uint8 {
-			return Scanner[Dest]{
-				SQL:      sql,
-				Reusable: !slices.Contains(accessor.indices, -1),
-				Mapper: func(dest *Dest) (any, func() error) {
-					v := reflect.ValueOf(dest).Elem()
-
-					fieldValue := accessor.get(v)
-
-					var data []byte
-
-					return &data, func() error {
-						fieldValue.SetBytes(data)
-
-						return nil
-					}
-				},
-			}, nil
+	switch r := any(res).(type) {
+	case context.Context:
+		return r, nil
+	case *sql.Rows:
+		data, err := scanRows(r)
+		if err != nil {
+			return nil, err
 		}
 
-		return Scanner[Dest]{
-			SQL:      sql,
-			Reusable: !slices.Contains(accessor.indices, -1),
-			Mapper: func(dest *Dest) (any, func() error) {
-				v := reflect.ValueOf(dest).Elem()
+		return context.WithValue(ctx, ContextKey(s.name), data), nil
+	case *sql.Row:
+		var data any
 
-				fieldValue := accessor.get(v)
+		if err = r.Scan(&data); err != nil {
+			return nil, err
+		}
 
-				var data []byte
-
-				return &data, func() error {
-					return json.Unmarshal(data, fieldValue.Addr().Interface())
-				}
-			},
-		}, nil
+		return context.WithValue(ctx, ContextKey(s.name), data), nil
 	}
 
-	return Scanner[Dest]{
-		SQL:      sql,
-		Reusable: !slices.Contains(accessor.indices, -1),
-		Mapper: func(dest *Dest) (any, func() error) {
-			v := reflect.ValueOf(dest).Elem()
+	return context.WithValue(ctx, ContextKey(s.name), res), nil
+}
 
-			fieldValue := accessor.get(v)
+func scanRows(rows *sql.Rows) (result []any, err error) {
+	defer func() {
+		err = errors.Join(err, rows.Close())
+	}()
 
-			return fieldValue.Addr().Interface(), nil
-		},
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(cols) == 1 {
+		var data any
+
+		for rows.Next() {
+			if err = rows.Scan(&data); err != nil {
+				return nil, err
+			}
+
+			result = append(result, data)
+		}
+
+		return result, nil
+	}
+
+	for rows.Next() {
+		items := make([]any, len(cols))
+		for i := range items {
+			items[i] = new(any)
+		}
+
+		if err := rows.Scan(items...); err != nil {
+			return nil, err
+		}
+
+		row := make(map[string]any, len(cols))
+
+		for i, c := range cols {
+			vv := items[i].(*any)
+			row[c] = *vv
+		}
+
+		result = append(result, row)
+	}
+
+	return result, nil
+}
+
+// Exec executes and optionally scans rows into the result.
+func (s *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
+	var (
+		expr   Expression[Dest]
+		hash   uint64
+		cached bool
+	)
+
+	if s.log != nil {
+		now := time.Now()
+
+		_, inTx := db.(*sql.Tx)
+
+		defer func() {
+			s.log(ctx, Info{
+				Template:    s.name,
+				Location:    s.location,
+				Duration:    time.Since(now),
+				Mode:        s.mode,
+				SQL:         expr.SQL,
+				Args:        expr.Args,
+				Err:         err,
+				Cached:      cached,
+				Transaction: inTx,
+			})
+		}()
+	}
+
+	if s.cache != nil {
+		hasher := hashPool.Get().(*xxhash.Digest)
+		defer func() {
+			hasher.Reset()
+			hashPool.Put(hasher)
+		}()
+
+		err = s.hasher(param, hasher)
+		if err != nil {
+			return result, fmt.Errorf("statement at %s: %w", s.location, err)
+		}
+
+		hash = hasher.Sum64()
+
+		expr, cached = s.cache.Get(hash)
+		if cached {
+			result, err = s.exec(ctx, db, expr)
+			if err != nil {
+				return result, fmt.Errorf("statement at %s: %w", s.location, err)
+			}
+
+			return result, nil
+		}
+	}
+
+	r := s.pool.Get().(*runner[Param, Dest])
+	defer func() {
+		r.reset()
+		s.pool.Put(r)
+	}()
+
+	r.ctx = ctx
+
+	expr, err = r.expr(param)
+	if err != nil {
+		return result, fmt.Errorf("statement at %s: %w", s.location, err)
+	}
+
+	if s.cache != nil {
+		_ = s.cache.Add(hash, expr)
+	}
+
+	result, err = s.exec(ctx, db, expr)
+	if err != nil {
+		return result, fmt.Errorf("statement at %s: %w", s.location, err)
+	}
+
+	return result, nil
+}
+
+func getDestAccessor[Dest any](field string) (reflect.Type, func(*Dest) reflect.Value, error) {
+	t, acc, err := getTypeAccessor(reflect.TypeFor[Dest](), field)
+	if err != nil {
+		return t, nil, err
+	}
+
+	return t, func(d *Dest) reflect.Value {
+		return acc(reflect.ValueOf(d).Elem())
 	}, nil
 }
 
-// copied from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
-func (sb *statementBuilder[Param, Dest, Result]) escape(text *template.Template) error {
-	return sb.escapeNode(text, text.Tree, text.Tree.Root)
+func getTypeAccessor(t reflect.Type, field string) (reflect.Type, func(reflect.Value) reflect.Value, error) {
+	indices := []int{}
+
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+
+		indices = append(indices, -1)
+
+		continue
+	}
+
+	if field == "" {
+		return t, getAccessor(indices), nil
+	}
+
+	parts := strings.Split(field, ".")
+
+	for _, part := range parts {
+		switch t.Kind() {
+		default:
+			return t, nil, fmt.Errorf("invalid field access on type %s", t.Name())
+		case reflect.Struct:
+			sf, found := t.FieldByName(part)
+			if !found {
+				return t, nil, fmt.Errorf("field %s not found in struct %s", field, t.Name())
+			}
+
+			if !sf.IsExported() {
+				return t, nil, fmt.Errorf("field %s in struct %s is not exported", field, t.Name())
+			}
+
+			indices = append(indices, sf.Index[0])
+			t = sf.Type
+		}
+
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+
+			indices = append(indices, -1)
+
+			continue
+		}
+	}
+
+	return t, getAccessor(indices), nil
 }
 
-func (sb *statementBuilder[Param, Dest, Result]) escapeNode(t *template.Template, s *parse.Tree, n parse.Node) error {
+func getAccessor(indices []int) func(reflect.Value) reflect.Value {
+	return func(v reflect.Value) reflect.Value {
+		for _, idx := range indices {
+			if idx < 0 {
+				if v.IsNil() {
+					v.Set(reflect.New(v.Type().Elem()))
+				}
+
+				v = v.Elem()
+
+				continue
+			}
+
+			v = v.Field(idx)
+		}
+
+		return v
+	}
+}
+
+var (
+	scannerType = reflect.TypeFor[sql.Scanner]()
+	timeType    = reflect.TypeFor[time.Time]()
+)
+
+type scannerStore[Dest any] struct {
+	mu    sync.RWMutex
+	store map[string]Scanner[Dest]
+}
+
+func (s *scannerStore[Dest]) get(key string) (Scanner[Dest], bool) {
+	s.mu.RLock()
+	scanner, ok := s.store[key]
+	s.mu.RUnlock()
+
+	return scanner, ok
+}
+
+func (s *scannerStore[Dest]) set(key string, scanner Scanner[Dest]) {
+	s.mu.Lock()
+	s.store[key] = scanner
+	s.mu.Unlock()
+}
+
+func scan[Dest any](field string) (scanner Scanner[Dest], err error) {
+	typ, acc, err := getDestAccessor[Dest](field)
+	if err != nil {
+		return nil, err
+	}
+
+	pointerType := reflect.PointerTo(typ)
+
+	if pointerType.Implements(scannerType) {
+		return func() (any, func(dest *Dest) error) {
+			var src []byte
+
+			return &src, func(dest *Dest) error {
+				return acc(dest).Addr().Interface().(sql.Scanner).Scan(src)
+			}
+		}, nil
+	}
+
+	switch typ.Kind() {
+	case reflect.String:
+		return func() (any, func(dest *Dest) error) {
+			var src string
+
+			return &src, func(dest *Dest) error {
+				acc(dest).SetString(src)
+
+				return nil
+			}
+		}, nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return func() (any, func(dest *Dest) error) {
+			var src int64
+
+			return &src, func(dest *Dest) error {
+				acc(dest).SetInt(src)
+
+				return nil
+			}
+		}, nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return func() (any, func(dest *Dest) error) {
+			var src uint64
+
+			return &src, func(dest *Dest) error {
+				acc(dest).SetUint(src)
+
+				return nil
+			}
+		}, nil
+	case reflect.Float32, reflect.Float64:
+		return func() (any, func(dest *Dest) error) {
+			var src float64
+
+			return &src, func(dest *Dest) error {
+				acc(dest).SetFloat(src)
+
+				return nil
+			}
+		}, nil
+	case reflect.Bool:
+		return func() (any, func(dest *Dest) error) {
+			var src bool
+
+			return &src, func(dest *Dest) error {
+				acc(dest).SetBool(src)
+
+				return nil
+			}
+		}, nil
+	}
+
+	if typ != timeType {
+		return func() (any, func(dest *Dest) error) {
+			var src time.Time
+
+			return &src, func(dest *Dest) error {
+				acc(dest).Set(reflect.ValueOf(src).Convert(typ))
+
+				return nil
+			}
+		}, nil
+	}
+
+	return nil, fmt.Errorf("invalid type %s for Scan: want string|int|float|bool|time.Time|sql.Scanner", typ)
+}
+
+func (s *scannerStore[Dest]) scan(field string) (scanner Scanner[Dest], err error) {
+	var (
+		ok  bool
+		key = "scan:" + field
+	)
+
+	scanner, ok = s.get(key)
+	if ok {
+		return scanner, nil
+	}
+
+	defer func() {
+		if err == nil {
+			s.set(key, scanner)
+		}
+	}()
+
+	return scan[Dest](field)
+}
+
+var byteSliceType = reflect.TypeFor[[]byte]()
+
+func (s *scannerStore[Dest]) scanJSON(field string) (scanner Scanner[Dest], err error) {
+	var (
+		ok  bool
+		key = "scanJSON:" + field
+	)
+
+	scanner, ok = s.get(key)
+	if ok {
+		return scanner, nil
+	}
+
+	defer func() {
+		if err == nil {
+			s.set(key, scanner)
+		}
+	}()
+
+	typ, acc, err := getDestAccessor[Dest](field)
+	if err != nil {
+		return nil, err
+	}
+
+	if typ == byteSliceType {
+		return func() (any, func(dest *Dest) error) {
+			var src []byte
+
+			return &src, func(dest *Dest) error {
+				var raw json.RawMessage
+
+				if err := json.Unmarshal(src, &raw); err != nil {
+					return err
+				}
+
+				acc(dest).SetBytes(raw)
+
+				return nil
+			}
+		}, nil
+	}
+
+	return func() (any, func(dest *Dest) error) {
+		var src []byte
+
+		return &src, func(dest *Dest) error {
+			return json.Unmarshal(src, acc(dest).Addr().Interface())
+		}
+	}, nil
+}
+
+var binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
+
+func (s *scannerStore[Dest]) scanBinary(field string) (scanner Scanner[Dest], err error) {
+	var (
+		ok  bool
+		key = "scanBinary:" + field
+	)
+
+	scanner, ok = s.get(key)
+	if ok {
+		return scanner, nil
+	}
+
+	defer func() {
+		if err == nil {
+			s.set(key, scanner)
+		}
+	}()
+
+	typ, acc, err := getDestAccessor[Dest](field)
+	if err != nil {
+		return nil, err
+	}
+
+	pointerType := reflect.PointerTo(typ)
+
+	if pointerType.Implements(binaryUnmarshalerType) {
+		return func() (any, func(dest *Dest) error) {
+			var src []byte
+
+			return &src, func(dest *Dest) error {
+				return acc(dest).Addr().Interface().(encoding.BinaryUnmarshaler).UnmarshalBinary(src)
+			}
+		}, nil
+	}
+
+	return nil, fmt.Errorf("invalid type %s for ScanBinary: want encoding.BinaryUnmarshaler", typ)
+}
+
+var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+
+func (s *scannerStore[Dest]) scanText(field string) (scanner Scanner[Dest], err error) {
+	var (
+		ok  bool
+		key = "scanText:" + field
+	)
+
+	scanner, ok = s.get(key)
+	if ok {
+		return scanner, nil
+	}
+
+	defer func() {
+		if err == nil {
+			s.set(key, scanner)
+		}
+	}()
+
+	typ, acc, err := getDestAccessor[Dest](field)
+	if err != nil {
+		return nil, err
+	}
+
+	pointerType := reflect.PointerTo(typ)
+
+	if pointerType.Implements(textUnmarshalerType) {
+		return func() (any, func(dest *Dest) error) {
+			var src []byte
+
+			return &src, func(dest *Dest) error {
+				return acc(dest).Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText(src)
+			}
+		}, nil
+	}
+
+	return nil, fmt.Errorf("invalid type %s for ScanText: want encoding.TextUnmarshaler", typ)
+}
+
+func (s *scannerStore[Dest]) scanDefault(field string, value reflect.Value) (scanner Scanner[Dest], err error) {
+	var (
+		ok  bool
+		key = fmt.Sprintf("scanDefault:%s:%v", field, value.Interface())
+	)
+
+	scanner, ok = s.get(key)
+	if ok {
+		return scanner, nil
+	}
+
+	defer func() {
+		if err == nil {
+			s.set(key, scanner)
+		}
+	}()
+
+	typ, acc, err := getDestAccessor[Dest](field)
+	if err != nil {
+		return nil, err
+	}
+
+	switch typ.Kind() {
+	case reflect.String:
+		if value.Kind() != reflect.String {
+			return nil, fmt.Errorf("invalid default value %s for ScanDefault: want string", value)
+		}
+
+		return func() (any, func(dest *Dest) error) {
+			var src sql.Null[string]
+
+			return &src, func(dest *Dest) error {
+				if src.Valid {
+					acc(dest).SetString(src.V)
+
+					return nil
+				}
+
+				acc(dest).SetString(value.String())
+
+				return nil
+			}
+		}, nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if !value.CanInt() {
+			return nil, fmt.Errorf("invalid default value %s for ScanDefault: want int", value)
+		}
+
+		return func() (any, func(dest *Dest) error) {
+			var src sql.Null[int64]
+
+			return &src, func(dest *Dest) error {
+				if src.Valid {
+					acc(dest).SetInt(src.V)
+
+					return nil
+				}
+
+				acc(dest).SetInt(value.Int())
+
+				return nil
+			}
+		}, nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if !value.CanUint() {
+			return nil, fmt.Errorf("invalid default value %s for ScanDefault: want uint", value)
+		}
+
+		return func() (any, func(dest *Dest) error) {
+			var src sql.Null[uint64]
+
+			return &src, func(dest *Dest) error {
+				if src.Valid {
+					acc(dest).SetUint(src.V)
+
+					return nil
+				}
+
+				acc(dest).SetUint(value.Uint())
+
+				return nil
+			}
+		}, nil
+	case reflect.Float32, reflect.Float64:
+		if !value.CanFloat() {
+			return nil, fmt.Errorf("invalid default value %s for ScanDefault: want float", value)
+		}
+
+		return func() (any, func(dest *Dest) error) {
+			var src sql.Null[float64]
+
+			return &src, func(dest *Dest) error {
+				if src.Valid {
+					acc(dest).SetFloat(src.V)
+
+					return nil
+				}
+
+				acc(dest).SetFloat(value.Float())
+
+				return nil
+			}
+		}, nil
+	case reflect.Bool:
+		if value.Kind() != reflect.Bool {
+			return nil, fmt.Errorf("invalid default value %s for ScanDefault: want bool", value)
+		}
+
+		return func() (any, func(dest *Dest) error) {
+			var src sql.Null[bool]
+
+			return &src, func(dest *Dest) error {
+				if src.Valid {
+					acc(dest).SetBool(src.V)
+
+					return nil
+				}
+
+				acc(dest).SetBool(value.Bool())
+
+				return nil
+			}
+		}, nil
+	}
+
+	return nil, fmt.Errorf("invalid type %s for ScanNull: want string|int|float|bool", typ)
+}
+
+func (s *scannerStore[Dest]) scanSplit(field string, sep string) (scanner Scanner[Dest], err error) {
+	var (
+		ok  bool
+		key = fmt.Sprintf("scanSplit:%s:%s", field, sep)
+	)
+
+	scanner, ok = s.get(key)
+	if ok {
+		return scanner, nil
+	}
+
+	defer func() {
+		if err == nil {
+			s.set(key, scanner)
+		}
+	}()
+
+	typ, acc, err := getDestAccessor[Dest](field)
+	if err != nil {
+		return nil, err
+	}
+
+	if typ.Kind() != reflect.Slice || typ.Elem().Kind() != reflect.String {
+		return nil, fmt.Errorf("invalid type %s for ScanSplit: want []string", typ)
+	}
+
+	return func() (any, func(dest *Dest) error) {
+		var src string
+
+		return &src, func(dest *Dest) error {
+			split := strings.Split(src, sep)
+			value := acc(dest)
+
+			value.Set(reflect.MakeSlice(typ, len(split), len(split)))
+
+			for i, v := range split {
+				value.Index(i).SetString(v)
+			}
+
+			return nil
+		}
+	}, nil
+}
+
+func (s *scannerStore[Dest]) scanBitmask(field string, values ...string) (scanner Scanner[Dest], err error) {
+	var (
+		ok  bool
+		key = fmt.Sprintf("scanBitmask:%s:%v", field, values)
+	)
+
+	scanner, ok = s.get(key)
+	if ok {
+		return scanner, nil
+	}
+
+	defer func() {
+		if err == nil {
+			s.set(key, scanner)
+		}
+	}()
+
+	typ, acc, err := getDestAccessor[Dest](field)
+	if err != nil {
+		return nil, err
+	}
+
+	if typ.Kind() != reflect.Slice || typ.Elem().Kind() != reflect.String {
+		return nil, fmt.Errorf("invalid type %s for ScanBitmask: want []string", typ)
+	}
+
+	return func() (any, func(dest *Dest) error) {
+		var src int
+
+		return &src, func(dest *Dest) error {
+			value := acc(dest)
+
+			collect := reflect.MakeSlice(typ, 0, 0)
+
+			for i, v := range values {
+				if src&(i+1) != 0 {
+					collect = reflect.Append(collect, reflect.ValueOf(v).Convert(typ.Elem()))
+				}
+			}
+
+			value.Set(collect)
+
+			return nil
+		}
+	}, nil
+}
+
+func (s *scannerStore[Dest]) scanEnum(field string, values ...string) (scanner Scanner[Dest], err error) {
+	var (
+		ok  bool
+		key = fmt.Sprintf("scanEnum:%s:%v", field, values)
+	)
+
+	scanner, ok = s.get(key)
+	if ok {
+		return scanner, nil
+	}
+
+	defer func() {
+		if err == nil {
+			s.set(key, scanner)
+		}
+	}()
+
+	typ, acc, err := getDestAccessor[Dest](field)
+	if err != nil {
+		return nil, err
+	}
+
+	if typ.Kind() != reflect.String {
+		return nil, fmt.Errorf("invalid type %s for ScanEnum: want string", typ)
+	}
+
+	return func() (any, func(dest *Dest) error) {
+		var src string
+
+		return &src, func(dest *Dest) error {
+			for _, v := range values {
+				if v == src {
+					acc(dest).SetString(v)
+
+					return nil
+				}
+			}
+
+			return fmt.Errorf("invalid value %s for ScanEnum: want %v", src, values)
+		}
+	}, nil
+}
+
+func (s *scannerStore[Dest]) scanBool(field string, trueValue, falseValue, nullValue string) (scanner Scanner[Dest], err error) {
+	var (
+		ok  bool
+		key = fmt.Sprintf("scanBool:%s:%v:%v:%v", field, trueValue, falseValue, nullValue)
+	)
+
+	scanner, ok = s.get(key)
+	if ok {
+		return scanner, nil
+	}
+
+	defer func() {
+		if err == nil {
+			s.set(key, scanner)
+		}
+	}()
+
+	typ, acc, err := getDestAccessor[Dest](field)
+	if err != nil {
+		return nil, err
+	}
+
+	if typ.Kind() != reflect.String {
+		return nil, fmt.Errorf("invalid type %s for ScanBool: want string", typ)
+	}
+
+	return func() (any, func(dest *Dest) error) {
+		var src sql.Null[bool]
+
+		return &src, func(dest *Dest) error {
+			if !src.Valid {
+				acc(dest).SetString(nullValue)
+
+				return nil
+			}
+
+			if src.V {
+				acc(dest).SetString(trueValue)
+
+				return nil
+			}
+
+			acc(dest).SetString(falseValue)
+
+			return nil
+		}
+	}, nil
+}
+
+func (s *scannerStore[Dest]) scanTime(field string, layout string, location string) (scanner Scanner[Dest], err error) {
+	var (
+		ok  bool
+		key = fmt.Sprintf("scanTime:%s:%s:%s", field, layout, location)
+	)
+
+	scanner, ok = s.get(key)
+	if ok {
+		return scanner, nil
+	}
+
+	defer func() {
+		if err == nil {
+			s.set(key, scanner)
+		}
+	}()
+
+	typ, acc, err := getDestAccessor[Dest](field)
+	if err != nil {
+		return nil, err
+	}
+
+	if typ != timeType {
+		return nil, fmt.Errorf("invalid type %s for ScanTime: want time.Time", typ)
+	}
+
+	loc, err := time.LoadLocation(location)
+	if err != nil {
+		return nil, err
+	}
+
+	switch layout {
+	case "Layout":
+		layout = time.Layout
+	case "ANSIC":
+		layout = time.ANSIC
+	case "UnixDate":
+		layout = time.UnixDate
+	case "RubyDate":
+		layout = time.RubyDate
+	case "RFC822":
+		layout = time.RFC822
+	case "RFC822Z":
+		layout = time.RFC822Z
+	case "RFC850":
+		layout = time.RFC850
+	case "RFC1123":
+		layout = time.RFC1123
+	case "RFC1123Z":
+		layout = time.RFC1123Z
+	case "RFC3339":
+		layout = time.RFC3339
+	case "RFC3339Nano":
+		layout = time.RFC3339Nano
+	case "Kitchen":
+		layout = time.Kitchen
+	case "Stamp":
+		layout = time.Stamp
+	case "StampMilli":
+		layout = time.StampMilli
+	case "StampMicro":
+		layout = time.StampMicro
+	case "StampNano":
+		layout = time.StampNano
+	case "DateTime":
+		layout = time.DateTime
+	case "DateOnly":
+		layout = time.DateOnly
+	case "TimeOnly":
+		layout = time.TimeOnly
+	}
+
+	return func() (any, func(dest *Dest) error) {
+		var src string
+
+		return &src, func(dest *Dest) error {
+			t, err := time.ParseInLocation(layout, src, loc)
+			if err != nil {
+				return err
+			}
+
+			acc(dest).Set(reflect.ValueOf(t))
+
+			return nil
+		}
+	}, nil
+}
+
+var hashPool = sync.Pool{
+	New: func() any {
+		return xxhash.New()
+	},
+}
+
+func getLocation() string {
+	_, file, line, _ := runtime.Caller(2)
+
+	return fmt.Sprintf("%s:%d", file, line)
+}
+
+var ident = "__sqlt__"
+
+type runner[Param any, Dest any] struct {
+	ctx       context.Context
+	tpl       *template.Template
+	sqlWriter *sqlWriter
+	args      []any
+	scanners  []Scanner[Dest]
+}
+
+func (r *runner[Param, Dest]) reset() {
+	r.ctx = context.Background()
+	r.sqlWriter.reset()
+	r.args = r.args[:0]
+	r.scanners = r.scanners[:0]
+}
+
+func (r *runner[Param, Dest]) expr(param Param) (Expression[Dest], error) {
+	if err := r.tpl.Execute(r.sqlWriter, param); err != nil {
+		return Expression[Dest]{}, err
+	}
+
+	return Expression[Dest]{
+		SQL:      r.sqlWriter.toString(),
+		Args:     slices.Clone(r.args),
+		Scanners: slices.Clone(r.scanners),
+	}, nil
+}
+
+type sqlWriter struct {
+	data []byte
+}
+
+func (s *sqlWriter) reset() {
+	s.data = s.data[:0]
+}
+
+// Write implements io.Wr	iter.
+func (s *sqlWriter) Write(data []byte) (int, error) {
+	for _, b := range data {
+		switch b {
+		case ' ', '\n', '\r', '\t':
+			if len(s.data) > 0 && s.data[len(s.data)-1] != ' ' {
+				s.data = append(s.data, ' ')
+			}
+		default:
+			s.data = append(s.data, b)
+		}
+	}
+
+	return len(data), nil
+}
+
+func (s *sqlWriter) toString() string {
+	if len(s.data) == 0 {
+		return ""
+	}
+
+	if s.data[len(s.data)-1] == ' ' {
+		s.data = s.data[:len(s.data)-1]
+	}
+
+	return string(s.data)
+}
+
+// idea is stolen from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
+func escapeNode[Dest any](t *template.Template, n parse.Node) error {
 	switch v := n.(type) {
 	case *parse.ActionNode:
-		return sb.escapeNode(t, s, v.Pipe)
+		return escapeNode[Dest](t, v.Pipe)
 	case *parse.IfNode:
 		return errors.Join(
-			sb.escapeNode(t, s, v.List),
-			sb.escapeNode(t, s, v.ElseList),
+			escapeNode[Dest](t, v.List),
+			escapeNode[Dest](t, v.ElseList),
 		)
 	case *parse.ListNode:
 		if v == nil {
@@ -909,7 +1605,7 @@ func (sb *statementBuilder[Param, Dest, Result]) escapeNode(t *template.Template
 		}
 
 		for _, n := range v.Nodes {
-			if err := sb.escapeNode(t, s, n); err != nil {
+			if err := escapeNode[Dest](t, n); err != nil {
 				return err
 			}
 		}
@@ -922,44 +1618,23 @@ func (sb *statementBuilder[Param, Dest, Result]) escapeNode(t *template.Template
 			return nil
 		}
 
-		if v.Cmds[0].Args[0].String() == "Scan" || v.Cmds[0].Args[0].String() == "ScanJSON" {
-			if len(v.Cmds[0].Args) != 3 {
-				return fmt.Errorf("function '%s' has an invalid number of args", v.Cmds[0].Args[0])
+		for _, cmd := range v.Cmds {
+			if !strings.HasPrefix(cmd.Args[0].String(), "Scan") {
+				continue
 			}
 
-			node, ok := v.Cmds[0].Args[1].(*parse.StringNode)
+			if len(cmd.Args) < 2 {
+				continue
+			}
+
+			node, ok := cmd.Args[1].(*parse.StringNode)
 			if !ok {
-				return fmt.Errorf("do not set field of function '%s' dynamically", v.Cmds[0].Args[0])
+				continue
 			}
 
-			_, err := sb.getAccessor(node.Text)
+			_, _, err := getDestAccessor[Dest](node.Text)
 			if err != nil {
 				return err
-			}
-		}
-
-		if v.Cmds[0].Args[0].String() == "ScanType" || v.Cmds[0].Args[0].String() == "ScanTypeJSON" {
-			if len(v.Cmds[0].Args) != 4 {
-				return fmt.Errorf("function '%s' has an invalid number of args", v.Cmds[0].Args[0])
-			}
-
-			node, ok := v.Cmds[0].Args[2].(*parse.StringNode)
-			if !ok {
-				return fmt.Errorf("do not set field of function '%s' dynamically", v.Cmds[0].Args[0])
-			}
-
-			acc, err := sb.getAccessor(node.Text)
-			if err != nil {
-				return err
-			}
-
-			typeNode, ok := v.Cmds[0].Args[1].(*parse.StringNode)
-			if !ok {
-				return fmt.Errorf("do not set type of function '%s' dynamically", v.Cmds[0].Args[0])
-			}
-
-			if !checkType(acc.typ, typeNode.Text) {
-				return fmt.Errorf("function '%s %s' expects type '%s' but got '%s'", v.Cmds[0].Args[0], node.Text, typeNode.Text, acc.typ.Name())
 			}
 		}
 
@@ -970,22 +1645,22 @@ func (sb *statementBuilder[Param, Dest, Result]) escapeNode(t *template.Template
 
 		v.Cmds = append(v.Cmds, &parse.CommandNode{
 			NodeType: parse.NodeCommand,
-			Args:     []parse.Node{parse.NewIdentifier(ident).SetTree(s).SetPos(cmd.Pos)},
+			Args:     []parse.Node{parse.NewIdentifier(ident).SetTree(t.Tree).SetPos(cmd.Pos)},
 		})
 	case *parse.RangeNode:
 		return errors.Join(
-			sb.escapeNode(t, s, v.List),
-			sb.escapeNode(t, s, v.ElseList),
+			escapeNode[Dest](t, v.List),
+			escapeNode[Dest](t, v.ElseList),
 		)
 	case *parse.WithNode:
 		return errors.Join(
-			sb.escapeNode(t, s, v.List),
-			sb.escapeNode(t, s, v.ElseList),
+			escapeNode[Dest](t, v.List),
+			escapeNode[Dest](t, v.ElseList),
 		)
 	case *parse.TemplateNode:
 		tpl := t.Lookup(v.Name)
 
-		return sb.escapeNode(tpl, tpl.Tree, tpl.Tree.Root)
+		return escapeNode[Dest](tpl, tpl.Tree.Root)
 	}
 
 	return nil
