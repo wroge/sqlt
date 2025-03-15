@@ -1071,14 +1071,14 @@ Enamorus-incarnate,905,Fairy,Flying,あいぞうポケモン,1.6,48.0,"Cute-char
 
 {{ define "query" }}
     SELECT 
-        p.number, 										{{ Scan "Number" }}	
-        p.name, 										{{ Scan "Name" }}
-        p.height, 										{{ Scan "Height" }}	
-        p.weight, 										{{ Scan "Weight" }}
-        p.generation, 									{{ Scan "Generation" }}
-        p.legendary, 									{{ Scan "Legendary" }}
-        IFNULL(pt.type_names, '') AS type_names, 		{{ ScanSplit "Types" "," }}
-        c.name AS classification, 						{{ Scan "Classification" }}
+        p.number, 					{{ Scan "Number" }}	
+        p.name, 					{{ Scan "Name" }}
+        p.height, 					{{ Scan "Height" }}	
+        p.weight, 					{{ Scan "Weight" }}
+        p.generation, 					{{ Scan "Generation" }}
+        p.legendary, 					{{ Scan "Legendary" }}
+        IFNULL(pt.type_names, '') AS type_names, 	{{ ScanSplit "Types" "," }}
+        c.name AS classification, 			{{ Scan "Classification" }}
         IFNULL(pa.ability_names, '') AS ability_names	{{ ScanSplit "Abilities" "," }}
     FROM pokemons p
     LEFT JOIN (
