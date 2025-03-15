@@ -1195,9 +1195,9 @@ var (
 		},
 	}
 
-	CreateSqlt = sqlt.Exec[any](config, sqlt.Lookup("create"))
+	create = sqlt.Exec[any](config, sqlt.Lookup("create"))
 
-	InsertSqlt = sqlt.Transaction(
+	insert = sqlt.Transaction(
 		nil,
 		sqlt.Exec[[][]string](config, sqlt.Lookup("insert_types")),
 		sqlt.Exec[[][]string](config, sqlt.Lookup("insert_classifications")),
@@ -1208,9 +1208,7 @@ var (
 		sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_abilities")),
 	)
 
-	QuerySqlt = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query"))
-
-	DeleteSqlt = sqlt.Exec[any](config, sqlt.Lookup("delete"))
+	query = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query"))
 )
 
 func main() {
@@ -1231,17 +1229,17 @@ func main() {
 		panic(err)
 	}
 
-	_, err = CreateSqlt.Exec(ctx, db, nil)
+	_, err = create.Exec(ctx, db, nil)
 	if err != nil {
 		panic(err)
 	}
 
-	_, err = InsertSqlt.Exec(ctx, db, records[1:])
+	_, err = insert.Exec(ctx, db, records[1:])
 	if err != nil {
 		panic(err)
 	}
 
-	pokemons, err := QuerySqlt.Exec(ctx, db, Query{
+	pokemons, err := query.Exec(ctx, db, Query{
 		TypeOneOf:  NewPointer([]string{"Dragon"}),
 		Generation: NewPointer(1),
 	})
