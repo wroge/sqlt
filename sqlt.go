@@ -860,8 +860,8 @@ var (
 )
 
 type scannerStore[Dest any] struct {
-	mu    sync.RWMutex
-	store map[string]Scanner[Dest]
+	mu        sync.RWMutex
+	store     map[string]Scanner[Dest]
 }
 
 func (s *scannerStore[Dest]) get(key string) (Scanner[Dest], bool) {
@@ -888,7 +888,7 @@ func scan[Dest any](field string) (scanner Scanner[Dest], err error) {
 
 	if pointerType.Implements(scannerType) {
 		return func() (any, func(dest *Dest) error) {
-			var src []byte
+			var src any
 
 			return &src, func(dest *Dest) error {
 				return acc(dest).Addr().Interface().(sql.Scanner).Scan(src)
@@ -899,62 +899,86 @@ func scan[Dest any](field string) (scanner Scanner[Dest], err error) {
 	switch typ.Kind() {
 	case reflect.String:
 		return func() (any, func(dest *Dest) error) {
-			var src string
+			var src sql.Null[string]
 
 			return &src, func(dest *Dest) error {
-				acc(dest).SetString(src)
+				if !src.Valid {
+					return nil
+				}
+
+				acc(dest).SetString(src.V)
 
 				return nil
 			}
 		}, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return func() (any, func(dest *Dest) error) {
-			var src int64
+			var src sql.Null[int64]
 
 			return &src, func(dest *Dest) error {
-				acc(dest).SetInt(src)
+				if !src.Valid {
+					return nil
+				}
+
+				acc(dest).SetInt(src.V)
 
 				return nil
 			}
 		}, nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return func() (any, func(dest *Dest) error) {
-			var src uint64
+			var src sql.Null[uint64]
 
 			return &src, func(dest *Dest) error {
-				acc(dest).SetUint(src)
+				if !src.Valid {
+					return nil
+				}
+
+				acc(dest).SetUint(src.V)
 
 				return nil
 			}
 		}, nil
 	case reflect.Float32, reflect.Float64:
 		return func() (any, func(dest *Dest) error) {
-			var src float64
+			var src sql.Null[float64]
 
 			return &src, func(dest *Dest) error {
-				acc(dest).SetFloat(src)
+				if !src.Valid {
+					return nil
+				}
+
+				acc(dest).SetFloat(src.V)
 
 				return nil
 			}
 		}, nil
 	case reflect.Bool:
 		return func() (any, func(dest *Dest) error) {
-			var src bool
+			var src sql.Null[bool]
 
 			return &src, func(dest *Dest) error {
-				acc(dest).SetBool(src)
+				if !src.Valid {
+					return nil
+				}
+
+				acc(dest).SetBool(src.V)
 
 				return nil
 			}
 		}, nil
 	}
 
-	if typ != timeType {
+	if typ == timeType {
 		return func() (any, func(dest *Dest) error) {
-			var src time.Time
+			var src sql.Null[time.Time]
 
 			return &src, func(dest *Dest) error {
-				acc(dest).Set(reflect.ValueOf(src).Convert(typ))
+				if !src.Valid {
+					return nil
+				}
+
+				acc(dest).Set(reflect.ValueOf(src.V).Convert(typ))
 
 				return nil
 			}
@@ -1010,12 +1034,16 @@ func (s *scannerStore[Dest]) scanJSON(field string) (scanner Scanner[Dest], err 
 
 	if typ == byteSliceType {
 		return func() (any, func(dest *Dest) error) {
-			var src []byte
+			var src sql.Null[[]byte]
 
 			return &src, func(dest *Dest) error {
+				if !src.Valid {
+					return nil
+				}
+
 				var raw json.RawMessage
 
-				if err := json.Unmarshal(src, &raw); err != nil {
+				if err := json.Unmarshal(src.V, &raw); err != nil {
 					return err
 				}
 
@@ -1027,10 +1055,14 @@ func (s *scannerStore[Dest]) scanJSON(field string) (scanner Scanner[Dest], err 
 	}
 
 	return func() (any, func(dest *Dest) error) {
-		var src []byte
+		var src sql.Null[[]byte]
 
 		return &src, func(dest *Dest) error {
-			return json.Unmarshal(src, acc(dest).Addr().Interface())
+			if !src.Valid {
+				return nil
+			}
+
+			return json.Unmarshal(src.V, acc(dest).Addr().Interface())
 		}
 	}, nil
 }
@@ -1063,10 +1095,14 @@ func (s *scannerStore[Dest]) scanBinary(field string) (scanner Scanner[Dest], er
 
 	if pointerType.Implements(binaryUnmarshalerType) {
 		return func() (any, func(dest *Dest) error) {
-			var src []byte
+			var src sql.Null[[]byte]
 
 			return &src, func(dest *Dest) error {
-				return acc(dest).Addr().Interface().(encoding.BinaryUnmarshaler).UnmarshalBinary(src)
+				if !src.Valid {
+					return nil
+				}
+
+				return acc(dest).Addr().Interface().(encoding.BinaryUnmarshaler).UnmarshalBinary(src.V)
 			}
 		}, nil
 	}
@@ -1102,10 +1138,14 @@ func (s *scannerStore[Dest]) scanText(field string) (scanner Scanner[Dest], err 
 
 	if pointerType.Implements(textUnmarshalerType) {
 		return func() (any, func(dest *Dest) error) {
-			var src []byte
+			var src sql.Null[[]byte]
 
 			return &src, func(dest *Dest) error {
-				return acc(dest).Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText(src)
+				if !src.Valid {
+					return nil
+				}
+
+				return acc(dest).Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText(src.V)
 			}
 		}, nil
 	}
@@ -1268,10 +1308,14 @@ func (s *scannerStore[Dest]) scanSplit(field string, sep string) (scanner Scanne
 	}
 
 	return func() (any, func(dest *Dest) error) {
-		var src string
+		var src sql.Null[string]
 
 		return &src, func(dest *Dest) error {
-			split := strings.Split(src, sep)
+			if !src.Valid {
+				return nil
+			}
+
+			split := strings.Split(src.V, sep)
 			value := acc(dest)
 
 			value.Set(reflect.MakeSlice(typ, len(split), len(split)))
@@ -1312,15 +1356,19 @@ func (s *scannerStore[Dest]) scanBitmask(field string, values ...string) (scanne
 	}
 
 	return func() (any, func(dest *Dest) error) {
-		var src int
+		var src sql.Null[int]
 
 		return &src, func(dest *Dest) error {
+			if !src.Valid {
+				return nil
+			}
+
 			value := acc(dest)
 
 			collect := reflect.MakeSlice(typ, 0, 0)
 
 			for i, v := range values {
-				if src&(i+1) != 0 {
+				if src.V&(i+1) != 0 {
 					collect = reflect.Append(collect, reflect.ValueOf(v).Convert(typ.Elem()))
 				}
 			}
@@ -1332,10 +1380,10 @@ func (s *scannerStore[Dest]) scanBitmask(field string, values ...string) (scanne
 	}, nil
 }
 
-func (s *scannerStore[Dest]) scanEnum(field string, values ...string) (scanner Scanner[Dest], err error) {
+func (s *scannerStore[Dest]) scanEnum(field string, def string, values ...string) (scanner Scanner[Dest], err error) {
 	var (
 		ok  bool
-		key = fmt.Sprintf("scanEnum:%s:%v", field, values)
+		key = fmt.Sprintf("scanEnum:%s:%s:%v", field, def, values)
 	)
 
 	scanner, ok = s.get(key)
@@ -1359,18 +1407,24 @@ func (s *scannerStore[Dest]) scanEnum(field string, values ...string) (scanner S
 	}
 
 	return func() (any, func(dest *Dest) error) {
-		var src string
+		var src sql.Null[string]
 
 		return &src, func(dest *Dest) error {
+			if !src.Valid || src.V == def || src.V == "" {
+				acc(dest).SetString(def)
+
+				return nil
+			}
+
 			for _, v := range values {
-				if v == src {
+				if v == src.V {
 					acc(dest).SetString(v)
 
 					return nil
 				}
 			}
 
-			return fmt.Errorf("invalid value %s for ScanEnum: want %v", src, values)
+			return fmt.Errorf("invalid value %s for ScanEnum: want %v", src.V, append(values, def))
 		}
 	}, nil
 }
@@ -1497,10 +1551,14 @@ func (s *scannerStore[Dest]) scanTime(field string, layout string, location stri
 	}
 
 	return func() (any, func(dest *Dest) error) {
-		var src string
+		var src sql.Null[string]
 
 		return &src, func(dest *Dest) error {
-			t, err := time.ParseInLocation(layout, src, loc)
+			if !src.Valid {
+				return nil
+			}
+
+			t, err := time.ParseInLocation(layout, src.V, loc)
 			if err != nil {
 				return err
 			}
