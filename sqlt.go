@@ -72,8 +72,8 @@ type Cache struct {
 }
 
 // Configure applies Config settings.
-func (c *Cache) Configure(config *Config) {
-	config.Cache = c
+func (c Cache) Configure(config *Config) {
+	config.Cache = &c
 }
 
 // NoCache disables caching.
@@ -258,16 +258,34 @@ type Expression[Dest any] struct {
 	SQL      string
 	Args     []any
 	Scanners []Scanner[Dest]
+	Store    *Store[Dest]
 }
 
-func (e Expression[Dest]) DestMapper() ([]any, func(dest *Dest) error, error) {
+func (e *Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) error, error) {
 	if len(e.Scanners) == 0 {
-		scan, err := scan[Dest]("")
+		columns, err := rows.ColumnTypes()
 		if err != nil {
 			return nil, nil, err
 		}
 
-		e.Scanners = []Scanner[Dest]{scan}
+		e.Scanners = make([]Scanner[Dest], len(columns))
+
+		for i, c := range columns {
+			nullable, correct := c.Nullable()
+			ignoreNull := nullable || !correct
+
+			e.Scanners[i], err = e.Store.Scan(c.Name(), ignoreNull)
+			if err != nil {
+				if len(columns) > 1 {
+					return nil, nil, err
+				}
+
+				e.Scanners[i], err = e.Store.Scan("", nullable || !correct)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
+		}
 	}
 
 	var (
@@ -292,19 +310,30 @@ func (e Expression[Dest]) DestMapper() ([]any, func(dest *Dest) error, error) {
 	}, nil
 }
 
-func (e Expression[Dest]) First(ctx context.Context, db DB) (first Dest, err error) {
+func (e *Expression[Dest]) First(ctx context.Context, db DB) (first Dest, err error) {
 	if len(e.SQL) == 0 {
 		return first, sql.ErrNoRows
 	}
 
-	row := db.QueryRowContext(ctx, e.SQL, e.Args...)
-
-	values, mapper, err := e.DestMapper()
+	rows, err := db.QueryContext(ctx, e.SQL, e.Args...)
 	if err != nil {
 		return first, err
 	}
 
-	if err = row.Scan(values...); err != nil {
+	defer func() {
+		err = errors.Join(err, rows.Close(), rows.Err())
+	}()
+
+	if !rows.Next() {
+		return first, sql.ErrNoRows
+	}
+
+	values, mapper, err := e.DestMapper(rows)
+	if err != nil {
+		return first, err
+	}
+
+	if err = rows.Scan(values...); err != nil {
 		return first, err
 	}
 
@@ -317,7 +346,7 @@ func (e Expression[Dest]) First(ctx context.Context, db DB) (first Dest, err err
 
 var ErrTooManyRows = errors.New("too many rows")
 
-func (e Expression[Dest]) One(ctx context.Context, db DB) (one Dest, err error) {
+func (e *Expression[Dest]) One(ctx context.Context, db DB) (one Dest, err error) {
 	if len(e.SQL) == 0 {
 		return one, sql.ErrNoRows
 	}
@@ -335,7 +364,7 @@ func (e Expression[Dest]) One(ctx context.Context, db DB) (one Dest, err error) 
 		return one, sql.ErrNoRows
 	}
 
-	values, mapper, err := e.DestMapper()
+	values, mapper, err := e.DestMapper(rows)
 	if err != nil {
 		return one, err
 	}
@@ -355,7 +384,7 @@ func (e Expression[Dest]) One(ctx context.Context, db DB) (one Dest, err error) 
 	return one, nil
 }
 
-func (e Expression[Dest]) All(ctx context.Context, db DB) (all []Dest, err error) {
+func (e *Expression[Dest]) All(ctx context.Context, db DB) (all []Dest, err error) {
 	if len(e.SQL) == 0 {
 		return nil, sql.ErrNoRows
 	}
@@ -369,7 +398,7 @@ func (e Expression[Dest]) All(ctx context.Context, db DB) (all []Dest, err error
 		err = errors.Join(err, rows.Close(), rows.Err())
 	}()
 
-	values, mapper, err := e.DestMapper()
+	values, mapper, err := e.DestMapper(rows)
 	if err != nil {
 		return nil, err
 	}
@@ -452,42 +481,42 @@ func (ts *TransactionStatement[Param]) Exec(ctx context.Context, db TxBeginner, 
 }
 
 func Exec[Param any](opts ...Option) *Statement[Param, any, sql.Result] {
-	return Stmt[Param](getLocation(), ExecMode, func(ctx context.Context, db DB, expr Expression[any]) (sql.Result, error) {
+	return Stmt[Param](getLocation(), ExecMode, func(ctx context.Context, db DB, expr *Expression[any]) (sql.Result, error) {
 		return db.ExecContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
 func QueryRow[Param any](opts ...Option) *Statement[Param, any, *sql.Row] {
-	return Stmt[Param](getLocation(), QueryRowMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Row, error) {
+	return Stmt[Param](getLocation(), QueryRowMode, func(ctx context.Context, db DB, expr *Expression[any]) (*sql.Row, error) {
 		return db.QueryRowContext(ctx, expr.SQL, expr.Args...), nil
 	}, opts...)
 }
 
 func Query[Param any](opts ...Option) *Statement[Param, any, *sql.Rows] {
-	return Stmt[Param](getLocation(), QueryMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Rows, error) {
+	return Stmt[Param](getLocation(), QueryMode, func(ctx context.Context, db DB, expr *Expression[any]) (*sql.Rows, error) {
 		return db.QueryContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
 func First[Param any, Dest any](opts ...Option) *Statement[Param, Dest, Dest] {
-	return Stmt[Param](getLocation(), FirstMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
+	return Stmt[Param](getLocation(), FirstMode, func(ctx context.Context, db DB, expr *Expression[Dest]) (Dest, error) {
 		return expr.First(ctx, db)
 	}, opts...)
 }
 
 func One[Param any, Dest any](opts ...Option) *Statement[Param, Dest, Dest] {
-	return Stmt[Param](getLocation(), OneMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
+	return Stmt[Param](getLocation(), OneMode, func(ctx context.Context, db DB, expr *Expression[Dest]) (Dest, error) {
 		return expr.One(ctx, db)
 	}, opts...)
 }
 
 func All[Param any, Dest any](opts ...Option) *Statement[Param, Dest, []Dest] {
-	return Stmt[Param](getLocation(), AllMode, func(ctx context.Context, db DB, expr Expression[Dest]) ([]Dest, error) {
+	return Stmt[Param](getLocation(), AllMode, func(ctx context.Context, db DB, expr *Expression[Dest]) ([]Dest, error) {
 		return expr.All(ctx, db)
 	}, opts...)
 }
 
-func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) *Statement[Param, Dest, Result] {
+func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func(ctx context.Context, db DB, expr *Expression[Dest]) (Result, error), opts ...Option) *Statement[Param, Dest, Result] {
 	if location == "" {
 		location = getLocation()
 	}
@@ -502,25 +531,23 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 	}
 
 	var (
-		scannerStore = &scannerStore[Dest]{
-			store: map[string]Scanner[Dest]{},
-		}
+		store = NewStore[Dest]()
 
 		t = template.New("").Funcs(template.FuncMap{
 			"Raw": func(sql string) Raw { return Raw(sql) },
 			"Context": func(key string) any {
 				return ContextKey(key)
 			},
-			"Scan":        scannerStore.scan,
-			"ScanJSON":    scannerStore.scanJSON,
-			"ScanBinary":  scannerStore.scanBinary,
-			"ScanText":    scannerStore.scanText,
-			"ScanDefault": scannerStore.scanDefault,
-			"ScanSplit":   scannerStore.scanSplit,
-			"ScanBitmask": scannerStore.scanBitmask,
-			"ScanEnum":    scannerStore.scanEnum,
-			"ScanBool":    scannerStore.scanBool,
-			"ScanTime":    scannerStore.scanTime,
+			"Scan":        store.Scan,
+			"ScanJSON":    store.ScanJSON,
+			"ScanBinary":  store.ScanBinary,
+			"ScanText":    store.ScanText,
+			"ScanDefault": store.ScanDefault,
+			"ScanSplit":   store.ScanSplit,
+			"ScanBitmask": store.ScanBitmask,
+			"ScanEnum":    store.ScanEnum,
+			"ScanBool":    store.ScanBool,
+			"ScanTime":    store.ScanTime,
 		})
 		err error
 	)
@@ -536,7 +563,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 		panic(fmt.Errorf("check template at %s: %w", location, err))
 	}
 
-	if err = escapeNode[Dest](t, t.Tree.Root); err != nil {
+	if err = store.escapeNode(t, t.Tree.Root); err != nil {
 		panic(fmt.Errorf("escape template at %s: %w", location, err))
 	}
 
@@ -558,6 +585,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 				ctx:       context.Background(),
 				tpl:       tc,
 				sqlWriter: &sqlWriter{},
+				store:     store,
 			}
 
 			r.tpl.Funcs(template.FuncMap{
@@ -593,10 +621,10 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 		},
 	}
 
-	var cache *expirable.LRU[uint64, Expression[Dest]]
+	var cache *expirable.LRU[uint64, *Expression[Dest]]
 
 	if config.Cache != nil {
-		cache = expirable.NewLRU[uint64, Expression[Dest]](config.Cache.Size, nil, config.Cache.Expiration)
+		cache = expirable.NewLRU[uint64, *Expression[Dest]](config.Cache.Size, nil, config.Cache.Expiration)
 	}
 
 	return &Statement[Param, Dest, Result]{
@@ -616,8 +644,8 @@ type Statement[Param any, Dest any, Result any] struct {
 	location string
 	mode     Mode
 	hasher   Hasher
-	cache    *expirable.LRU[uint64, Expression[Dest]]
-	exec     func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)
+	cache    *expirable.LRU[uint64, *Expression[Dest]]
+	exec     func(ctx context.Context, db DB, expr *Expression[Dest]) (Result, error)
 	pool     *sync.Pool
 	log      Log
 }
@@ -701,7 +729,7 @@ func scanRows(rows *sql.Rows) (result []any, err error) {
 // Exec executes and optionally scans rows into the result.
 func (s *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
 	var (
-		expr   Expression[Dest]
+		expr   *Expression[Dest]
 		hash   uint64
 		cached bool
 	)
@@ -712,7 +740,7 @@ func (s *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 		_, inTx := db.(*sql.Tx)
 
 		defer func() {
-			s.log(ctx, Info{
+			info := Info{
 				Template:    s.name,
 				Location:    s.location,
 				Duration:    time.Since(now),
@@ -722,7 +750,14 @@ func (s *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 				Err:         err,
 				Cached:      cached,
 				Transaction: inTx,
-			})
+			}
+
+			if expr != nil {
+				info.SQL = expr.SQL
+				info.Args = expr.Args
+			}
+
+			s.log(ctx, info)
 		}()
 	}
 
@@ -776,18 +811,40 @@ func (s *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	return result, nil
 }
 
-func getDestAccessor[Dest any](field string) (reflect.Type, func(*Dest) reflect.Value, error) {
-	t, acc, err := getTypeAccessor(reflect.TypeFor[Dest](), field)
-	if err != nil {
-		return t, nil, err
-	}
+var (
+	scannerType = reflect.TypeFor[sql.Scanner]()
+	timeType    = reflect.TypeFor[time.Time]()
+)
 
-	return t, func(d *Dest) reflect.Value {
-		return acc(reflect.ValueOf(d).Elem())
-	}, nil
+func NewStore[Dest any]() *Store[Dest] {
+	return &Store[Dest]{
+		store: map[string]Scanner[Dest]{},
+		typ:   reflect.TypeFor[Dest](),
+	}
 }
 
-func getTypeAccessor(t reflect.Type, field string) (reflect.Type, func(reflect.Value) reflect.Value, error) {
+type Store[Dest any] struct {
+	mu    sync.RWMutex
+	store map[string]Scanner[Dest]
+	typ   reflect.Type
+}
+
+func (s *Store[Dest]) getScanner(key string) (Scanner[Dest], bool) {
+	s.mu.RLock()
+	scanner, ok := s.store[key]
+	s.mu.RUnlock()
+
+	return scanner, ok
+}
+
+func (s *Store[Dest]) setScanner(key string, scanner Scanner[Dest]) {
+	s.mu.Lock()
+	s.store[key] = scanner
+	s.mu.Unlock()
+}
+
+func (s *Store[Dest]) getTypeAccessor(field string) (reflect.Type, func(*Dest) reflect.Value, error) {
+	t := s.typ
 	indices := []int{}
 
 	for t.Kind() == reflect.Pointer {
@@ -799,7 +856,12 @@ func getTypeAccessor(t reflect.Type, field string) (reflect.Type, func(reflect.V
 	}
 
 	if field == "" {
-		return t, getAccessor(indices), nil
+		acc := s.getAccessor(indices)
+
+		return t, func(d *Dest) reflect.Value {
+			return acc(reflect.ValueOf(d).Elem())
+		}, nil
+
 	}
 
 	parts := strings.Split(field, ".")
@@ -809,9 +871,24 @@ func getTypeAccessor(t reflect.Type, field string) (reflect.Type, func(reflect.V
 		default:
 			return t, nil, fmt.Errorf("invalid field access on type %s", t.Name())
 		case reflect.Struct:
+
+			part = strings.ReplaceAll(part, "_", "")
+
 			sf, found := t.FieldByName(part)
 			if !found {
-				return t, nil, fmt.Errorf("field %s not found in struct %s", field, t.Name())
+				for i := range t.NumField() {
+					sf = t.Field(i)
+
+					if strings.ToLower(sf.Name) == strings.ReplaceAll(part, "_", "") {
+						found = true
+
+						break
+					}
+				}
+
+				if !found {
+					return t, nil, fmt.Errorf("field %s not found in struct %s", field, t.Name())
+				}
 			}
 
 			if !sf.IsExported() {
@@ -831,10 +908,14 @@ func getTypeAccessor(t reflect.Type, field string) (reflect.Type, func(reflect.V
 		}
 	}
 
-	return t, getAccessor(indices), nil
+	acc := s.getAccessor(indices)
+
+	return t, func(d *Dest) reflect.Value {
+		return acc(reflect.ValueOf(d).Elem())
+	}, nil
 }
 
-func getAccessor(indices []int) func(reflect.Value) reflect.Value {
+func (s *Store[Dest]) getAccessor(indices []int) func(reflect.Value) reflect.Value {
 	return func(v reflect.Value) reflect.Value {
 		for _, idx := range indices {
 			if idx < 0 {
@@ -854,32 +935,25 @@ func getAccessor(indices []int) func(reflect.Value) reflect.Value {
 	}
 }
 
-var (
-	scannerType = reflect.TypeFor[sql.Scanner]()
-	timeType    = reflect.TypeFor[time.Time]()
-)
+func (s *Store[Dest]) Scan(field string, ignoreNull ...bool) (scanner Scanner[Dest], err error) {
+	var (
+		ignore = len(ignoreNull) > 0 && ignoreNull[0]
+		ok     bool
+		key    = "scan:" + field
+	)
 
-type scannerStore[Dest any] struct {
-	mu        sync.RWMutex
-	store     map[string]Scanner[Dest]
-}
+	scanner, ok = s.getScanner(key)
+	if ok {
+		return scanner, nil
+	}
 
-func (s *scannerStore[Dest]) get(key string) (Scanner[Dest], bool) {
-	s.mu.RLock()
-	scanner, ok := s.store[key]
-	s.mu.RUnlock()
+	defer func() {
+		if err == nil {
+			s.setScanner(key, scanner)
+		}
+	}()
 
-	return scanner, ok
-}
-
-func (s *scannerStore[Dest]) set(key string, scanner Scanner[Dest]) {
-	s.mu.Lock()
-	s.store[key] = scanner
-	s.mu.Unlock()
-}
-
-func scan[Dest any](field string) (scanner Scanner[Dest], err error) {
-	typ, acc, err := getDestAccessor[Dest](field)
+	typ, acc, err := s.getTypeAccessor(field)
 	if err != nil {
 		return nil, err
 	}
@@ -898,71 +972,131 @@ func scan[Dest any](field string) (scanner Scanner[Dest], err error) {
 
 	switch typ.Kind() {
 	case reflect.String:
-		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[string]
+		if ignore {
+			return func() (any, func(dest *Dest) error) {
+				var src sql.Null[string]
 
-			return &src, func(dest *Dest) error {
-				if !src.Valid {
+				return &src, func(dest *Dest) error {
+					if !src.Valid {
+						return nil
+					}
+
+					acc(dest).SetString(src.V)
+
 					return nil
 				}
+			}, nil
+		}
 
-				acc(dest).SetString(src.V)
+		return func() (any, func(dest *Dest) error) {
+			var src string
+
+			return &src, func(dest *Dest) error {
+				acc(dest).SetString(src)
 
 				return nil
 			}
 		}, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[int64]
+		if ignore {
+			return func() (any, func(dest *Dest) error) {
+				var src sql.Null[int64]
 
-			return &src, func(dest *Dest) error {
-				if !src.Valid {
+				return &src, func(dest *Dest) error {
+					if !src.Valid {
+						return nil
+					}
+
+					acc(dest).SetInt(src.V)
+
 					return nil
 				}
+			}, nil
+		}
 
-				acc(dest).SetInt(src.V)
+		return func() (any, func(dest *Dest) error) {
+			var src int64
+
+			return &src, func(dest *Dest) error {
+				acc(dest).SetInt(src)
 
 				return nil
 			}
 		}, nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[uint64]
+		if ignore {
+			return func() (any, func(dest *Dest) error) {
+				var src sql.Null[uint64]
 
-			return &src, func(dest *Dest) error {
-				if !src.Valid {
+				return &src, func(dest *Dest) error {
+					if !src.Valid {
+						return nil
+					}
+
+					acc(dest).SetUint(src.V)
+
 					return nil
 				}
+			}, nil
+		}
 
-				acc(dest).SetUint(src.V)
+		return func() (any, func(dest *Dest) error) {
+			var src uint64
+
+			return &src, func(dest *Dest) error {
+				acc(dest).SetUint(src)
 
 				return nil
 			}
 		}, nil
 	case reflect.Float32, reflect.Float64:
-		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[float64]
+		if ignore {
+			return func() (any, func(dest *Dest) error) {
+				var src sql.Null[float64]
 
-			return &src, func(dest *Dest) error {
-				if !src.Valid {
+				return &src, func(dest *Dest) error {
+					if !src.Valid {
+						return nil
+					}
+
+					acc(dest).SetFloat(src.V)
+
 					return nil
 				}
+			}, nil
+		}
 
-				acc(dest).SetFloat(src.V)
+		return func() (any, func(dest *Dest) error) {
+			var src float64
+
+			return &src, func(dest *Dest) error {
+				acc(dest).SetFloat(src)
 
 				return nil
 			}
 		}, nil
 	case reflect.Bool:
-		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[bool]
+		if ignore {
+			return func() (any, func(dest *Dest) error) {
+				var src sql.Null[bool]
 
-			return &src, func(dest *Dest) error {
-				if !src.Valid {
+				return &src, func(dest *Dest) error {
+					if !src.Valid {
+						return nil
+					}
+
+					acc(dest).SetBool(src.V)
+
 					return nil
 				}
+			}, nil
+		}
 
-				acc(dest).SetBool(src.V)
+		return func() (any, func(dest *Dest) error) {
+			var src bool
+
+			return &src, func(dest *Dest) error {
+				acc(dest).SetBool(src)
 
 				return nil
 			}
@@ -970,80 +1104,72 @@ func scan[Dest any](field string) (scanner Scanner[Dest], err error) {
 	}
 
 	if typ == timeType {
-		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[time.Time]
+		if ignore {
+			return func() (any, func(dest *Dest) error) {
+				var src sql.Null[time.Time]
 
-			return &src, func(dest *Dest) error {
-				if !src.Valid {
+				return &src, func(dest *Dest) error {
+					if !src.Valid {
+						return nil
+					}
+
+					acc(dest).Set(reflect.ValueOf(src.V))
+
 					return nil
 				}
+			}, nil
+		}
 
-				acc(dest).Set(reflect.ValueOf(src.V).Convert(typ))
+		return func() (any, func(dest *Dest) error) {
+			var src time.Time
+
+			return &src, func(dest *Dest) error {
+				acc(dest).Set(reflect.ValueOf(src))
 
 				return nil
 			}
 		}, nil
 	}
 
-	return nil, fmt.Errorf("invalid type %s for Scan: want string|int|float|bool|time.Time|sql.Scanner", typ)
-}
-
-func (s *scannerStore[Dest]) scan(field string) (scanner Scanner[Dest], err error) {
-	var (
-		ok  bool
-		key = "scan:" + field
-	)
-
-	scanner, ok = s.get(key)
-	if ok {
-		return scanner, nil
-	}
-
-	defer func() {
-		if err == nil {
-			s.set(key, scanner)
-		}
-	}()
-
-	return scan[Dest](field)
+	return s.ScanJSON(field)
 }
 
 var byteSliceType = reflect.TypeFor[[]byte]()
 
-func (s *scannerStore[Dest]) scanJSON(field string) (scanner Scanner[Dest], err error) {
+func (s *Store[Dest]) ScanJSON(field string) (scanner Scanner[Dest], err error) {
 	var (
 		ok  bool
 		key = "scanJSON:" + field
 	)
 
-	scanner, ok = s.get(key)
+	scanner, ok = s.getScanner(key)
 	if ok {
 		return scanner, nil
 	}
 
 	defer func() {
 		if err == nil {
-			s.set(key, scanner)
+			s.setScanner(key, scanner)
 		}
 	}()
 
-	typ, acc, err := getDestAccessor[Dest](field)
+	typ, acc, err := s.getTypeAccessor(field)
 	if err != nil {
 		return nil, err
 	}
 
 	if typ == byteSliceType {
 		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[[]byte]
+			var src []byte
 
 			return &src, func(dest *Dest) error {
-				if !src.Valid {
+				if len(src) == 0 {
 					return nil
 				}
 
 				var raw json.RawMessage
 
-				if err := json.Unmarshal(src.V, &raw); err != nil {
+				if err := json.Unmarshal(src, &raw); err != nil {
 					return err
 				}
 
@@ -1055,38 +1181,38 @@ func (s *scannerStore[Dest]) scanJSON(field string) (scanner Scanner[Dest], err 
 	}
 
 	return func() (any, func(dest *Dest) error) {
-		var src sql.Null[[]byte]
+		var src []byte
 
 		return &src, func(dest *Dest) error {
-			if !src.Valid {
+			if len(src) == 0 {
 				return nil
 			}
 
-			return json.Unmarshal(src.V, acc(dest).Addr().Interface())
+			return json.Unmarshal(src, acc(dest).Addr().Interface())
 		}
 	}, nil
 }
 
 var binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
 
-func (s *scannerStore[Dest]) scanBinary(field string) (scanner Scanner[Dest], err error) {
+func (s *Store[Dest]) ScanBinary(field string) (scanner Scanner[Dest], err error) {
 	var (
 		ok  bool
 		key = "scanBinary:" + field
 	)
 
-	scanner, ok = s.get(key)
+	scanner, ok = s.getScanner(key)
 	if ok {
 		return scanner, nil
 	}
 
 	defer func() {
 		if err == nil {
-			s.set(key, scanner)
+			s.setScanner(key, scanner)
 		}
 	}()
 
-	typ, acc, err := getDestAccessor[Dest](field)
+	typ, acc, err := s.getTypeAccessor(field)
 	if err != nil {
 		return nil, err
 	}
@@ -1095,14 +1221,14 @@ func (s *scannerStore[Dest]) scanBinary(field string) (scanner Scanner[Dest], er
 
 	if pointerType.Implements(binaryUnmarshalerType) {
 		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[[]byte]
+			var src []byte
 
 			return &src, func(dest *Dest) error {
-				if !src.Valid {
+				if len(src) == 0 {
 					return nil
 				}
 
-				return acc(dest).Addr().Interface().(encoding.BinaryUnmarshaler).UnmarshalBinary(src.V)
+				return acc(dest).Addr().Interface().(encoding.BinaryUnmarshaler).UnmarshalBinary(src)
 			}
 		}, nil
 	}
@@ -1112,24 +1238,24 @@ func (s *scannerStore[Dest]) scanBinary(field string) (scanner Scanner[Dest], er
 
 var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 
-func (s *scannerStore[Dest]) scanText(field string) (scanner Scanner[Dest], err error) {
+func (s *Store[Dest]) ScanText(field string) (scanner Scanner[Dest], err error) {
 	var (
 		ok  bool
 		key = "scanText:" + field
 	)
 
-	scanner, ok = s.get(key)
+	scanner, ok = s.getScanner(key)
 	if ok {
 		return scanner, nil
 	}
 
 	defer func() {
 		if err == nil {
-			s.set(key, scanner)
+			s.setScanner(key, scanner)
 		}
 	}()
 
-	typ, acc, err := getDestAccessor[Dest](field)
+	typ, acc, err := s.getTypeAccessor(field)
 	if err != nil {
 		return nil, err
 	}
@@ -1153,24 +1279,24 @@ func (s *scannerStore[Dest]) scanText(field string) (scanner Scanner[Dest], err 
 	return nil, fmt.Errorf("invalid type %s for ScanText: want encoding.TextUnmarshaler", typ)
 }
 
-func (s *scannerStore[Dest]) scanDefault(field string, value reflect.Value) (scanner Scanner[Dest], err error) {
+func (s *Store[Dest]) ScanDefault(field string, value reflect.Value) (scanner Scanner[Dest], err error) {
 	var (
 		ok  bool
 		key = fmt.Sprintf("scanDefault:%s:%v", field, value.Interface())
 	)
 
-	scanner, ok = s.get(key)
+	scanner, ok = s.getScanner(key)
 	if ok {
 		return scanner, nil
 	}
 
 	defer func() {
 		if err == nil {
-			s.set(key, scanner)
+			s.setScanner(key, scanner)
 		}
 	}()
 
-	typ, acc, err := getDestAccessor[Dest](field)
+	typ, acc, err := s.getTypeAccessor(field)
 	if err != nil {
 		return nil, err
 	}
@@ -1281,24 +1407,24 @@ func (s *scannerStore[Dest]) scanDefault(field string, value reflect.Value) (sca
 	return nil, fmt.Errorf("invalid type %s for ScanNull: want string|int|float|bool", typ)
 }
 
-func (s *scannerStore[Dest]) scanSplit(field string, sep string) (scanner Scanner[Dest], err error) {
+func (s *Store[Dest]) ScanSplit(field string, sep string) (scanner Scanner[Dest], err error) {
 	var (
 		ok  bool
 		key = fmt.Sprintf("scanSplit:%s:%s", field, sep)
 	)
 
-	scanner, ok = s.get(key)
+	scanner, ok = s.getScanner(key)
 	if ok {
 		return scanner, nil
 	}
 
 	defer func() {
 		if err == nil {
-			s.set(key, scanner)
+			s.setScanner(key, scanner)
 		}
 	}()
 
-	typ, acc, err := getDestAccessor[Dest](field)
+	typ, acc, err := s.getTypeAccessor(field)
 	if err != nil {
 		return nil, err
 	}
@@ -1311,11 +1437,14 @@ func (s *scannerStore[Dest]) scanSplit(field string, sep string) (scanner Scanne
 		var src sql.Null[string]
 
 		return &src, func(dest *Dest) error {
-			if !src.Valid {
+			if !src.Valid || src.V == "" {
 				return nil
 			}
 
-			split := strings.Split(src.V, sep)
+			split := slices.DeleteFunc(strings.Split(src.V, sep), func(s string) bool {
+				return s == ""
+			})
+
 			value := acc(dest)
 
 			value.Set(reflect.MakeSlice(typ, len(split), len(split)))
@@ -1329,24 +1458,24 @@ func (s *scannerStore[Dest]) scanSplit(field string, sep string) (scanner Scanne
 	}, nil
 }
 
-func (s *scannerStore[Dest]) scanBitmask(field string, values ...string) (scanner Scanner[Dest], err error) {
+func (s *Store[Dest]) ScanBitmask(field string, values ...string) (scanner Scanner[Dest], err error) {
 	var (
 		ok  bool
 		key = fmt.Sprintf("scanBitmask:%s:%v", field, values)
 	)
 
-	scanner, ok = s.get(key)
+	scanner, ok = s.getScanner(key)
 	if ok {
 		return scanner, nil
 	}
 
 	defer func() {
 		if err == nil {
-			s.set(key, scanner)
+			s.setScanner(key, scanner)
 		}
 	}()
 
-	typ, acc, err := getDestAccessor[Dest](field)
+	typ, acc, err := s.getTypeAccessor(field)
 	if err != nil {
 		return nil, err
 	}
@@ -1380,24 +1509,24 @@ func (s *scannerStore[Dest]) scanBitmask(field string, values ...string) (scanne
 	}, nil
 }
 
-func (s *scannerStore[Dest]) scanEnum(field string, def string, values ...string) (scanner Scanner[Dest], err error) {
+func (s *Store[Dest]) ScanEnum(field string, def string, values ...string) (scanner Scanner[Dest], err error) {
 	var (
 		ok  bool
 		key = fmt.Sprintf("scanEnum:%s:%s:%v", field, def, values)
 	)
 
-	scanner, ok = s.get(key)
+	scanner, ok = s.getScanner(key)
 	if ok {
 		return scanner, nil
 	}
 
 	defer func() {
 		if err == nil {
-			s.set(key, scanner)
+			s.setScanner(key, scanner)
 		}
 	}()
 
-	typ, acc, err := getDestAccessor[Dest](field)
+	typ, acc, err := s.getTypeAccessor(field)
 	if err != nil {
 		return nil, err
 	}
@@ -1429,24 +1558,24 @@ func (s *scannerStore[Dest]) scanEnum(field string, def string, values ...string
 	}, nil
 }
 
-func (s *scannerStore[Dest]) scanBool(field string, trueValue, falseValue, nullValue string) (scanner Scanner[Dest], err error) {
+func (s *Store[Dest]) ScanBool(field string, trueValue, falseValue, nullValue string) (scanner Scanner[Dest], err error) {
 	var (
 		ok  bool
 		key = fmt.Sprintf("scanBool:%s:%v:%v:%v", field, trueValue, falseValue, nullValue)
 	)
 
-	scanner, ok = s.get(key)
+	scanner, ok = s.getScanner(key)
 	if ok {
 		return scanner, nil
 	}
 
 	defer func() {
 		if err == nil {
-			s.set(key, scanner)
+			s.setScanner(key, scanner)
 		}
 	}()
 
-	typ, acc, err := getDestAccessor[Dest](field)
+	typ, acc, err := s.getTypeAccessor(field)
 	if err != nil {
 		return nil, err
 	}
@@ -1478,24 +1607,24 @@ func (s *scannerStore[Dest]) scanBool(field string, trueValue, falseValue, nullV
 	}, nil
 }
 
-func (s *scannerStore[Dest]) scanTime(field string, layout string, location string) (scanner Scanner[Dest], err error) {
+func (s *Store[Dest]) ScanTime(field string, layout string, location string) (scanner Scanner[Dest], err error) {
 	var (
 		ok  bool
 		key = fmt.Sprintf("scanTime:%s:%s:%s", field, layout, location)
 	)
 
-	scanner, ok = s.get(key)
+	scanner, ok = s.getScanner(key)
 	if ok {
 		return scanner, nil
 	}
 
 	defer func() {
 		if err == nil {
-			s.set(key, scanner)
+			s.setScanner(key, scanner)
 		}
 	}()
 
-	typ, acc, err := getDestAccessor[Dest](field)
+	typ, acc, err := s.getTypeAccessor(field)
 	if err != nil {
 		return nil, err
 	}
@@ -1570,6 +1699,83 @@ func (s *scannerStore[Dest]) scanTime(field string, layout string, location stri
 	}, nil
 }
 
+// idea is stolen from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
+func (s *Store[Dest]) escapeNode(t *template.Template, n parse.Node) error {
+	switch v := n.(type) {
+	case *parse.ActionNode:
+		return s.escapeNode(t, v.Pipe)
+	case *parse.IfNode:
+		return errors.Join(
+			s.escapeNode(t, v.List),
+			s.escapeNode(t, v.ElseList),
+		)
+	case *parse.ListNode:
+		if v == nil {
+			return nil
+		}
+
+		for _, n := range v.Nodes {
+			if err := s.escapeNode(t, n); err != nil {
+				return err
+			}
+		}
+	case *parse.PipeNode:
+		if len(v.Decl) > 0 {
+			return nil
+		}
+
+		if len(v.Cmds) < 1 {
+			return nil
+		}
+
+		for _, cmd := range v.Cmds {
+			if !strings.HasPrefix(cmd.Args[0].String(), "Scan") {
+				continue
+			}
+
+			if len(cmd.Args) < 2 {
+				continue
+			}
+
+			node, ok := cmd.Args[1].(*parse.StringNode)
+			if !ok {
+				continue
+			}
+
+			_, _, err := s.getTypeAccessor(node.Text)
+			if err != nil {
+				return err
+			}
+		}
+
+		cmd := v.Cmds[len(v.Cmds)-1]
+		if len(cmd.Args) == 1 && cmd.Args[0].Type() == parse.NodeIdentifier && cmd.Args[0].(*parse.IdentifierNode).Ident == ident {
+			return nil
+		}
+
+		v.Cmds = append(v.Cmds, &parse.CommandNode{
+			NodeType: parse.NodeCommand,
+			Args:     []parse.Node{parse.NewIdentifier(ident).SetTree(t.Tree).SetPos(cmd.Pos)},
+		})
+	case *parse.RangeNode:
+		return errors.Join(
+			s.escapeNode(t, v.List),
+			s.escapeNode(t, v.ElseList),
+		)
+	case *parse.WithNode:
+		return errors.Join(
+			s.escapeNode(t, v.List),
+			s.escapeNode(t, v.ElseList),
+		)
+	case *parse.TemplateNode:
+		tpl := t.Lookup(v.Name)
+
+		return s.escapeNode(tpl, tpl.Tree.Root)
+	}
+
+	return nil
+}
+
 var hashPool = sync.Pool{
 	New: func() any {
 		return xxhash.New()
@@ -1590,6 +1796,7 @@ type runner[Param any, Dest any] struct {
 	sqlWriter *sqlWriter
 	args      []any
 	scanners  []Scanner[Dest]
+	store     *Store[Dest]
 }
 
 func (r *runner[Param, Dest]) reset() {
@@ -1599,15 +1806,16 @@ func (r *runner[Param, Dest]) reset() {
 	r.scanners = r.scanners[:0]
 }
 
-func (r *runner[Param, Dest]) expr(param Param) (Expression[Dest], error) {
+func (r *runner[Param, Dest]) expr(param Param) (*Expression[Dest], error) {
 	if err := r.tpl.Execute(r.sqlWriter, param); err != nil {
-		return Expression[Dest]{}, err
+		return nil, err
 	}
 
-	return Expression[Dest]{
+	return &Expression[Dest]{
 		SQL:      r.sqlWriter.toString(),
 		Args:     slices.Clone(r.args),
 		Scanners: slices.Clone(r.scanners),
+		Store:    r.store,
 	}, nil
 }
 
@@ -1645,81 +1853,4 @@ func (s *sqlWriter) toString() string {
 	}
 
 	return string(s.data)
-}
-
-// idea is stolen from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
-func escapeNode[Dest any](t *template.Template, n parse.Node) error {
-	switch v := n.(type) {
-	case *parse.ActionNode:
-		return escapeNode[Dest](t, v.Pipe)
-	case *parse.IfNode:
-		return errors.Join(
-			escapeNode[Dest](t, v.List),
-			escapeNode[Dest](t, v.ElseList),
-		)
-	case *parse.ListNode:
-		if v == nil {
-			return nil
-		}
-
-		for _, n := range v.Nodes {
-			if err := escapeNode[Dest](t, n); err != nil {
-				return err
-			}
-		}
-	case *parse.PipeNode:
-		if len(v.Decl) > 0 {
-			return nil
-		}
-
-		if len(v.Cmds) < 1 {
-			return nil
-		}
-
-		for _, cmd := range v.Cmds {
-			if !strings.HasPrefix(cmd.Args[0].String(), "Scan") {
-				continue
-			}
-
-			if len(cmd.Args) < 2 {
-				continue
-			}
-
-			node, ok := cmd.Args[1].(*parse.StringNode)
-			if !ok {
-				continue
-			}
-
-			_, _, err := getDestAccessor[Dest](node.Text)
-			if err != nil {
-				return err
-			}
-		}
-
-		cmd := v.Cmds[len(v.Cmds)-1]
-		if len(cmd.Args) == 1 && cmd.Args[0].Type() == parse.NodeIdentifier && cmd.Args[0].(*parse.IdentifierNode).Ident == ident {
-			return nil
-		}
-
-		v.Cmds = append(v.Cmds, &parse.CommandNode{
-			NodeType: parse.NodeCommand,
-			Args:     []parse.Node{parse.NewIdentifier(ident).SetTree(t.Tree).SetPos(cmd.Pos)},
-		})
-	case *parse.RangeNode:
-		return errors.Join(
-			escapeNode[Dest](t, v.List),
-			escapeNode[Dest](t, v.ElseList),
-		)
-	case *parse.WithNode:
-		return errors.Join(
-			escapeNode[Dest](t, v.List),
-			escapeNode[Dest](t, v.ElseList),
-		)
-	case *parse.TemplateNode:
-		tpl := t.Lookup(v.Name)
-
-		return escapeNode[Dest](tpl, tpl.Tree.Root)
-	}
-
-	return nil
 }
