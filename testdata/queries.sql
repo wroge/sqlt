@@ -140,7 +140,7 @@
         p.number, 										{{ ScanInt64 "Number" }}	
         p.name, 										{{ ScanString "Name" }}
         p.height, 										{{ ScanFloat64 "Height" }}	
-        p.weight, 										{{ ScanFloat64 "Weight" }}
+        p.weight, 										{{ Scan "Weight" }}
         p.generation, 									{{ ScanUint64 "Generation" }}
         p.legendary, 									{{ ScanBool "Legendary" }}
         IFNULL(pt.type_names, '') AS type_names, 		{{ ScanStringSlice "Types" "," }}
@@ -155,6 +155,74 @@
     ) pt ON p.number = pt.pokemon_number
     LEFT JOIN (
         SELECT pokemon_number, GROUP_CONCAT(abilities.name, ',') AS ability_names
+        FROM pokemon_abilities 
+        JOIN abilities ON abilities.id = pokemon_abilities.ability_id
+        GROUP BY pokemon_number
+    ) pa ON p.number = pa.pokemon_number
+    LEFT JOIN pokemon_classifications pc ON p.number = pc.pokemon_number
+    LEFT JOIN classifications c ON c.id = pc.classification_id
+    WHERE 1=1
+    {{ if .HeightRange }}
+        AND p.height >= {{ index .HeightRange 0 }} AND p.height <= {{ index .HeightRange 1 }}
+    {{ end }}
+    {{ if .WeightRange }}
+        AND p.weight >= {{ index .WeightRange 0 }} AND p.weight <= {{ index .WeightRange 1 }}
+    {{ end }}
+    {{ if .Generation }}
+        AND p.generation = {{ .Generation }}
+    {{ end }}
+    {{ if .TypeOneOf }}
+        AND p.number IN (
+            SELECT pokemon_number 
+            FROM pokemon_types 
+            JOIN types ON types.id = pokemon_types.type_id 
+            WHERE types.name IN (
+                {{ range $i, $t := .TypeOneOf }}
+                    {{ if $i }}, {{ end }}
+                    {{ $t }}
+                {{ end }}
+            )
+        )
+    {{ end }}
+    {{ if .Classification }}
+        AND c.name = {{ .Classification }}
+    {{ end }}
+    {{ if .AbilityOneOf }}
+        AND p.number IN (
+            SELECT pokemon_number 
+            FROM pokemon_abilities 
+            JOIN abilities ON abilities.id = pokemon_abilities.ability_id 
+            WHERE abilities.name IN (
+                {{ range $i, $a := .AbilityOneOf }}
+                    {{ if $i }}, {{ end }}
+                    {{ $a }}
+                {{ end }}
+            )
+        )
+    {{ end }}
+    ORDER BY p.number;
+{{ end }}
+
+{{ define "query_auto" }}
+    SELECT 
+        p.number,
+        p.name,
+        p.height,
+        p.weight,
+        p.generation,
+        p.legendary,
+        pt.type_names AS types,
+        c.name AS classification,
+        pa.ability_names AS abilities
+    FROM pokemons p
+    LEFT JOIN (
+        SELECT pokemon_number, JSON_GROUP_ARRAY(types.name) AS type_names
+        FROM pokemon_types 
+        JOIN types ON types.id = pokemon_types.type_id
+        GROUP BY pokemon_number
+    ) pt ON p.number = pt.pokemon_number
+    LEFT JOIN (
+        SELECT pokemon_number, JSON_GROUP_ARRAY(abilities.name) AS ability_names
         FROM pokemon_abilities 
         JOIN abilities ON abilities.id = pokemon_abilities.ability_id
         GROUP BY pokemon_number

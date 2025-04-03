@@ -255,13 +255,12 @@ const (
 )
 
 type Expression[Dest any] struct {
-	SQL        string
-	Args       []any
-	Scanners   []Scanner[Dest]
-	Destinator *Destinator[Dest]
+	SQL      string
+	Args     []any
+	Scanners []Scanner[Dest]
 }
 
-func (e *Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) error, error) {
+func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) error, error) {
 	if len(e.Scanners) == 0 {
 		columns, err := rows.ColumnTypes()
 		if err != nil {
@@ -271,18 +270,23 @@ func (e *Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) e
 		e.Scanners = make([]Scanner[Dest], len(columns))
 
 		for i, c := range columns {
-			nullable, _ := c.Nullable()
-
-			e.Scanners[i], err = e.Destinator.ScanColumn(c.Name(), nullable)
+			a, err := NewAccessor[Dest](c.Name())
 			if err != nil {
 				if len(columns) != 1 {
 					return nil, nil, err
 				}
 
-				e.Scanners[i], err = e.Destinator.ScanColumn("", nullable)
+				a, err = NewAccessor[Dest]("")
 				if err != nil {
 					return nil, nil, err
 				}
+			}
+
+			nullable, _ := c.Nullable()
+
+			e.Scanners[i], err = a.ScanColumn(nullable)
+			if err != nil {
+				return nil, nil, err
 			}
 		}
 	}
@@ -309,7 +313,7 @@ func (e *Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) e
 	}, nil
 }
 
-func (e *Expression[Dest]) First(ctx context.Context, db DB) (first Dest, err error) {
+func (e Expression[Dest]) First(ctx context.Context, db DB) (first Dest, err error) {
 	if len(e.SQL) == 0 {
 		return first, sql.ErrNoRows
 	}
@@ -345,7 +349,7 @@ func (e *Expression[Dest]) First(ctx context.Context, db DB) (first Dest, err er
 
 var ErrTooManyRows = errors.New("too many rows")
 
-func (e *Expression[Dest]) One(ctx context.Context, db DB) (one Dest, err error) {
+func (e Expression[Dest]) One(ctx context.Context, db DB) (one Dest, err error) {
 	if len(e.SQL) == 0 {
 		return one, sql.ErrNoRows
 	}
@@ -383,7 +387,7 @@ func (e *Expression[Dest]) One(ctx context.Context, db DB) (one Dest, err error)
 	return one, nil
 }
 
-func (e *Expression[Dest]) All(ctx context.Context, db DB) (all []Dest, err error) {
+func (e Expression[Dest]) All(ctx context.Context, db DB) (all []Dest, err error) {
 	if len(e.SQL) == 0 {
 		return nil, sql.ErrNoRows
 	}
@@ -480,42 +484,42 @@ func (ts *TransactionStatement[Param]) Exec(ctx context.Context, db TxBeginner, 
 }
 
 func Exec[Param any](opts ...Option) *Statement[Param, any, sql.Result] {
-	return Stmt[Param](getLocation(), ExecMode, func(ctx context.Context, db DB, expr *Expression[any]) (sql.Result, error) {
+	return Stmt[Param](getLocation(), ExecMode, func(ctx context.Context, db DB, expr Expression[any]) (sql.Result, error) {
 		return db.ExecContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
 func QueryRow[Param any](opts ...Option) *Statement[Param, any, *sql.Row] {
-	return Stmt[Param](getLocation(), QueryRowMode, func(ctx context.Context, db DB, expr *Expression[any]) (*sql.Row, error) {
+	return Stmt[Param](getLocation(), QueryRowMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Row, error) {
 		return db.QueryRowContext(ctx, expr.SQL, expr.Args...), nil
 	}, opts...)
 }
 
 func Query[Param any](opts ...Option) *Statement[Param, any, *sql.Rows] {
-	return Stmt[Param](getLocation(), QueryMode, func(ctx context.Context, db DB, expr *Expression[any]) (*sql.Rows, error) {
+	return Stmt[Param](getLocation(), QueryMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Rows, error) {
 		return db.QueryContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
 func First[Param any, Dest any](opts ...Option) *Statement[Param, Dest, Dest] {
-	return Stmt[Param](getLocation(), FirstMode, func(ctx context.Context, db DB, expr *Expression[Dest]) (Dest, error) {
+	return Stmt[Param](getLocation(), FirstMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
 		return expr.First(ctx, db)
 	}, opts...)
 }
 
 func One[Param any, Dest any](opts ...Option) *Statement[Param, Dest, Dest] {
-	return Stmt[Param](getLocation(), OneMode, func(ctx context.Context, db DB, expr *Expression[Dest]) (Dest, error) {
+	return Stmt[Param](getLocation(), OneMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
 		return expr.One(ctx, db)
 	}, opts...)
 }
 
 func All[Param any, Dest any](opts ...Option) *Statement[Param, Dest, []Dest] {
-	return Stmt[Param](getLocation(), AllMode, func(ctx context.Context, db DB, expr *Expression[Dest]) ([]Dest, error) {
+	return Stmt[Param](getLocation(), AllMode, func(ctx context.Context, db DB, expr Expression[Dest]) ([]Dest, error) {
 		return expr.All(ctx, db)
 	}, opts...)
 }
 
-func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func(ctx context.Context, db DB, expr *Expression[Dest]) (Result, error), opts ...Option) *Statement[Param, Dest, Result] {
+func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) *Statement[Param, Dest, Result] {
 	if location == "" {
 		location = getLocation()
 	}
@@ -530,32 +534,32 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 	}
 
 	var (
-		dest = NewDestinator[Dest]()
+		d = NewDestinator[Dest]()
 
 		t = template.New("").Funcs(template.FuncMap{
 			"Raw": func(sql string) Raw { return Raw(sql) },
 			"Context": func(key string) any {
 				return ContextKey(key)
 			},
-			"Scan":               dest.Scan,
-			"ScanString":         dest.ScanString,
-			"ScanNullString":     dest.ScanNullString,
-			"ScanInt64":          dest.ScanInt64,
-			"ScanNullInt64":      dest.ScanNullInt64,
-			"ScanUint64":         dest.ScanUint64,
-			"ScanNullUint64":     dest.ScanNullUint64,
-			"ScanFloat64":        dest.ScanFloat64,
-			"ScanNullFloat64":    dest.ScanNullFloat64,
-			"ScanBool":           dest.ScanBool,
-			"ScanNullBool":       dest.ScanNullBool,
-			"ScanTime":           dest.ScanTime,
-			"ScanNullTime":       dest.ScanNullTime,
-			"ScanStringSlice":    dest.ScanStringSlice,
-			"ScanStringTime":     dest.ScanStringTime,
-			"ScanNullStringTime": dest.ScanNullStringTime,
-			"ScanBinary":         dest.ScanBinary,
-			"ScanText":           dest.ScanText,
-			"ScanJSON":           dest.ScanJSON,
+			"Scan":               d.Scan,
+			"ScanString":         d.ScanString,
+			"ScanNullString":     d.ScanNullString,
+			"ScanInt64":          d.ScanInt64,
+			"ScanNullInt64":      d.ScanNullInt64,
+			"ScanUint64":         d.ScanUint64,
+			"ScanNullUint64":     d.ScanNullUint64,
+			"ScanFloat64":        d.ScanFloat64,
+			"ScanNullFloat64":    d.ScanNullFloat64,
+			"ScanBool":           d.ScanBool,
+			"ScanNullBool":       d.ScanNullBool,
+			"ScanTime":           d.ScanTime,
+			"ScanNullTime":       d.ScanNullTime,
+			"ScanStringSlice":    d.ScanStringSlice,
+			"ScanStringTime":     d.ScanStringTime,
+			"ScanNullStringTime": d.ScanNullStringTime,
+			"ScanBinary":         d.ScanBinary,
+			"ScanText":           d.ScanText,
+			"ScanJSON":           d.ScanJSON,
 		})
 		err error
 	)
@@ -590,10 +594,9 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 			tc, _ := t.Clone()
 
 			r := &runner[Param, Dest]{
-				ctx:        context.Background(),
-				tpl:        tc,
-				sqlWriter:  &sqlWriter{},
-				destinator: dest,
+				ctx:       context.Background(),
+				tpl:       tc,
+				sqlWriter: &sqlWriter{},
 			}
 
 			r.tpl.Funcs(template.FuncMap{
@@ -629,10 +632,10 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 		},
 	}
 
-	var cache *expirable.LRU[uint64, *Expression[Dest]]
+	var cache *expirable.LRU[uint64, Expression[Dest]]
 
 	if config.Cache != nil {
-		cache = expirable.NewLRU[uint64, *Expression[Dest]](config.Cache.Size, nil, config.Cache.Expiration)
+		cache = expirable.NewLRU[uint64, Expression[Dest]](config.Cache.Size, nil, config.Cache.Expiration)
 	}
 
 	return &Statement[Param, Dest, Result]{
@@ -652,8 +655,8 @@ type Statement[Param any, Dest any, Result any] struct {
 	location string
 	mode     Mode
 	hasher   Hasher
-	cache    *expirable.LRU[uint64, *Expression[Dest]]
-	exec     func(ctx context.Context, db DB, expr *Expression[Dest]) (Result, error)
+	cache    *expirable.LRU[uint64, Expression[Dest]]
+	exec     func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)
 	pool     *sync.Pool
 	log      Log
 }
@@ -668,12 +671,23 @@ func (d *Statement[Param, Dest, Result]) ExecContext(ctx context.Context, db DB,
 	case context.Context:
 		return r, nil
 	case *sql.Rows:
-		data, err := scanRows(r)
-		if err != nil {
-			return nil, err
+		defer func() {
+			err = errors.Join(err, r.Close())
+		}()
+
+		var result []any
+
+		for r.Next() {
+			var data any
+
+			if err = r.Scan(&data); err != nil {
+				return nil, err
+			}
+
+			result = append(result, data)
 		}
 
-		return context.WithValue(ctx, ContextKey(d.name), data), nil
+		return context.WithValue(ctx, ContextKey(d.name), result), nil
 	case *sql.Row:
 		var data any
 
@@ -687,57 +701,9 @@ func (d *Statement[Param, Dest, Result]) ExecContext(ctx context.Context, db DB,
 	return context.WithValue(ctx, ContextKey(d.name), res), nil
 }
 
-func scanRows(rows *sql.Rows) (result []any, err error) {
-	defer func() {
-		err = errors.Join(err, rows.Close())
-	}()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-
-	if len(cols) == 1 {
-		var data any
-
-		for rows.Next() {
-			if err = rows.Scan(&data); err != nil {
-				return nil, err
-			}
-
-			result = append(result, data)
-		}
-
-		return result, nil
-	}
-
-	for rows.Next() {
-		items := make([]any, len(cols))
-		for i := range items {
-			items[i] = new(any)
-		}
-
-		if err := rows.Scan(items...); err != nil {
-			return nil, err
-		}
-
-		row := make(map[string]any, len(cols))
-
-		for i, c := range cols {
-			vv := items[i].(*any)
-			row[c] = *vv
-		}
-
-		result = append(result, row)
-	}
-
-	return result, nil
-}
-
-// Exec executes and optionally scans rows into the result.
 func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
 	var (
-		expr   *Expression[Dest]
+		expr   Expression[Dest]
 		hash   uint64
 		cached bool
 	)
@@ -748,7 +714,7 @@ func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 		_, inTx := db.(*sql.Tx)
 
 		defer func() {
-			info := Info{
+			d.log(ctx, Info{
 				Template:    d.name,
 				Location:    d.location,
 				Duration:    time.Since(now),
@@ -758,14 +724,7 @@ func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 				Err:         err,
 				Cached:      cached,
 				Transaction: inTx,
-			}
-
-			if expr != nil {
-				info.SQL = expr.SQL
-				info.Args = expr.Args
-			}
-
-			d.log(ctx, info)
+			})
 		}()
 	}
 
@@ -1009,7 +968,7 @@ func (a Accessor[Dest]) Scan() (Scanner[Dest], error) {
 
 func (d *Destinator[Dest]) ScanString(field string) (Scanner[Dest], error) {
 	return d.Cache(fmt.Sprintf("String:%s", field), field, func(a Accessor[Dest]) (Scanner[Dest], error) {
-		return a.ScanString(true, "")
+		return a.ScanString(false, "")
 	})
 }
 
@@ -1055,7 +1014,7 @@ func (a Accessor[Dest]) ScanString(nullable bool, def string) (Scanner[Dest], er
 
 func (d *Destinator[Dest]) ScanInt64(field string) (Scanner[Dest], error) {
 	return d.Cache(fmt.Sprintf("Int64:%s", field), field, func(a Accessor[Dest]) (Scanner[Dest], error) {
-		return a.ScanInt64(true, 0)
+		return a.ScanInt64(false, 0)
 	})
 }
 
@@ -1103,7 +1062,7 @@ func (a Accessor[Dest]) ScanInt64(nullable bool, def int64) (Scanner[Dest], erro
 
 func (d *Destinator[Dest]) ScanUint64(field string) (Scanner[Dest], error) {
 	return d.Cache(fmt.Sprintf("Uint64:%s", field), field, func(a Accessor[Dest]) (Scanner[Dest], error) {
-		return a.ScanUint64(true, 0)
+		return a.ScanUint64(false, 0)
 	})
 }
 
@@ -1151,7 +1110,7 @@ func (a Accessor[Dest]) ScanUint64(nullable bool, def uint64) (Scanner[Dest], er
 
 func (d *Destinator[Dest]) ScanFloat64(field string) (Scanner[Dest], error) {
 	return d.Cache(fmt.Sprintf("Float64:%s", field), field, func(a Accessor[Dest]) (Scanner[Dest], error) {
-		return a.ScanFloat64(true, 0)
+		return a.ScanFloat64(false, 0)
 	})
 }
 
@@ -1199,7 +1158,7 @@ func (a Accessor[Dest]) ScanFloat64(nullable bool, def float64) (Scanner[Dest], 
 
 func (d *Destinator[Dest]) ScanBool(field string) (Scanner[Dest], error) {
 	return d.Cache(fmt.Sprintf("Bool:%s", field), field, func(a Accessor[Dest]) (Scanner[Dest], error) {
-		return a.ScanBool(true, false)
+		return a.ScanBool(false, false)
 	})
 }
 
@@ -1625,12 +1584,11 @@ func getLocation() string {
 var ident = "__sqlt__"
 
 type runner[Param any, Dest any] struct {
-	ctx        context.Context
-	tpl        *template.Template
-	sqlWriter  *sqlWriter
-	args       []any
-	scanners   []Scanner[Dest]
-	destinator *Destinator[Dest]
+	ctx       context.Context
+	tpl       *template.Template
+	sqlWriter *sqlWriter
+	args      []any
+	scanners  []Scanner[Dest]
 }
 
 func (r *runner[Param, Dest]) reset() {
@@ -1640,16 +1598,15 @@ func (r *runner[Param, Dest]) reset() {
 	r.scanners = r.scanners[:0]
 }
 
-func (r *runner[Param, Dest]) expr(param Param) (*Expression[Dest], error) {
+func (r *runner[Param, Dest]) expr(param Param) (Expression[Dest], error) {
 	if err := r.tpl.Execute(r.sqlWriter, param); err != nil {
-		return nil, err
+		return Expression[Dest]{}, err
 	}
 
-	return &Expression[Dest]{
-		SQL:        r.sqlWriter.toString(),
-		Args:       slices.Clone(r.args),
-		Scanners:   slices.Clone(r.scanners),
-		Destinator: r.destinator,
+	return Expression[Dest]{
+		SQL:      r.sqlWriter.toString(),
+		Args:     slices.Clone(r.args),
+		Scanners: slices.Clone(r.scanners),
 	}, nil
 }
 

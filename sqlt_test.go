@@ -14,15 +14,15 @@ import (
 )
 
 type Pokemon struct {
-	Number         int64    `json:"number"`
-	Name           string   `json:"name"`
-	Height         float64  `json:"height"`
-	Weight         float64  `json:"weight"`
-	Generation     uint64   `json:"generation"`
-	Legendary      bool     `json:"legendary"`
-	Types          []string `json:"types"`
-	Classification string   `json:"classification"`
-	Abilities      []string `json:"abilities"`
+	Number         int64             `json:"number"`
+	Name           string            `json:"name"`
+	Height         float64           `json:"height"`
+	Weight         sql.Null[float64] `json:"weight"`
+	Generation     uint64            `json:"generation"`
+	Legendary      bool              `json:"legendary"`
+	Types          []string          `json:"types"`
+	Classification string            `json:"classification"`
+	Abilities      []string          `json:"abilities"`
 }
 
 func NewPointer[T any](t T) Pointer[T] {
@@ -66,7 +66,11 @@ var (
 
 	query = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query"))
 
+	query_auto = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query_auto"))
+
 	queryFirst = sqlt.First[Query, Pokemon](config, sqlt.Lookup("query"))
+
+	queryOne = sqlt.One[Query, Pokemon](config, sqlt.Lookup("query"))
 )
 
 func TestQueryPokemon(t *testing.T) {
@@ -109,8 +113,32 @@ func TestQueryPokemon(t *testing.T) {
 		t.Errorf("Expected 3 Pokémon, got %d", len(pokemons))
 	}
 
+	pokemons, err = query_auto.Exec(ctx, db, Query{
+		TypeOneOf:  NewPointer([]string{"Dragon"}),
+		Generation: NewPointer[uint64](1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(pokemons) != 3 {
+		t.Errorf("Expected 3 Pokémon, got %d", len(pokemons))
+	}
+
 	rattata, err := queryFirst.Exec(ctx, db, Query{
 		Classification: NewPointer("Mouse Pokémon"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if rattata.Name != "Rattata" {
+		t.Errorf("Expected Rattata, got %s", rattata.Name)
+	}
+
+	rattata, err = queryOne.Exec(ctx, db, Query{
+		Classification: NewPointer("Mouse Pokémon"),
+		WeightRange:    NewPointer([2]float64{3, 4}),
 	})
 	if err != nil {
 		t.Fatal(err)
