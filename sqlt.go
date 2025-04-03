@@ -810,7 +810,6 @@ func makeAccessor[Dest any](field string) (accessor[Dest], error) {
 	}
 
 	if field != "" {
-
 		parts := strings.Split(field, ".")
 
 		for _, part := range parts {
@@ -881,11 +880,13 @@ func makeAccessor[Dest any](field string) (accessor[Dest], error) {
 
 func (d *destinator[Dest]) Cache(key string, field string, f func(a accessor[Dest]) (Scanner[Dest], error)) (Scanner[Dest], error) {
 	d.mu.RLock()
+
 	scanner, ok := d.store[key]
 	if ok {
 		d.mu.RUnlock()
 		return scanner, nil
 	}
+
 	d.mu.RUnlock()
 
 	a, err := makeAccessor[Dest](field)
@@ -903,12 +904,6 @@ func (d *destinator[Dest]) Cache(key string, field string, f func(a accessor[Des
 	d.mu.Unlock()
 
 	return scanner, nil
-}
-
-func (d *destinator[Dest]) scanColumn(field string, nullable bool) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("Column:%s:%t", field, nullable), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanColumn(nullable)
-	})
 }
 
 var scannerType = reflect.TypeFor[sql.Scanner]()
@@ -944,7 +939,7 @@ func (a accessor[Dest]) scanColumn(nullable bool) (Scanner[Dest], error) {
 	return a.scanJSON()
 }
 
-func (d *destinator[Dest]) scan(field string) (scanner Scanner[Dest], err error) {
+func (d *destinator[Dest]) scan(field string) (Scanner[Dest], error) {
 	return d.Cache(field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scan()
 	})
@@ -967,7 +962,7 @@ func (a accessor[Dest]) scan() (Scanner[Dest], error) {
 }
 
 func (d *destinator[Dest]) scanString(field string) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("String:%s", field), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache("String:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanString(false, "")
 	})
 }
@@ -1013,7 +1008,7 @@ func (a accessor[Dest]) scanString(nullable bool, def string) (Scanner[Dest], er
 }
 
 func (d *destinator[Dest]) scanInt64(field string) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("Int64:%s", field), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache("Int64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanInt64(false, 0)
 	})
 }
@@ -1061,7 +1056,7 @@ func (a accessor[Dest]) scanInt64(nullable bool, def int64) (Scanner[Dest], erro
 }
 
 func (d *destinator[Dest]) scanUint64(field string) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("Uint64:%s", field), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache("Uint64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanUint64(false, 0)
 	})
 }
@@ -1109,7 +1104,7 @@ func (a accessor[Dest]) scanUint64(nullable bool, def uint64) (Scanner[Dest], er
 }
 
 func (d *destinator[Dest]) scanFloat64(field string) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("Float64:%s", field), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache("Float64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanFloat64(false, 0)
 	})
 }
@@ -1157,7 +1152,7 @@ func (a accessor[Dest]) scanFloat64(nullable bool, def float64) (Scanner[Dest], 
 }
 
 func (d *destinator[Dest]) scanBool(field string) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("Bool:%s", field), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache("Bool:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanBool(false, false)
 	})
 }
@@ -1203,7 +1198,7 @@ func (a accessor[Dest]) scanBool(nullable bool, def bool) (Scanner[Dest], error)
 }
 
 func (d *destinator[Dest]) scanTime(field string) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("Time:%s", field), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache("Time:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanTime(false, time.Time{})
 	})
 }
@@ -1252,15 +1247,15 @@ func (a accessor[Dest]) scanTime(nullable bool, def time.Time) (Scanner[Dest], e
 	}, nil
 }
 
-func (d *destinator[Dest]) scanJSON(field string) (scanner Scanner[Dest], err error) {
-	return d.Cache(fmt.Sprintf("JSON:%s", field), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+func (d *destinator[Dest]) scanJSON(field string) (Scanner[Dest], error) {
+	return d.Cache("JSON:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanJSON()
 	})
 }
 
 var byteSliceType = reflect.TypeFor[[]byte]()
 
-func (a accessor[Dest]) scanJSON() (scanner Scanner[Dest], err error) {
+func (a accessor[Dest]) scanJSON() (Scanner[Dest], error) {
 	if a.typ == byteSliceType {
 		return func() (any, func(dest *Dest) error) {
 			var src []byte
@@ -1296,15 +1291,15 @@ func (a accessor[Dest]) scanJSON() (scanner Scanner[Dest], err error) {
 	}, nil
 }
 
-func (d *destinator[Dest]) scanBinary(field string) (scanner Scanner[Dest], err error) {
-	return d.Cache(fmt.Sprintf("Binary:%s", field), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+func (d *destinator[Dest]) scanBinary(field string) (Scanner[Dest], error) {
+	return d.Cache("Binary:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanBinary()
 	})
 }
 
 var binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
 
-func (a accessor[Dest]) scanBinary() (scanner Scanner[Dest], err error) {
+func (a accessor[Dest]) scanBinary() (Scanner[Dest], error) {
 	pointerType := reflect.PointerTo(a.typ)
 
 	if pointerType.Implements(binaryUnmarshalerType) {
@@ -1324,8 +1319,8 @@ func (a accessor[Dest]) scanBinary() (scanner Scanner[Dest], err error) {
 	return nil, fmt.Errorf("type %s doesn't implement encoding.BinaryUnmarshaler", a.typ)
 }
 
-func (d *destinator[Dest]) scanText(field string) (scanner Scanner[Dest], err error) {
-	return d.Cache(fmt.Sprintf("Text:%s", field), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+func (d *destinator[Dest]) scanText(field string) (Scanner[Dest], error) {
+	return d.Cache("Text:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanText()
 	})
 }
@@ -1352,7 +1347,7 @@ func (a accessor[Dest]) scanText() (Scanner[Dest], error) {
 	return nil, fmt.Errorf("type %s doesn't implement encoding.TextUnmarshaler", a.typ)
 }
 
-func (d *destinator[Dest]) scanStringSlice(field string, sep string) (scanner Scanner[Dest], err error) {
+func (d *destinator[Dest]) scanStringSlice(field string, sep string) (Scanner[Dest], error) {
 	return d.Cache(fmt.Sprintf("StringSlice:%s:%s", field, sep), field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanStringSlice(sep)
 	})
@@ -1388,13 +1383,13 @@ func (a accessor[Dest]) scanStringSlice(sep string) (Scanner[Dest], error) {
 	}, nil
 }
 
-func (d *destinator[Dest]) scanStringTime(field string, layout string, location string) (scanner Scanner[Dest], err error) {
+func (d *destinator[Dest]) scanStringTime(field string, layout string, location string) (Scanner[Dest], error) {
 	return d.Cache(fmt.Sprintf("StringTime:%s:%s:%s", field, layout, location), field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanStringTime(layout, location, false, "")
 	})
 }
 
-func (d *destinator[Dest]) scanNullStringTime(field string, layout string, location string, def string) (scanner Scanner[Dest], err error) {
+func (d *destinator[Dest]) scanNullStringTime(field string, layout string, location string, def string) (Scanner[Dest], error) {
 	return d.Cache(fmt.Sprintf("NullStringTime:%s:%s:%s:%s", field, layout, location, def), field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanStringTime(layout, location, true, def)
 	})
