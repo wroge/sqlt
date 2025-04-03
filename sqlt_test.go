@@ -14,11 +14,11 @@ import (
 )
 
 type Pokemon struct {
-	Number         int      `json:"number"`
+	Number         int64    `json:"number"`
 	Name           string   `json:"name"`
 	Height         float64  `json:"height"`
 	Weight         float64  `json:"weight"`
-	Generation     int      `json:"generation"`
+	Generation     uint64   `json:"generation"`
 	Legendary      bool     `json:"legendary"`
 	Types          []string `json:"types"`
 	Classification string   `json:"classification"`
@@ -34,7 +34,7 @@ type Pointer[T any] *T
 type Query struct {
 	HeightRange    Pointer[[2]float64]
 	WeightRange    Pointer[[2]float64]
-	Generation     Pointer[int]
+	Generation     Pointer[uint64]
 	Legendary      Pointer[bool]
 	TypeOneOf      Pointer[[]string]
 	Classification Pointer[string]
@@ -99,7 +99,7 @@ func TestQueryPokemon(t *testing.T) {
 
 	pokemons, err := query.Exec(ctx, db, Query{
 		TypeOneOf:  NewPointer([]string{"Dragon"}),
-		Generation: NewPointer(1),
+		Generation: NewPointer[uint64](1),
 	})
 	if err != nil {
 		t.Fatal(err)

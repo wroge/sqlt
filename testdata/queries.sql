@@ -137,15 +137,15 @@
 
 {{ define "query" }}
     SELECT 
-        p.number, 										{{ Scan "Number" }}	
-        p.name, 										{{ Scan "Name" }}
-        p.height, 										{{ Scan "Height" }}	
-        p.weight, 										{{ Scan "Weight" }}
-        p.generation, 									{{ Scan "Generation" }}
-        p.legendary, 									{{ Scan "Legendary" }}
-        IFNULL(pt.type_names, '') AS type_names, 		{{ ScanSplit "Types" "," }}
-        c.name AS classification, 						{{ Scan "Classification" }}
-        IFNULL(pa.ability_names, '') AS ability_names	{{ ScanSplit "Abilities" "," }}
+        p.number, 										{{ ScanInt64 "Number" }}	
+        p.name, 										{{ ScanString "Name" }}
+        p.height, 										{{ ScanFloat64 "Height" }}	
+        p.weight, 										{{ ScanFloat64 "Weight" }}
+        p.generation, 									{{ ScanUint64 "Generation" }}
+        p.legendary, 									{{ ScanBool "Legendary" }}
+        IFNULL(pt.type_names, '') AS type_names, 		{{ ScanStringSlice "Types" "," }}
+        c.name AS classification, 						{{ ScanString "Classification" }}
+        IFNULL(pa.ability_names, '') AS ability_names	{{ ScanStringSlice "Abilities" "," }}
     FROM pokemons p
     LEFT JOIN (
         SELECT pokemon_number, GROUP_CONCAT(types.name, ',') AS type_names
