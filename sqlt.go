@@ -282,9 +282,9 @@ func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) er
 				}
 			}
 
-			nullable, _ := c.Nullable()
+			nullable, known := c.Nullable()
 
-			e.Scanners[i], err = a.scanColumn(nullable)
+			e.Scanners[i], err = a.scanColumn(nullable || !known)
 			if err != nil {
 				return nil, nil, err
 			}
