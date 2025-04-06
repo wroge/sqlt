@@ -1284,7 +1284,7 @@ func (a accessor[Dest]) scanStringTime(layout string, location string, nullable 
 						return nil
 					}
 
-					*src = def
+					src = &def
 				}
 
 				t, err := convert(*src)
@@ -1592,7 +1592,7 @@ type sqlWriter struct {
 	data []byte
 }
 
-// Write implements io.Wr	iter.
+// Write implements io.Writer.
 func (w *sqlWriter) Write(data []byte) (int, error) {
 	for _, b := range data {
 		switch b {
