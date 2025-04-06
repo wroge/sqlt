@@ -6,10 +6,10 @@ import (
 	"encoding/csv"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/wroge/sqlt"
-
 	_ "modernc.org/sqlite"
 )
 
@@ -23,6 +23,7 @@ type Pokemon struct {
 	Types          []string          `json:"types"`
 	Classification string            `json:"classification"`
 	Abilities      []string          `json:"abilities"`
+	SomeDate       time.Time         `json:"some_date,omitzero"`
 }
 
 func NewPointer[T any](t T) Pointer[T] {
@@ -66,7 +67,7 @@ var (
 
 	query = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query"))
 
-	query_auto = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query_auto"))
+	autoQuery = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query_auto"))
 
 	queryFirst = sqlt.First[Query, Pokemon](config, sqlt.Lookup("query"))
 
@@ -113,7 +114,7 @@ func TestQueryPokemon(t *testing.T) {
 		t.Errorf("Expected 3 Pokémon, got %d", len(pokemons))
 	}
 
-	pokemons, err = query_auto.Exec(ctx, db, Query{
+	pokemons, err = autoQuery.Exec(ctx, db, Query{
 		TypeOneOf:  NewPointer([]string{"Dragon"}),
 		Generation: NewPointer[uint64](1),
 	})

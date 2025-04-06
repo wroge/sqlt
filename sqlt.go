@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -269,14 +270,16 @@ func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) er
 
 		e.Scanners = make([]Scanner[Dest], len(columns))
 
+		t := reflect.TypeFor[Dest]()
+
 		for i, c := range columns {
-			a, err := makeAccessor[Dest](c.Name())
+			a, err := makeAccessor[Dest](t, c.Name())
 			if err != nil {
 				if len(columns) != 1 {
 					return nil, nil, err
 				}
 
-				a, err = makeAccessor[Dest]("")
+				a, err = makeAccessor[Dest](t, "")
 				if err != nil {
 					return nil, nil, err
 				}
@@ -284,7 +287,7 @@ func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) er
 
 			nullable, known := c.Nullable()
 
-			e.Scanners[i], err = a.scanColumn(nullable || !known)
+			e.Scanners[i], err = a.scanColumn(c.ScanType(), nullable || !known)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -313,7 +316,9 @@ func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) er
 	}, nil
 }
 
-func (e Expression[Dest]) First(ctx context.Context, db DB) (first Dest, err error) {
+func (e Expression[Dest]) First(ctx context.Context, db DB) (Dest, error) {
+	var first Dest
+
 	if len(e.SQL) == 0 {
 		return first, sql.ErrNoRows
 	}
@@ -323,33 +328,31 @@ func (e Expression[Dest]) First(ctx context.Context, db DB) (first Dest, err err
 		return first, err
 	}
 
-	defer func() {
-		err = errors.Join(err, rows.Close(), rows.Err())
-	}()
-
 	if !rows.Next() {
-		return first, sql.ErrNoRows
+		return first, errors.Join(sql.ErrNoRows, rows.Close())
 	}
 
 	values, mapper, err := e.DestMapper(rows)
 	if err != nil {
-		return first, err
+		return first, errors.Join(err, rows.Close())
 	}
 
 	if err = rows.Scan(values...); err != nil {
-		return first, err
+		return first, errors.Join(err, rows.Close())
 	}
 
 	if err = mapper(&first); err != nil {
-		return first, err
+		return first, errors.Join(err, rows.Close())
 	}
 
-	return first, nil
+	return first, errors.Join(rows.Close(), rows.Err())
 }
 
 var ErrTooManyRows = errors.New("too many rows")
 
-func (e Expression[Dest]) One(ctx context.Context, db DB) (one Dest, err error) {
+func (e Expression[Dest]) One(ctx context.Context, db DB) (Dest, error) {
+	var one Dest
+
 	if len(e.SQL) == 0 {
 		return one, sql.ErrNoRows
 	}
@@ -359,35 +362,31 @@ func (e Expression[Dest]) One(ctx context.Context, db DB) (one Dest, err error) 
 		return one, err
 	}
 
-	defer func() {
-		err = errors.Join(err, rows.Close(), rows.Err())
-	}()
-
 	if !rows.Next() {
-		return one, sql.ErrNoRows
+		return one, errors.Join(sql.ErrNoRows, rows.Close())
 	}
 
 	values, mapper, err := e.DestMapper(rows)
 	if err != nil {
-		return one, err
+		return one, errors.Join(err, rows.Close())
 	}
 
 	if err = rows.Scan(values...); err != nil {
-		return one, err
+		return one, errors.Join(err, rows.Close())
 	}
 
 	if err = mapper(&one); err != nil {
-		return one, err
+		return one, errors.Join(err, rows.Close())
 	}
 
 	if rows.Next() {
-		return one, ErrTooManyRows
+		return one, errors.Join(ErrTooManyRows, rows.Close())
 	}
 
-	return one, nil
+	return one, errors.Join(rows.Close(), rows.Err())
 }
 
-func (e Expression[Dest]) All(ctx context.Context, db DB) (all []Dest, err error) {
+func (e Expression[Dest]) All(ctx context.Context, db DB) ([]Dest, error) {
 	if len(e.SQL) == 0 {
 		return nil, sql.ErrNoRows
 	}
@@ -397,30 +396,28 @@ func (e Expression[Dest]) All(ctx context.Context, db DB) (all []Dest, err error
 		return nil, err
 	}
 
-	defer func() {
-		err = errors.Join(err, rows.Close(), rows.Err())
-	}()
-
 	values, mapper, err := e.DestMapper(rows)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, rows.Close())
 	}
+
+	var all []Dest
 
 	for rows.Next() {
 		if err = rows.Scan(values...); err != nil {
-			return nil, err
+			return nil, errors.Join(err, rows.Close())
 		}
 
 		var dest Dest
 
 		if err = mapper(&dest); err != nil {
-			return nil, err
+			return nil, errors.Join(err, rows.Close())
 		}
 
 		all = append(all, dest)
 	}
 
-	return all, nil
+	return all, errors.Join(rows.Close(), rows.Err())
 }
 
 type Scanner[Dest any] func() (any, func(dest *Dest) error)
@@ -430,7 +427,7 @@ type Raw string
 type ContextKey string
 
 type ContextStatement[Param any] interface {
-	ExecContext(ctx context.Context, db DB, param Param) (result context.Context, err error)
+	ExecContext(ctx context.Context, db DB, param Param) (context.Context, error)
 }
 
 func Transaction[Param any](txOpts *sql.TxOptions, stmts ...ContextStatement[Param]) *TransactionStatement[Param] {
@@ -449,38 +446,24 @@ type TxBeginner interface {
 	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
 
-func (ts *TransactionStatement[Param]) Exec(ctx context.Context, db TxBeginner, param Param) (result context.Context, err error) {
+func (ts *TransactionStatement[Param]) Exec(ctx context.Context, db TxBeginner, param Param) (context.Context, error) {
 	tx, err := db.BeginTx(ctx, ts.txOpts)
 	if err != nil {
-		return result, err
+		return ctx, err
 	}
 
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, tx.Rollback())
-		} else {
-			err = tx.Commit()
-		}
-	}()
-
-	result = ctx
-
 	for _, d := range ts.stmts {
-		ctx, err = d.ExecContext(result, tx, param)
+		ctx, err = d.ExecContext(ctx, tx, param)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
 
-			return result, err
-		}
-
-		if ctx != result {
-			result = ctx
+			return ctx, errors.Join(err, tx.Rollback())
 		}
 	}
 
-	return result, nil
+	return ctx, tx.Commit()
 }
 
 func Exec[Param any](opts ...Option) *Statement[Param, any, sql.Result] {
@@ -526,7 +509,6 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 
 	config := &Config{
 		Placeholder: Question,
-		Hasher:      DefaultHasher(),
 	}
 
 	for _, o := range opts {
@@ -575,7 +557,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 		panic(fmt.Errorf("check template at %s: %w", location, err))
 	}
 
-	if err = escapeNode[Dest](t, t.Tree.Root); err != nil {
+	if err = d.escapeNode(t, t.Tree.Root); err != nil {
 		panic(fmt.Errorf("escape template at %s: %w", location, err))
 	}
 
@@ -601,12 +583,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 
 			r.tpl.Funcs(template.FuncMap{
 				"Context": func(key string) any {
-					switch value := r.ctx.Value(ContextKey(key)).(type) {
-					case *any:
-						return *value
-					default:
-						return value
-					}
+					return r.ctx.Value(ContextKey(key))
 				},
 				ident: func(arg any) Raw {
 					switch a := arg.(type) {
@@ -620,7 +597,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 						r.args = append(r.args, arg)
 
 						if positional {
-							return Raw(fmt.Sprintf(placeholder, len(r.args)))
+							return Raw(placeholder + strconv.Itoa(len(r.args)))
 						}
 
 						return Raw(placeholder)
@@ -636,6 +613,10 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 
 	if config.Cache != nil {
 		cache = expirable.NewLRU[uint64, Expression[Dest]](config.Cache.Size, nil, config.Cache.Expiration)
+
+		if config.Hasher == nil {
+			config.Hasher = DefaultHasher()
+		}
 	}
 
 	return &Statement[Param, Dest, Result]{
@@ -661,33 +642,29 @@ type Statement[Param any, Dest any, Result any] struct {
 	log      Log
 }
 
-func (d *Statement[Param, Dest, Result]) ExecContext(ctx context.Context, db DB, param Param) (result context.Context, err error) {
-	res, err := d.Exec(ctx, db, param)
+func (d *Statement[Param, Dest, Result]) ExecContext(ctx context.Context, db DB, param Param) (context.Context, error) {
+	res, err := d.execOptions(ctx, db, param, false)
 	if err != nil {
-		return result, err
+		return ctx, err
 	}
 
 	switch r := any(res).(type) {
 	case context.Context:
 		return r, nil
 	case *sql.Rows:
-		defer func() {
-			err = errors.Join(err, r.Close())
-		}()
-
 		var result []any
 
 		for r.Next() {
 			var data any
 
 			if err = r.Scan(&data); err != nil {
-				return nil, err
+				return nil, errors.Join(err, r.Close())
 			}
 
 			result = append(result, data)
 		}
 
-		return context.WithValue(ctx, ContextKey(d.name), result), nil
+		return context.WithValue(ctx, ContextKey(d.name), result), errors.Join(r.Close(), r.Err())
 	case *sql.Row:
 		var data any
 
@@ -701,7 +678,11 @@ func (d *Statement[Param, Dest, Result]) ExecContext(ctx context.Context, db DB,
 	return context.WithValue(ctx, ContextKey(d.name), res), nil
 }
 
-func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
+func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (Result, error) {
+	return d.execOptions(ctx, db, param, d.cache != nil && d.hasher != nil)
+}
+
+func (d *Statement[Param, Dest, Result]) execOptions(ctx context.Context, db DB, param Param, withCache bool) (result Result, err error) {
 	var (
 		expr   Expression[Dest]
 		hash   uint64
@@ -728,12 +709,10 @@ func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 		}()
 	}
 
-	if d.cache != nil {
+	if withCache {
 		hasher := hashPool.Get().(*xxhash.Digest)
-		defer func() {
-			hasher.Reset()
-			hashPool.Put(hasher)
-		}()
+
+		hasher.Reset()
 
 		err = d.hasher(param, hasher)
 		if err != nil {
@@ -741,6 +720,8 @@ func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 		}
 
 		hash = hasher.Sum64()
+
+		hashPool.Put(hasher)
 
 		expr, cached = d.cache.Get(hash)
 		if cached {
@@ -754,10 +735,6 @@ func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	}
 
 	r := d.pool.Get().(*runner[Param, Dest])
-	defer func() {
-		r.reset()
-		d.pool.Put(r)
-	}()
 
 	r.ctx = ctx
 
@@ -766,7 +743,9 @@ func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 		return result, fmt.Errorf("statement at %s: %w", d.location, err)
 	}
 
-	if d.cache != nil {
+	d.pool.Put(r)
+
+	if withCache {
 		_ = d.cache.Add(hash, expr)
 	}
 
@@ -778,27 +757,7 @@ func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	return result, nil
 }
 
-func newDestinator[Dest any]() *destinator[Dest] {
-	return &destinator[Dest]{
-		store: map[string]Scanner[Dest]{},
-		typ:   reflect.TypeFor[Dest](),
-	}
-}
-
-type destinator[Dest any] struct {
-	mu    sync.RWMutex
-	store map[string]Scanner[Dest]
-	typ   reflect.Type
-}
-
-type accessor[Dest any] struct {
-	typ    reflect.Type
-	access func(*Dest) reflect.Value
-}
-
-func makeAccessor[Dest any](field string) (accessor[Dest], error) {
-	t := reflect.TypeFor[Dest]()
-
+func makeAccessor[Dest any](t reflect.Type, field string) (accessor[Dest], error) {
 	indices := []int{}
 
 	for t.Kind() == reflect.Pointer {
@@ -854,7 +813,7 @@ func makeAccessor[Dest any](field string) (accessor[Dest], error) {
 		}
 	}
 
-	return accessor[Dest]{
+	a := accessor[Dest]{
 		typ: t,
 		access: func(d *Dest) reflect.Value {
 			v := reflect.ValueOf(d).Elem()
@@ -875,40 +834,19 @@ func makeAccessor[Dest any](field string) (accessor[Dest], error) {
 
 			return v
 		},
-	}, nil
+	}
+
+	return a, nil
 }
 
-func (d *destinator[Dest]) Cache(key string, field string, f func(a accessor[Dest]) (Scanner[Dest], error)) (Scanner[Dest], error) {
-	d.mu.RLock()
-
-	scanner, ok := d.store[key]
-	if ok {
-		d.mu.RUnlock()
-		return scanner, nil
-	}
-
-	d.mu.RUnlock()
-
-	a, err := makeAccessor[Dest](field)
-	if err != nil {
-		return nil, err
-	}
-
-	scanner, err = f(a)
-	if err != nil {
-		return nil, err
-	}
-
-	d.mu.Lock()
-	d.store[key] = scanner
-	d.mu.Unlock()
-
-	return scanner, nil
+type accessor[Dest any] struct {
+	typ    reflect.Type
+	access func(*Dest) reflect.Value
 }
 
 var scannerType = reflect.TypeFor[sql.Scanner]()
 
-func (a accessor[Dest]) scanColumn(nullable bool) (Scanner[Dest], error) {
+func (a accessor[Dest]) scanColumn(scanType reflect.Type, nullable bool) (Scanner[Dest], error) {
 	pointerType := reflect.PointerTo(a.typ)
 
 	if pointerType.Implements(scannerType) {
@@ -928,6 +866,14 @@ func (a accessor[Dest]) scanColumn(nullable bool) (Scanner[Dest], error) {
 		return a.scanBool(nullable, false)
 	}
 
+	if a.typ == timeType {
+		if scanType == timeType {
+			return a.scanTime(nullable, time.Time{})
+		}
+
+		return a.scanStringTime("", "", nullable, time.Now().Format(time.RFC3339Nano))
+	}
+
 	if pointerType.Implements(textUnmarshalerType) {
 		return a.scanText()
 	}
@@ -937,12 +883,6 @@ func (a accessor[Dest]) scanColumn(nullable bool) (Scanner[Dest], error) {
 	}
 
 	return a.scanJSON()
-}
-
-func (d *destinator[Dest]) scan(field string) (Scanner[Dest], error) {
-	return d.Cache(field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scan()
-	})
 }
 
 func (a accessor[Dest]) scan() (Scanner[Dest], error) {
@@ -959,18 +899,6 @@ func (a accessor[Dest]) scan() (Scanner[Dest], error) {
 			return a.access(dest).Addr().Interface().(sql.Scanner).Scan(src)
 		}
 	}, nil
-}
-
-func (d *destinator[Dest]) scanString(field string) (Scanner[Dest], error) {
-	return d.Cache("String:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanString(false, "")
-	})
-}
-
-func (d *destinator[Dest]) scanNullString(field string, def string) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("NullString:%s:%s", field, def), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanString(true, def)
-	})
 }
 
 func (a accessor[Dest]) scanString(nullable bool, def string) (Scanner[Dest], error) {
@@ -1005,18 +933,6 @@ func (a accessor[Dest]) scanString(nullable bool, def string) (Scanner[Dest], er
 			return nil
 		}
 	}, nil
-}
-
-func (d *destinator[Dest]) scanInt64(field string) (Scanner[Dest], error) {
-	return d.Cache("Int64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanInt64(false, 0)
-	})
-}
-
-func (d *destinator[Dest]) scanNullInt64(field string, def int64) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("NullInt64:%s:%d", field, def), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanInt64(true, def)
-	})
 }
 
 func (a accessor[Dest]) scanInt64(nullable bool, def int64) (Scanner[Dest], error) {
@@ -1055,18 +971,6 @@ func (a accessor[Dest]) scanInt64(nullable bool, def int64) (Scanner[Dest], erro
 	}, nil
 }
 
-func (d *destinator[Dest]) scanUint64(field string) (Scanner[Dest], error) {
-	return d.Cache("Uint64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanUint64(false, 0)
-	})
-}
-
-func (d *destinator[Dest]) scanNullUint64(field string, def uint64) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("NullUint64:%s:%d", field, def), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanUint64(true, def)
-	})
-}
-
 func (a accessor[Dest]) scanUint64(nullable bool, def uint64) (Scanner[Dest], error) {
 	switch a.typ.Kind() {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
@@ -1101,18 +1005,6 @@ func (a accessor[Dest]) scanUint64(nullable bool, def uint64) (Scanner[Dest], er
 			return nil
 		}
 	}, nil
-}
-
-func (d *destinator[Dest]) scanFloat64(field string) (Scanner[Dest], error) {
-	return d.Cache("Float64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanFloat64(false, 0)
-	})
-}
-
-func (d *destinator[Dest]) scanNullFloat64(field string, def float64) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("NullFloat64:%s:%f", field, def), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanFloat64(true, def)
-	})
 }
 
 func (a accessor[Dest]) scanFloat64(nullable bool, def float64) (Scanner[Dest], error) {
@@ -1151,18 +1043,6 @@ func (a accessor[Dest]) scanFloat64(nullable bool, def float64) (Scanner[Dest], 
 	}, nil
 }
 
-func (d *destinator[Dest]) scanBool(field string) (Scanner[Dest], error) {
-	return d.Cache("Bool:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanBool(false, false)
-	})
-}
-
-func (d *destinator[Dest]) scanNullBool(field string, def bool) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("NullBool:%s:%t", field, def), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanBool(true, def)
-	})
-}
-
 func (a accessor[Dest]) scanBool(nullable bool, def bool) (Scanner[Dest], error) {
 	if a.typ.Kind() != reflect.Bool {
 		return nil, fmt.Errorf("cannot set bool in type %s", a.typ)
@@ -1195,18 +1075,6 @@ func (a accessor[Dest]) scanBool(nullable bool, def bool) (Scanner[Dest], error)
 			return nil
 		}
 	}, nil
-}
-
-func (d *destinator[Dest]) scanTime(field string) (Scanner[Dest], error) {
-	return d.Cache("Time:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanTime(false, time.Time{})
-	})
-}
-
-func (d *destinator[Dest]) scanNullTime(field string, def time.Time) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("NullTime:%s:%s", field, def), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanTime(true, def)
-	})
 }
 
 var timeType = reflect.TypeFor[time.Time]()
@@ -1247,12 +1115,6 @@ func (a accessor[Dest]) scanTime(nullable bool, def time.Time) (Scanner[Dest], e
 	}, nil
 }
 
-func (d *destinator[Dest]) scanJSON(field string) (Scanner[Dest], error) {
-	return d.Cache("JSON:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanJSON()
-	})
-}
-
 var byteSliceType = reflect.TypeFor[[]byte]()
 
 func (a accessor[Dest]) scanJSON() (Scanner[Dest], error) {
@@ -1291,12 +1153,6 @@ func (a accessor[Dest]) scanJSON() (Scanner[Dest], error) {
 	}, nil
 }
 
-func (d *destinator[Dest]) scanBinary(field string) (Scanner[Dest], error) {
-	return d.Cache("Binary:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanBinary()
-	})
-}
-
 var binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
 
 func (a accessor[Dest]) scanBinary() (Scanner[Dest], error) {
@@ -1319,12 +1175,6 @@ func (a accessor[Dest]) scanBinary() (Scanner[Dest], error) {
 	return nil, fmt.Errorf("type %s doesn't implement encoding.BinaryUnmarshaler", a.typ)
 }
 
-func (d *destinator[Dest]) scanText(field string) (Scanner[Dest], error) {
-	return d.Cache("Text:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanText()
-	})
-}
-
 var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 
 func (a accessor[Dest]) scanText() (Scanner[Dest], error) {
@@ -1345,12 +1195,6 @@ func (a accessor[Dest]) scanText() (Scanner[Dest], error) {
 	}
 
 	return nil, fmt.Errorf("type %s doesn't implement encoding.TextUnmarshaler", a.typ)
-}
-
-func (d *destinator[Dest]) scanStringSlice(field string, sep string) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("StringSlice:%s:%s", field, sep), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanStringSlice(sep)
-	})
 }
 
 func (a accessor[Dest]) scanStringSlice(sep string) (Scanner[Dest], error) {
@@ -1383,16 +1227,26 @@ func (a accessor[Dest]) scanStringSlice(sep string) (Scanner[Dest], error) {
 	}, nil
 }
 
-func (d *destinator[Dest]) scanStringTime(field string, layout string, location string) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("StringTime:%s:%s:%s", field, layout, location), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanStringTime(layout, location, false, "")
-	})
-}
-
-func (d *destinator[Dest]) scanNullStringTime(field string, layout string, location string, def string) (Scanner[Dest], error) {
-	return d.Cache(fmt.Sprintf("NullStringTime:%s:%s:%s:%s", field, layout, location, def), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanStringTime(layout, location, true, def)
-	})
+var layouts = map[string]string{
+	"Layout":      time.Layout,
+	"ANSIC":       time.ANSIC,
+	"UnixDate":    time.UnixDate,
+	"RubyDate":    time.RubyDate,
+	"RFC822":      time.RFC822,
+	"RFC822Z":     time.RFC822Z,
+	"RFC850":      time.RFC850,
+	"RFC1123":     time.RFC1123,
+	"RFC1123Z":    time.RFC1123Z,
+	"RFC3339":     time.RFC3339,
+	"RFC3339Nano": time.RFC3339Nano,
+	"Kitchen":     time.Kitchen,
+	"Stamp":       time.Stamp,
+	"StampMilli":  time.StampMilli,
+	"StampMicro":  time.StampMicro,
+	"StampNano":   time.StampNano,
+	"DateTime":    time.DateTime,
+	"DateOnly":    time.DateOnly,
+	"TimeOnly":    time.TimeOnly,
 }
 
 func (a accessor[Dest]) scanStringTime(layout string, location string, nullable bool, def string) (Scanner[Dest], error) {
@@ -1405,45 +1259,25 @@ func (a accessor[Dest]) scanStringTime(layout string, location string, nullable 
 		return nil, err
 	}
 
-	switch layout {
-	case "Layout":
-		layout = time.Layout
-	case "ANSIC":
-		layout = time.ANSIC
-	case "UnixDate":
-		layout = time.UnixDate
-	case "RubyDate":
-		layout = time.RubyDate
-	case "RFC822":
-		layout = time.RFC822
-	case "RFC822Z":
-		layout = time.RFC822Z
-	case "RFC850":
-		layout = time.RFC850
-	case "RFC1123":
-		layout = time.RFC1123
-	case "RFC1123Z":
-		layout = time.RFC1123Z
-	case "RFC3339":
-		layout = time.RFC3339
-	case "RFC3339Nano":
-		layout = time.RFC3339Nano
-	case "Kitchen":
-		layout = time.Kitchen
-	case "Stamp":
-		layout = time.Stamp
-	case "StampMilli":
-		layout = time.StampMilli
-	case "StampMicro":
-		layout = time.StampMicro
-	case "StampNano":
-		layout = time.StampNano
-	case "DateTime":
-		layout = time.DateTime
-	case "DateOnly":
-		layout = time.DateOnly
-	case "TimeOnly":
-		layout = time.TimeOnly
+	if l, ok := layouts[layout]; ok {
+		layout = l
+	}
+
+	convert := func(str string) (time.Time, error) {
+		return time.ParseInLocation(layout, str, loc)
+	}
+
+	if layout == "" {
+		convert = func(str string) (time.Time, error) {
+			for _, l := range layouts {
+				t, err := time.ParseInLocation(l, str, loc)
+				if err == nil {
+					return t, nil
+				}
+			}
+
+			return time.Time{}, fmt.Errorf("cannot parse '%s' into time.Time", str)
+		}
 	}
 
 	if nullable {
@@ -1459,7 +1293,7 @@ func (a accessor[Dest]) scanStringTime(layout string, location string, nullable 
 					*src = def
 				}
 
-				t, err := time.ParseInLocation(layout, *src, loc)
+				t, err := convert(*src)
 				if err != nil {
 					return err
 				}
@@ -1475,7 +1309,7 @@ func (a accessor[Dest]) scanStringTime(layout string, location string, nullable 
 		var src string
 
 		return &src, func(dest *Dest) error {
-			t, err := time.ParseInLocation(layout, src, loc)
+			t, err := convert(src)
 			if err != nil {
 				return err
 			}
@@ -1487,15 +1321,171 @@ func (a accessor[Dest]) scanStringTime(layout string, location string, nullable 
 	}, nil
 }
 
+func newDestinator[Dest any]() *destinator[Dest] {
+	return &destinator[Dest]{
+		store: map[string]Scanner[Dest]{},
+		typ:   reflect.TypeFor[Dest](),
+	}
+}
+
+type destinator[Dest any] struct {
+	mu    sync.RWMutex
+	store map[string]Scanner[Dest]
+	typ   reflect.Type
+}
+
+func (d *destinator[Dest]) Cache(key string, field string, f func(a accessor[Dest]) (Scanner[Dest], error)) (Scanner[Dest], error) {
+	d.mu.RLock()
+
+	scanner, ok := d.store[key]
+	if ok {
+		d.mu.RUnlock()
+
+		return scanner, nil
+	}
+
+	d.mu.RUnlock()
+
+	a, err := makeAccessor[Dest](d.typ, field)
+	if err != nil {
+		return nil, err
+	}
+
+	scanner, err = f(a)
+	if err != nil {
+		return nil, err
+	}
+
+	d.mu.Lock()
+	d.store[key] = scanner
+	d.mu.Unlock()
+
+	return scanner, nil
+}
+
+func (d *destinator[Dest]) scan(field string) (Scanner[Dest], error) {
+	return d.Cache(field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scan()
+	})
+}
+
+func (d *destinator[Dest]) scanString(field string) (Scanner[Dest], error) {
+	return d.Cache("String:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanString(false, "")
+	})
+}
+
+func (d *destinator[Dest]) scanNullString(field string, def string) (Scanner[Dest], error) {
+	return d.Cache("NullString:"+field+":"+def, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanString(true, def)
+	})
+}
+
+func (d *destinator[Dest]) scanInt64(field string) (Scanner[Dest], error) {
+	return d.Cache("Int64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanInt64(false, 0)
+	})
+}
+
+func (d *destinator[Dest]) scanNullInt64(field string, def int64) (Scanner[Dest], error) {
+	return d.Cache("NullInt:"+field+":"+strconv.FormatInt(def, 10), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanInt64(true, def)
+	})
+}
+
+func (d *destinator[Dest]) scanUint64(field string) (Scanner[Dest], error) {
+	return d.Cache("Uint64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanUint64(false, 0)
+	})
+}
+
+func (d *destinator[Dest]) scanNullUint64(field string, def uint64) (Scanner[Dest], error) {
+	return d.Cache("NullUint64:"+field+":"+strconv.FormatUint(def, 10), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanUint64(true, def)
+	})
+}
+
+func (d *destinator[Dest]) scanFloat64(field string) (Scanner[Dest], error) {
+	return d.Cache("Float64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanFloat64(false, 0)
+	})
+}
+
+func (d *destinator[Dest]) scanNullFloat64(field string, def float64) (Scanner[Dest], error) {
+	return d.Cache("NullFloat64:"+field+":"+strconv.FormatFloat(def, 'g', -1, 64), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanFloat64(true, def)
+	})
+}
+
+func (d *destinator[Dest]) scanBool(field string) (Scanner[Dest], error) {
+	return d.Cache("Bool:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanBool(false, false)
+	})
+}
+
+func (d *destinator[Dest]) scanNullBool(field string, def bool) (Scanner[Dest], error) {
+	return d.Cache("NullBool:"+strconv.FormatBool(def), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanBool(true, def)
+	})
+}
+
+func (d *destinator[Dest]) scanTime(field string) (Scanner[Dest], error) {
+	return d.Cache("Time:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanTime(false, time.Time{})
+	})
+}
+
+func (d *destinator[Dest]) scanNullTime(field string, def time.Time) (Scanner[Dest], error) {
+	return d.Cache("NullTime:"+field+":"+def.String(), field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanTime(true, def)
+	})
+}
+
+func (d *destinator[Dest]) scanJSON(field string) (Scanner[Dest], error) {
+	return d.Cache("JSON:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanJSON()
+	})
+}
+
+func (d *destinator[Dest]) scanBinary(field string) (Scanner[Dest], error) {
+	return d.Cache("Binary:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanBinary()
+	})
+}
+
+func (d *destinator[Dest]) scanText(field string) (Scanner[Dest], error) {
+	return d.Cache("Text:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanText()
+	})
+}
+
+func (d *destinator[Dest]) scanStringSlice(field string, sep string) (Scanner[Dest], error) {
+	return d.Cache("StringSlice:"+field+":"+sep, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanStringSlice(sep)
+	})
+}
+
+func (d *destinator[Dest]) scanStringTime(field string, layout string, location string) (Scanner[Dest], error) {
+	return d.Cache("StringTime:"+field+":"+layout+":"+location, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanStringTime(layout, location, false, "")
+	})
+}
+
+func (d *destinator[Dest]) scanNullStringTime(field string, layout string, location string, def string) (Scanner[Dest], error) {
+	return d.Cache("NullStringTime:"+field+":"+layout+":"+location+":"+def, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		return a.scanStringTime(layout, location, true, def)
+	})
+}
+
 // idea is stolen from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
-func escapeNode[Dest any](t *template.Template, n parse.Node) error {
+func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error {
 	switch v := n.(type) {
 	case *parse.ActionNode:
-		return escapeNode[Dest](t, v.Pipe)
+		return d.escapeNode(t, v.Pipe)
 	case *parse.IfNode:
 		return errors.Join(
-			escapeNode[Dest](t, v.List),
-			escapeNode[Dest](t, v.ElseList),
+			d.escapeNode(t, v.List),
+			d.escapeNode(t, v.ElseList),
 		)
 	case *parse.ListNode:
 		if v == nil {
@@ -1503,7 +1493,7 @@ func escapeNode[Dest any](t *template.Template, n parse.Node) error {
 		}
 
 		for _, n := range v.Nodes {
-			if err := escapeNode[Dest](t, n); err != nil {
+			if err := d.escapeNode(t, n); err != nil {
 				return err
 			}
 		}
@@ -1530,7 +1520,7 @@ func escapeNode[Dest any](t *template.Template, n parse.Node) error {
 				continue
 			}
 
-			_, err := makeAccessor[Dest](node.Text)
+			_, err := makeAccessor[Dest](d.typ, node.Text)
 			if err != nil {
 				return err
 			}
@@ -1547,18 +1537,18 @@ func escapeNode[Dest any](t *template.Template, n parse.Node) error {
 		})
 	case *parse.RangeNode:
 		return errors.Join(
-			escapeNode[Dest](t, v.List),
-			escapeNode[Dest](t, v.ElseList),
+			d.escapeNode(t, v.List),
+			d.escapeNode(t, v.ElseList),
 		)
 	case *parse.WithNode:
 		return errors.Join(
-			escapeNode[Dest](t, v.List),
-			escapeNode[Dest](t, v.ElseList),
+			d.escapeNode(t, v.List),
+			d.escapeNode(t, v.ElseList),
 		)
 	case *parse.TemplateNode:
 		tpl := t.Lookup(v.Name)
 
-		return escapeNode[Dest](tpl, tpl.Tree.Root)
+		return d.escapeNode(tpl, tpl.Tree.Root)
 	}
 
 	return nil
@@ -1573,7 +1563,7 @@ var hashPool = sync.Pool{
 func getLocation() string {
 	_, file, line, _ := runtime.Caller(2)
 
-	return fmt.Sprintf("%s:%d", file, line)
+	return file + ":" + strconv.Itoa(line)
 }
 
 var ident = "__sqlt__"
@@ -1586,57 +1576,56 @@ type runner[Param any, Dest any] struct {
 	scanners  []Scanner[Dest]
 }
 
-func (r *runner[Param, Dest]) reset() {
-	r.ctx = context.Background()
-	r.sqlWriter.reset()
-	r.args = r.args[:0]
-	r.scanners = r.scanners[:0]
-}
-
 func (r *runner[Param, Dest]) expr(param Param) (Expression[Dest], error) {
 	if err := r.tpl.Execute(r.sqlWriter, param); err != nil {
 		return Expression[Dest]{}, err
 	}
 
-	return Expression[Dest]{
+	expr := Expression[Dest]{
 		SQL:      r.sqlWriter.toString(),
-		Args:     slices.Clone(r.args),
-		Scanners: slices.Clone(r.scanners),
-	}, nil
+		Args:     r.args,
+		Scanners: r.scanners,
+	}
+
+	r.ctx = context.Background()
+	r.args = make([]any, 0, len(expr.Args))
+	r.scanners = make([]Scanner[Dest], 0, len(expr.Scanners))
+
+	return expr, nil
 }
 
 type sqlWriter struct {
 	data []byte
 }
 
-func (d *sqlWriter) reset() {
-	d.data = d.data[:0]
-}
-
 // Write implements io.Wr	iter.
-func (d *sqlWriter) Write(data []byte) (int, error) {
+func (w *sqlWriter) Write(data []byte) (int, error) {
 	for _, b := range data {
 		switch b {
 		case ' ', '\n', '\r', '\t':
-			if len(d.data) > 0 && d.data[len(d.data)-1] != ' ' {
-				d.data = append(d.data, ' ')
+			if len(w.data) > 0 && w.data[len(w.data)-1] != ' ' {
+				w.data = append(w.data, ' ')
 			}
 		default:
-			d.data = append(d.data, b)
+			w.data = append(w.data, b)
 		}
 	}
 
 	return len(data), nil
 }
 
-func (d *sqlWriter) toString() string {
-	if len(d.data) == 0 {
+func (w *sqlWriter) toString() string {
+	n := len(w.data)
+
+	if n == 0 {
 		return ""
+	} else if w.data[n-1] == ' ' {
+		n--
 	}
 
-	if d.data[len(d.data)-1] == ' ' {
-		d.data = d.data[:len(d.data)-1]
-	}
+	s := string(w.data[:n])
 
-	return string(d.data)
+	w.data = w.data[:0]
+
+	return s
 }
