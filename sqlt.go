@@ -814,7 +814,8 @@ func makeAccessor[Dest any](t reflect.Type, field string) (accessor[Dest], error
 	}
 
 	a := accessor[Dest]{
-		typ: t,
+		typ:         t,
+		pointerType: reflect.PointerTo(t),
 		access: func(d *Dest) reflect.Value {
 			v := reflect.ValueOf(d).Elem()
 
@@ -840,16 +841,15 @@ func makeAccessor[Dest any](t reflect.Type, field string) (accessor[Dest], error
 }
 
 type accessor[Dest any] struct {
-	typ    reflect.Type
-	access func(*Dest) reflect.Value
+	typ         reflect.Type
+	pointerType reflect.Type
+	access      func(*Dest) reflect.Value
 }
 
 var scannerType = reflect.TypeFor[sql.Scanner]()
 
 func (a accessor[Dest]) scanColumn(scanType reflect.Type, nullable bool) (Scanner[Dest], error) {
-	pointerType := reflect.PointerTo(a.typ)
-
-	if pointerType.Implements(scannerType) {
+	if a.pointerType.Implements(scannerType) {
 		return a.scan()
 	}
 
@@ -874,11 +874,11 @@ func (a accessor[Dest]) scanColumn(scanType reflect.Type, nullable bool) (Scanne
 		return a.scanStringTime("", "", nullable, time.Now().Format(time.RFC3339Nano))
 	}
 
-	if pointerType.Implements(textUnmarshalerType) {
+	if a.pointerType.Implements(textUnmarshalerType) {
 		return a.scanText()
 	}
 
-	if pointerType.Implements(binaryUnmarshalerType) {
+	if a.pointerType.Implements(binaryUnmarshalerType) {
 		return a.scanBinary()
 	}
 
@@ -886,9 +886,7 @@ func (a accessor[Dest]) scanColumn(scanType reflect.Type, nullable bool) (Scanne
 }
 
 func (a accessor[Dest]) scan() (Scanner[Dest], error) {
-	pointerType := reflect.PointerTo(a.typ)
-
-	if !pointerType.Implements(scannerType) {
+	if !a.pointerType.Implements(scannerType) {
 		return nil, fmt.Errorf("type %s doesn't implement sql.Scanner", a.typ)
 	}
 
@@ -1156,9 +1154,7 @@ func (a accessor[Dest]) scanJSON() (Scanner[Dest], error) {
 var binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
 
 func (a accessor[Dest]) scanBinary() (Scanner[Dest], error) {
-	pointerType := reflect.PointerTo(a.typ)
-
-	if pointerType.Implements(binaryUnmarshalerType) {
+	if a.pointerType.Implements(binaryUnmarshalerType) {
 		return func() (any, func(dest *Dest) error) {
 			var src []byte
 
@@ -1178,9 +1174,7 @@ func (a accessor[Dest]) scanBinary() (Scanner[Dest], error) {
 var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 
 func (a accessor[Dest]) scanText() (Scanner[Dest], error) {
-	pointerType := reflect.PointerTo(a.typ)
-
-	if pointerType.Implements(textUnmarshalerType) {
+	if a.pointerType.Implements(textUnmarshalerType) {
 		return func() (any, func(dest *Dest) error) {
 			var src sql.Null[[]byte]
 
@@ -1227,7 +1221,12 @@ func (a accessor[Dest]) scanStringSlice(sep string) (Scanner[Dest], error) {
 	}, nil
 }
 
-var layouts = map[string]string{
+var layoutMap = map[string]string{
+	"DateTime":    time.DateTime,
+	"DateOnly":    time.DateOnly,
+	"TimeOnly":    time.TimeOnly,
+	"RFC3339":     time.RFC3339,
+	"RFC3339Nano": time.RFC3339Nano,
 	"Layout":      time.Layout,
 	"ANSIC":       time.ANSIC,
 	"UnixDate":    time.UnixDate,
@@ -1237,16 +1236,11 @@ var layouts = map[string]string{
 	"RFC850":      time.RFC850,
 	"RFC1123":     time.RFC1123,
 	"RFC1123Z":    time.RFC1123Z,
-	"RFC3339":     time.RFC3339,
-	"RFC3339Nano": time.RFC3339Nano,
 	"Kitchen":     time.Kitchen,
 	"Stamp":       time.Stamp,
 	"StampMilli":  time.StampMilli,
 	"StampMicro":  time.StampMicro,
 	"StampNano":   time.StampNano,
-	"DateTime":    time.DateTime,
-	"DateOnly":    time.DateOnly,
-	"TimeOnly":    time.TimeOnly,
 }
 
 func (a accessor[Dest]) scanStringTime(layout string, location string, nullable bool, def string) (Scanner[Dest], error) {
@@ -1259,7 +1253,7 @@ func (a accessor[Dest]) scanStringTime(layout string, location string, nullable 
 		return nil, err
 	}
 
-	if l, ok := layouts[layout]; ok {
+	if l, ok := layoutMap[layout]; ok {
 		layout = l
 	}
 
@@ -1269,7 +1263,7 @@ func (a accessor[Dest]) scanStringTime(layout string, location string, nullable 
 
 	if layout == "" {
 		convert = func(str string) (time.Time, error) {
-			for _, l := range layouts {
+			for _, l := range layoutMap {
 				t, err := time.ParseInLocation(l, str, loc)
 				if err == nil {
 					return t, nil
