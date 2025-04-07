@@ -317,40 +317,17 @@ func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) er
 }
 
 func (e Expression[Dest]) First(ctx context.Context, db DB) (Dest, error) {
-	var first Dest
-
-	if len(e.SQL) == 0 {
-		return first, sql.ErrNoRows
-	}
-
-	rows, err := db.QueryContext(ctx, e.SQL, e.Args...)
-	if err != nil {
-		return first, err
-	}
-
-	if !rows.Next() {
-		return first, errors.Join(sql.ErrNoRows, rows.Close())
-	}
-
-	values, mapper, err := e.DestMapper(rows)
-	if err != nil {
-		return first, errors.Join(err, rows.Close())
-	}
-
-	if err = rows.Scan(values...); err != nil {
-		return first, errors.Join(err, rows.Close())
-	}
-
-	if err = mapper(&first); err != nil {
-		return first, errors.Join(err, rows.Close())
-	}
-
-	return first, errors.Join(rows.Close(), rows.Err())
+	fmt.Println(e.SQL, e.Args)
+	return e.fetchOne(ctx, db, false)
 }
 
 var ErrTooManyRows = errors.New("too many rows")
 
 func (e Expression[Dest]) One(ctx context.Context, db DB) (Dest, error) {
+	return e.fetchOne(ctx, db, true)
+}
+
+func (e Expression[Dest]) fetchOne(ctx context.Context, db DB, enforeOne bool) (Dest, error) {
 	var one Dest
 
 	if len(e.SQL) == 0 {
@@ -379,7 +356,7 @@ func (e Expression[Dest]) One(ctx context.Context, db DB) (Dest, error) {
 		return one, errors.Join(err, rows.Close())
 	}
 
-	if rows.Next() {
+	if enforeOne && rows.Next() {
 		return one, errors.Join(ErrTooManyRows, rows.Close())
 	}
 
@@ -843,7 +820,13 @@ type accessor[Dest any] struct {
 	access      func(*Dest) reflect.Value
 }
 
-var scannerType = reflect.TypeFor[sql.Scanner]()
+var (
+	scannerType           = reflect.TypeFor[sql.Scanner]()
+	timeType              = reflect.TypeFor[time.Time]()
+	textUnmarshalerType   = reflect.TypeFor[encoding.TextUnmarshaler]()
+	binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
+	byteSliceType         = reflect.TypeFor[[]byte]()
+)
 
 func (a accessor[Dest]) scanColumn(scanType reflect.Type, nullable bool) (Scanner[Dest], error) {
 	if a.pointerType.Implements(scannerType) {
@@ -1066,8 +1049,6 @@ func (a accessor[Dest]) scanBool() (Scanner[Dest], error) {
 	}, nil
 }
 
-var timeType = reflect.TypeFor[time.Time]()
-
 func (a accessor[Dest]) scanTime() (Scanner[Dest], error) {
 	if a.typ != timeType {
 		return nil, fmt.Errorf("type %s is not time.Time", a.typ)
@@ -1099,8 +1080,6 @@ func (a accessor[Dest]) scanTime() (Scanner[Dest], error) {
 		}
 	}, nil
 }
-
-var byteSliceType = reflect.TypeFor[[]byte]()
 
 func (a accessor[Dest]) scanJSON() (Scanner[Dest], error) {
 	if a.typ == byteSliceType {
@@ -1138,8 +1117,6 @@ func (a accessor[Dest]) scanJSON() (Scanner[Dest], error) {
 	}, nil
 }
 
-var binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
-
 func (a accessor[Dest]) scanBinary() (Scanner[Dest], error) {
 	if a.pointerType.Implements(binaryUnmarshalerType) {
 		return func() (any, func(dest *Dest) error) {
@@ -1157,8 +1134,6 @@ func (a accessor[Dest]) scanBinary() (Scanner[Dest], error) {
 
 	return nil, fmt.Errorf("type %s doesn't implement encoding.BinaryUnmarshaler", a.typ)
 }
-
-var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 
 func (a accessor[Dest]) scanText() (Scanner[Dest], error) {
 	if a.pointerType.Implements(textUnmarshalerType) {
@@ -1313,15 +1288,11 @@ type destinator[Dest any] struct {
 
 func (d *destinator[Dest]) Cache(key string, field string, f func(a accessor[Dest]) (Scanner[Dest], error)) (Scanner[Dest], error) {
 	d.mu.RLock()
-
 	scanner, ok := d.store[key]
+	d.mu.RUnlock()
 	if ok {
-		d.mu.RUnlock()
-
 		return scanner, nil
 	}
-
-	d.mu.RUnlock()
 
 	a, err := makeAccessor[Dest](d.typ, field)
 	if err != nil {
