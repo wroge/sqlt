@@ -506,11 +506,11 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 			"ScanFloat64":     d.scanFloat64,
 			"ScanBool":        d.scanBool,
 			"ScanTime":        d.scanTime,
-			"ScanStringSlice": d.scanStringSlice,
-			"ScanStringTime":  d.scanStringTime,
+			"ScanJSON":        d.scanJSON,
 			"ScanBinary":      d.scanBinary,
 			"ScanText":        d.scanText,
-			"ScanJSON":        d.scanJSON,
+			"ScanStringSlice": d.scanStringSlice,
+			"ScanStringTime":  d.scanStringTime,
 		})
 		err error
 	)
@@ -869,10 +869,6 @@ func (a accessor[Dest]) scanColumn(scanType reflect.Type, nullable bool) (Scanne
 }
 
 func (a accessor[Dest]) scan() (Scanner[Dest], error) {
-	if !a.pointerType.Implements(scannerType) {
-		return nil, fmt.Errorf("type %s doesn't implement sql.Scanner", a.typ)
-	}
-
 	return func() (any, func(dest *Dest) error) {
 		var src any
 
@@ -883,10 +879,6 @@ func (a accessor[Dest]) scan() (Scanner[Dest], error) {
 }
 
 func (a accessor[Dest]) scanString() (Scanner[Dest], error) {
-	if a.typ.Kind() != reflect.String {
-		return nil, fmt.Errorf("cannot set string in type %s", a.typ)
-	}
-
 	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *string
@@ -915,12 +907,6 @@ func (a accessor[Dest]) scanString() (Scanner[Dest], error) {
 }
 
 func (a accessor[Dest]) scanInt64() (Scanner[Dest], error) {
-	switch a.typ.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-	default:
-		return nil, fmt.Errorf("cannot set int64 in type %s", a.typ)
-	}
-
 	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *int64
@@ -949,12 +935,6 @@ func (a accessor[Dest]) scanInt64() (Scanner[Dest], error) {
 }
 
 func (a accessor[Dest]) scanUint64() (Scanner[Dest], error) {
-	switch a.typ.Kind() {
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-	default:
-		return nil, fmt.Errorf("cannot set uint64 in type %s", a.typ)
-	}
-
 	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *uint64
@@ -983,12 +963,6 @@ func (a accessor[Dest]) scanUint64() (Scanner[Dest], error) {
 }
 
 func (a accessor[Dest]) scanFloat64() (Scanner[Dest], error) {
-	switch a.typ.Kind() {
-	case reflect.Float32, reflect.Float64:
-	default:
-		return nil, fmt.Errorf("cannot set float64 in type %s", a.typ)
-	}
-
 	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *float64
@@ -1017,10 +991,6 @@ func (a accessor[Dest]) scanFloat64() (Scanner[Dest], error) {
 }
 
 func (a accessor[Dest]) scanBool() (Scanner[Dest], error) {
-	if a.typ.Kind() != reflect.Bool {
-		return nil, fmt.Errorf("cannot set bool in type %s", a.typ)
-	}
-
 	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *bool
@@ -1049,10 +1019,6 @@ func (a accessor[Dest]) scanBool() (Scanner[Dest], error) {
 }
 
 func (a accessor[Dest]) scanTime() (Scanner[Dest], error) {
-	if a.typ != timeType {
-		return nil, fmt.Errorf("type %s is not time.Time", a.typ)
-	}
-
 	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *time.Time
@@ -1117,46 +1083,34 @@ func (a accessor[Dest]) scanJSON() (Scanner[Dest], error) {
 }
 
 func (a accessor[Dest]) scanBinary() (Scanner[Dest], error) {
-	if a.pointerType.Implements(binaryUnmarshalerType) {
-		return func() (any, func(dest *Dest) error) {
-			var src []byte
+	return func() (any, func(dest *Dest) error) {
+		var src []byte
 
-			return &src, func(dest *Dest) error {
-				if len(src) == 0 {
-					return nil
-				}
-
-				return a.access(dest).Addr().Interface().(encoding.BinaryUnmarshaler).UnmarshalBinary(src)
+		return &src, func(dest *Dest) error {
+			if len(src) == 0 {
+				return nil
 			}
-		}, nil
-	}
 
-	return nil, fmt.Errorf("type %s doesn't implement encoding.BinaryUnmarshaler", a.typ)
+			return a.access(dest).Addr().Interface().(encoding.BinaryUnmarshaler).UnmarshalBinary(src)
+		}
+	}, nil
 }
 
 func (a accessor[Dest]) scanText() (Scanner[Dest], error) {
-	if a.pointerType.Implements(textUnmarshalerType) {
-		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[[]byte]
+	return func() (any, func(dest *Dest) error) {
+		var src sql.Null[[]byte]
 
-			return &src, func(dest *Dest) error {
-				if !src.Valid {
-					return nil
-				}
-
-				return a.access(dest).Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText(src.V)
+		return &src, func(dest *Dest) error {
+			if !src.Valid {
+				return nil
 			}
-		}, nil
-	}
 
-	return nil, fmt.Errorf("type %s doesn't implement encoding.TextUnmarshaler", a.typ)
+			return a.access(dest).Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText(src.V)
+		}
+	}, nil
 }
 
 func (a accessor[Dest]) scanStringSlice(sep string) (Scanner[Dest], error) {
-	if a.typ.Kind() != reflect.Slice || a.typ.Elem().Kind() != reflect.String {
-		return nil, fmt.Errorf("cannot set []string in type %s", a.typ)
-	}
-
 	return func() (any, func(dest *Dest) error) {
 		var src sql.Null[string]
 
@@ -1205,10 +1159,6 @@ var layoutMap = map[string]string{
 }
 
 func (a accessor[Dest]) scanStringTime(layout string, location string) (Scanner[Dest], error) {
-	if a.typ != timeType {
-		return nil, fmt.Errorf("type %s is not time.Time", a.typ)
-	}
-
 	loc, err := time.LoadLocation(location)
 	if err != nil {
 		return nil, err
@@ -1285,9 +1235,9 @@ type destinator[Dest any] struct {
 	typ   reflect.Type
 }
 
-func (d *destinator[Dest]) Cache(key string, field string, f func(a accessor[Dest]) (Scanner[Dest], error)) (Scanner[Dest], error) {
+func (d *destinator[Dest]) Cache(field string, f func(a accessor[Dest]) (Scanner[Dest], error)) (Scanner[Dest], error) {
 	d.mu.RLock()
-	scanner, ok := d.store[key]
+	scanner, ok := d.store[field]
 	d.mu.RUnlock()
 	if ok {
 		return scanner, nil
@@ -1304,80 +1254,144 @@ func (d *destinator[Dest]) Cache(key string, field string, f func(a accessor[Des
 	}
 
 	d.mu.Lock()
-	d.store[key] = scanner
+	d.store[field] = scanner
 	d.mu.Unlock()
 
 	return scanner, nil
 }
 
 func (d *destinator[Dest]) scan(field string) (Scanner[Dest], error) {
-	return d.Cache(field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scan()
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.pointerType.Implements(scannerType) {
+			return a.scan()
+		}
+
+		switch a.typ.Kind() {
+		case reflect.String:
+			return a.scanString()
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return a.scanInt64()
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return a.scanUint64()
+		case reflect.Float32, reflect.Float64:
+			return a.scanFloat64()
+		case reflect.Bool:
+			return a.scanBool()
+		}
+
+		if a.typ == timeType {
+			return a.scanTime()
+		}
+
+		return nil, fmt.Errorf("scan: type %s is not supported", a.typ)
 	})
 }
 
 func (d *destinator[Dest]) scanString(field string) (Scanner[Dest], error) {
-	return d.Cache("String:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.typ.Kind() != reflect.String {
+			return nil, fmt.Errorf("scan string: type %s is not supported", a.typ)
+		}
+
 		return a.scanString()
 	})
 }
 
 func (d *destinator[Dest]) scanInt64(field string) (Scanner[Dest], error) {
-	return d.Cache("Int64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanInt64()
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		switch a.typ.Kind() {
+		default:
+			return nil, fmt.Errorf("scan int64: type %s is not supported", a.typ)
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return a.scanInt64()
+		}
 	})
 }
 
 func (d *destinator[Dest]) scanUint64(field string) (Scanner[Dest], error) {
-	return d.Cache("Uint64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanUint64()
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		switch a.typ.Kind() {
+		default:
+			return nil, fmt.Errorf("scan uint64: type %s is not supported", a.typ)
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return a.scanUint64()
+		}
 	})
 }
 
 func (d *destinator[Dest]) scanFloat64(field string) (Scanner[Dest], error) {
-	return d.Cache("Float64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanFloat64()
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		switch a.typ.Kind() {
+		default:
+			return nil, fmt.Errorf("scan float64: type %s is not supported", a.typ)
+		case reflect.Float32, reflect.Float64:
+			return a.scanFloat64()
+		}
 	})
 }
 
 func (d *destinator[Dest]) scanBool(field string) (Scanner[Dest], error) {
-	return d.Cache("Bool:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.typ.Kind() != reflect.Bool {
+			return nil, fmt.Errorf("scan bool: type %s is not supported", a.typ)
+		}
+
 		return a.scanBool()
 	})
 }
 
 func (d *destinator[Dest]) scanTime(field string) (Scanner[Dest], error) {
-	return d.Cache("Time:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.typ != timeType {
+			return nil, fmt.Errorf("scan time: type %s is not supported", a.typ)
+		}
+
 		return a.scanTime()
 	})
 }
 
 func (d *destinator[Dest]) scanJSON(field string) (Scanner[Dest], error) {
-	return d.Cache("JSON:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		return a.scanJSON()
 	})
 }
 
 func (d *destinator[Dest]) scanBinary(field string) (Scanner[Dest], error) {
-	return d.Cache("Binary:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if !a.pointerType.Implements(binaryUnmarshalerType) {
+			return nil, fmt.Errorf("scan binary: type %s doesn't implement encoding.BinaryUnmarshaler", a.typ)
+		}
+
 		return a.scanBinary()
 	})
 }
 
 func (d *destinator[Dest]) scanText(field string) (Scanner[Dest], error) {
-	return d.Cache("Text:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if !a.pointerType.Implements(textUnmarshalerType) {
+			return nil, fmt.Errorf("scan binary: type %s doesn't implement encoding.TextUnmarshaler", a.typ)
+		}
+
 		return a.scanText()
 	})
 }
 
 func (d *destinator[Dest]) scanStringSlice(field string, sep string) (Scanner[Dest], error) {
-	return d.Cache("StringSlice:"+field+":"+sep, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.typ.Kind() != reflect.Slice || a.typ.Elem().Kind() != reflect.String {
+			return nil, fmt.Errorf("scan string slice: cannot set []string in type %s", a.typ)
+		}
+
 		return a.scanStringSlice(sep)
 	})
 }
 
 func (d *destinator[Dest]) scanStringTime(field string, layout string, location string) (Scanner[Dest], error) {
-	return d.Cache("StringTime:"+field+":"+layout+":"+location, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.typ != timeType {
+			return nil, fmt.Errorf("scan string time: type %s is not time.Time", a.typ)
+		}
+
 		return a.scanStringTime(layout, location)
 	})
 }
