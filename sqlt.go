@@ -317,7 +317,6 @@ func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) er
 }
 
 func (e Expression[Dest]) First(ctx context.Context, db DB) (Dest, error) {
-	fmt.Println(e.SQL, e.Args)
 	return e.fetchOne(ctx, db, false)
 }
 
