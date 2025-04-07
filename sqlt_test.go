@@ -21,7 +21,7 @@ type Pokemon struct {
 	Generation     uint64            `json:"generation"`
 	Legendary      bool              `json:"legendary"`
 	Types          []string          `json:"types"`
-	Classification string            `json:"classification"`
+	Classification *string           `json:"classification"`
 	Abilities      []string          `json:"abilities"`
 	SomeDate       time.Time         `json:"some_date,omitzero"`
 }

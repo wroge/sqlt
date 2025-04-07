@@ -523,25 +523,18 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 			"Context": func(key string) any {
 				return ContextKey(key)
 			},
-			"Scan":               d.scan,
-			"ScanString":         d.scanString,
-			"ScanNullString":     d.scanNullString,
-			"ScanInt64":          d.scanInt64,
-			"ScanNullInt64":      d.scanNullInt64,
-			"ScanUint64":         d.scanUint64,
-			"ScanNullUint64":     d.scanNullUint64,
-			"ScanFloat64":        d.scanFloat64,
-			"ScanNullFloat64":    d.scanNullFloat64,
-			"ScanBool":           d.scanBool,
-			"ScanNullBool":       d.scanNullBool,
-			"ScanTime":           d.scanTime,
-			"ScanNullTime":       d.scanNullTime,
-			"ScanStringSlice":    d.scanStringSlice,
-			"ScanStringTime":     d.scanStringTime,
-			"ScanNullStringTime": d.scanNullStringTime,
-			"ScanBinary":         d.scanBinary,
-			"ScanText":           d.scanText,
-			"ScanJSON":           d.scanJSON,
+			"Scan":            d.scan,
+			"ScanString":      d.scanString,
+			"ScanInt64":       d.scanInt64,
+			"ScanUint64":      d.scanUint64,
+			"ScanFloat64":     d.scanFloat64,
+			"ScanBool":        d.scanBool,
+			"ScanTime":        d.scanTime,
+			"ScanStringSlice": d.scanStringSlice,
+			"ScanStringTime":  d.scanStringTime,
+			"ScanBinary":      d.scanBinary,
+			"ScanText":        d.scanText,
+			"ScanJSON":        d.scanJSON,
 		})
 		err error
 	)
@@ -813,9 +806,12 @@ func makeAccessor[Dest any](t reflect.Type, field string) (accessor[Dest], error
 		}
 	}
 
+	l := len(indices)
+
 	a := accessor[Dest]{
 		typ:         t,
 		pointerType: reflect.PointerTo(t),
+		pointer:     l > 0 && indices[l-1] == -1,
 		access: func(d *Dest) reflect.Value {
 			v := reflect.ValueOf(d).Elem()
 
@@ -843,6 +839,7 @@ func makeAccessor[Dest any](t reflect.Type, field string) (accessor[Dest], error
 type accessor[Dest any] struct {
 	typ         reflect.Type
 	pointerType reflect.Type
+	pointer     bool
 	access      func(*Dest) reflect.Value
 }
 
@@ -853,25 +850,29 @@ func (a accessor[Dest]) scanColumn(scanType reflect.Type, nullable bool) (Scanne
 		return a.scan()
 	}
 
+	if nullable {
+		a.pointer = true
+	}
+
 	switch a.typ.Kind() {
 	case reflect.String:
-		return a.scanString(nullable, "")
+		return a.scanString()
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return a.scanInt64(nullable, 0)
+		return a.scanInt64()
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return a.scanUint64(nullable, 0)
+		return a.scanUint64()
 	case reflect.Float32, reflect.Float64:
-		return a.scanFloat64(nullable, 0)
+		return a.scanFloat64()
 	case reflect.Bool:
-		return a.scanBool(nullable, false)
+		return a.scanBool()
 	}
 
 	if a.typ == timeType {
 		if scanType == timeType {
-			return a.scanTime(nullable, time.Time{})
+			return a.scanTime()
 		}
 
-		return a.scanStringTime("", "", nullable, time.Now().Format(time.RFC3339Nano))
+		return a.scanStringTime("", "")
 	}
 
 	if a.pointerType.Implements(textUnmarshalerType) {
@@ -899,19 +900,17 @@ func (a accessor[Dest]) scan() (Scanner[Dest], error) {
 	}, nil
 }
 
-func (a accessor[Dest]) scanString(nullable bool, def string) (Scanner[Dest], error) {
+func (a accessor[Dest]) scanString() (Scanner[Dest], error) {
 	if a.typ.Kind() != reflect.String {
 		return nil, fmt.Errorf("cannot set string in type %s", a.typ)
 	}
 
-	if nullable {
+	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *string
 
 			return &src, func(dest *Dest) error {
 				if src == nil {
-					a.access(dest).SetString(def)
-
 					return nil
 				}
 
@@ -933,21 +932,19 @@ func (a accessor[Dest]) scanString(nullable bool, def string) (Scanner[Dest], er
 	}, nil
 }
 
-func (a accessor[Dest]) scanInt64(nullable bool, def int64) (Scanner[Dest], error) {
+func (a accessor[Dest]) scanInt64() (Scanner[Dest], error) {
 	switch a.typ.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 	default:
 		return nil, fmt.Errorf("cannot set int64 in type %s", a.typ)
 	}
 
-	if nullable {
+	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *int64
 
 			return &src, func(dest *Dest) error {
 				if src == nil {
-					a.access(dest).SetInt(def)
-
 					return nil
 				}
 
@@ -969,21 +966,19 @@ func (a accessor[Dest]) scanInt64(nullable bool, def int64) (Scanner[Dest], erro
 	}, nil
 }
 
-func (a accessor[Dest]) scanUint64(nullable bool, def uint64) (Scanner[Dest], error) {
+func (a accessor[Dest]) scanUint64() (Scanner[Dest], error) {
 	switch a.typ.Kind() {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 	default:
 		return nil, fmt.Errorf("cannot set uint64 in type %s", a.typ)
 	}
 
-	if nullable {
+	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *uint64
 
 			return &src, func(dest *Dest) error {
 				if src == nil {
-					a.access(dest).SetUint(def)
-
 					return nil
 				}
 
@@ -1005,21 +1000,19 @@ func (a accessor[Dest]) scanUint64(nullable bool, def uint64) (Scanner[Dest], er
 	}, nil
 }
 
-func (a accessor[Dest]) scanFloat64(nullable bool, def float64) (Scanner[Dest], error) {
+func (a accessor[Dest]) scanFloat64() (Scanner[Dest], error) {
 	switch a.typ.Kind() {
 	case reflect.Float32, reflect.Float64:
 	default:
 		return nil, fmt.Errorf("cannot set float64 in type %s", a.typ)
 	}
 
-	if nullable {
+	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *float64
 
 			return &src, func(dest *Dest) error {
 				if src == nil {
-					a.access(dest).SetFloat(def)
-
 					return nil
 				}
 
@@ -1041,19 +1034,17 @@ func (a accessor[Dest]) scanFloat64(nullable bool, def float64) (Scanner[Dest], 
 	}, nil
 }
 
-func (a accessor[Dest]) scanBool(nullable bool, def bool) (Scanner[Dest], error) {
+func (a accessor[Dest]) scanBool() (Scanner[Dest], error) {
 	if a.typ.Kind() != reflect.Bool {
 		return nil, fmt.Errorf("cannot set bool in type %s", a.typ)
 	}
 
-	if nullable {
+	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *bool
 
 			return &src, func(dest *Dest) error {
 				if src == nil {
-					a.access(dest).SetBool(def)
-
 					return nil
 				}
 
@@ -1077,21 +1068,17 @@ func (a accessor[Dest]) scanBool(nullable bool, def bool) (Scanner[Dest], error)
 
 var timeType = reflect.TypeFor[time.Time]()
 
-func (a accessor[Dest]) scanTime(nullable bool, def time.Time) (Scanner[Dest], error) {
+func (a accessor[Dest]) scanTime() (Scanner[Dest], error) {
 	if a.typ != timeType {
 		return nil, fmt.Errorf("type %s is not time.Time", a.typ)
 	}
 
-	if nullable {
-		value := reflect.ValueOf(def)
-
+	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *time.Time
 
 			return &src, func(dest *Dest) error {
 				if src == nil {
-					a.access(dest).Set(value)
-
 					return nil
 				}
 
@@ -1243,7 +1230,7 @@ var layoutMap = map[string]string{
 	"StampNano":   time.StampNano,
 }
 
-func (a accessor[Dest]) scanStringTime(layout string, location string, nullable bool, def string) (Scanner[Dest], error) {
+func (a accessor[Dest]) scanStringTime(layout string, location string) (Scanner[Dest], error) {
 	if a.typ != timeType {
 		return nil, fmt.Errorf("type %s is not time.Time", a.typ)
 	}
@@ -1274,17 +1261,13 @@ func (a accessor[Dest]) scanStringTime(layout string, location string, nullable 
 		}
 	}
 
-	if nullable {
+	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *string
 
 			return &src, func(dest *Dest) error {
 				if src == nil {
-					if def == "" {
-						return nil
-					}
-
-					src = &def
+					return nil
 				}
 
 				t, err := convert(*src)
@@ -1365,73 +1348,37 @@ func (d *destinator[Dest]) scan(field string) (Scanner[Dest], error) {
 
 func (d *destinator[Dest]) scanString(field string) (Scanner[Dest], error) {
 	return d.Cache("String:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanString(false, "")
-	})
-}
-
-func (d *destinator[Dest]) scanNullString(field string, def string) (Scanner[Dest], error) {
-	return d.Cache("NullString:"+field+":"+def, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanString(true, def)
+		return a.scanString()
 	})
 }
 
 func (d *destinator[Dest]) scanInt64(field string) (Scanner[Dest], error) {
 	return d.Cache("Int64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanInt64(false, 0)
-	})
-}
-
-func (d *destinator[Dest]) scanNullInt64(field string, def int64) (Scanner[Dest], error) {
-	return d.Cache("NullInt:"+field+":"+strconv.FormatInt(def, 10), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanInt64(true, def)
+		return a.scanInt64()
 	})
 }
 
 func (d *destinator[Dest]) scanUint64(field string) (Scanner[Dest], error) {
 	return d.Cache("Uint64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanUint64(false, 0)
-	})
-}
-
-func (d *destinator[Dest]) scanNullUint64(field string, def uint64) (Scanner[Dest], error) {
-	return d.Cache("NullUint64:"+field+":"+strconv.FormatUint(def, 10), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanUint64(true, def)
+		return a.scanUint64()
 	})
 }
 
 func (d *destinator[Dest]) scanFloat64(field string) (Scanner[Dest], error) {
 	return d.Cache("Float64:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanFloat64(false, 0)
-	})
-}
-
-func (d *destinator[Dest]) scanNullFloat64(field string, def float64) (Scanner[Dest], error) {
-	return d.Cache("NullFloat64:"+field+":"+strconv.FormatFloat(def, 'g', -1, 64), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanFloat64(true, def)
+		return a.scanFloat64()
 	})
 }
 
 func (d *destinator[Dest]) scanBool(field string) (Scanner[Dest], error) {
 	return d.Cache("Bool:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanBool(false, false)
-	})
-}
-
-func (d *destinator[Dest]) scanNullBool(field string, def bool) (Scanner[Dest], error) {
-	return d.Cache("NullBool:"+strconv.FormatBool(def), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanBool(true, def)
+		return a.scanBool()
 	})
 }
 
 func (d *destinator[Dest]) scanTime(field string) (Scanner[Dest], error) {
 	return d.Cache("Time:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanTime(false, time.Time{})
-	})
-}
-
-func (d *destinator[Dest]) scanNullTime(field string, def time.Time) (Scanner[Dest], error) {
-	return d.Cache("NullTime:"+field+":"+def.String(), field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanTime(true, def)
+		return a.scanTime()
 	})
 }
 
@@ -1461,13 +1408,7 @@ func (d *destinator[Dest]) scanStringSlice(field string, sep string) (Scanner[De
 
 func (d *destinator[Dest]) scanStringTime(field string, layout string, location string) (Scanner[Dest], error) {
 	return d.Cache("StringTime:"+field+":"+layout+":"+location, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanStringTime(layout, location, false, "")
-	})
-}
-
-func (d *destinator[Dest]) scanNullStringTime(field string, layout string, location string, def string) (Scanner[Dest], error) {
-	return d.Cache("NullStringTime:"+field+":"+layout+":"+location+":"+def, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		return a.scanStringTime(layout, location, true, def)
+		return a.scanStringTime(layout, location)
 	})
 }
 
