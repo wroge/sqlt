@@ -263,34 +263,16 @@ type Expression[Dest any] struct {
 
 func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) error, error) {
 	if len(e.Scanners) == 0 {
-		columns, err := rows.ColumnTypes()
-		if err != nil {
-			return nil, nil, err
-		}
+		e.Scanners = []Scanner[Dest]{
+			func() (any, func(dest *Dest) error) {
+				var value Dest
 
-		e.Scanners = make([]Scanner[Dest], len(columns))
+				return &value, func(dest *Dest) error {
+					*dest = value
 
-		t := reflect.TypeFor[Dest]()
-
-		for i, c := range columns {
-			a, err := makeAccessor[Dest](t, c.Name())
-			if err != nil {
-				if len(columns) != 1 {
-					return nil, nil, err
+					return nil
 				}
-
-				a, err = makeAccessor[Dest](t, "")
-				if err != nil {
-					return nil, nil, err
-				}
-			}
-
-			nullable, known := c.Nullable()
-
-			e.Scanners[i], err = a.scanColumn(c.ScanType(), nullable || !known)
-			if err != nil {
-				return nil, nil, err
-			}
+			},
 		}
 	}
 
@@ -788,25 +770,7 @@ func makeAccessor[Dest any](t reflect.Type, field string) (accessor[Dest], error
 		typ:         t,
 		pointerType: reflect.PointerTo(t),
 		pointer:     l > 0 && indices[l-1] == -1,
-		access: func(d *Dest) reflect.Value {
-			v := reflect.ValueOf(d).Elem()
-
-			for _, idx := range indices {
-				if idx < 0 {
-					if v.IsNil() {
-						v.Set(reflect.New(v.Type().Elem()))
-					}
-
-					v = v.Elem()
-
-					continue
-				}
-
-				v = v.Field(idx)
-			}
-
-			return v
-		},
+		indices:     indices,
 	}
 
 	return a, nil
@@ -816,7 +780,27 @@ type accessor[Dest any] struct {
 	typ         reflect.Type
 	pointerType reflect.Type
 	pointer     bool
-	access      func(*Dest) reflect.Value
+	indices     []int
+}
+
+func (a accessor[Dest]) access(d *Dest) reflect.Value {
+	v := reflect.ValueOf(d).Elem()
+
+	for _, idx := range a.indices {
+		if idx < 0 {
+			if v.IsNil() {
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+
+			v = v.Elem()
+
+			continue
+		}
+
+		v = v.Field(idx)
+	}
+
+	return v
 }
 
 var (
@@ -826,47 +810,6 @@ var (
 	binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
 	byteSliceType         = reflect.TypeFor[[]byte]()
 )
-
-func (a accessor[Dest]) scanColumn(scanType reflect.Type, nullable bool) (Scanner[Dest], error) {
-	if a.pointerType.Implements(scannerType) {
-		return a.scan()
-	}
-
-	if nullable {
-		a.pointer = true
-	}
-
-	switch a.typ.Kind() {
-	case reflect.String:
-		return a.scanString()
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return a.scanInt64()
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return a.scanUint64()
-	case reflect.Float32, reflect.Float64:
-		return a.scanFloat64()
-	case reflect.Bool:
-		return a.scanBool()
-	}
-
-	if a.typ == timeType {
-		if scanType == timeType {
-			return a.scanTime()
-		}
-
-		return a.scanStringTime("", "")
-	}
-
-	if a.pointerType.Implements(textUnmarshalerType) {
-		return a.scanText()
-	}
-
-	if a.pointerType.Implements(binaryUnmarshalerType) {
-		return a.scanBinary()
-	}
-
-	return a.scanJSON()
-}
 
 func (a accessor[Dest]) scan() (Scanner[Dest], error) {
 	return func() (any, func(dest *Dest) error) {

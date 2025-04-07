@@ -67,8 +67,6 @@ var (
 
 	query = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query"))
 
-	autoQuery = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query_auto"))
-
 	queryFirst = sqlt.First[Query, Pokemon](config, sqlt.Lookup("query"))
 
 	queryOne = sqlt.One[Query, Pokemon](config, sqlt.Lookup("query"))
@@ -103,18 +101,6 @@ func TestQueryPokemon(t *testing.T) {
 	}
 
 	pokemons, err := query.Exec(ctx, db, Query{
-		TypeOneOf:  NewPointer([]string{"Dragon"}),
-		Generation: NewPointer[uint64](1),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(pokemons) != 3 {
-		t.Errorf("Expected 3 Pokémon, got %d", len(pokemons))
-	}
-
-	pokemons, err = autoQuery.Exec(ctx, db, Query{
 		TypeOneOf:  NewPointer([]string{"Dragon"}),
 		Generation: NewPointer[uint64](1),
 	})
