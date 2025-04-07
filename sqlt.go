@@ -729,21 +729,7 @@ func makeAccessor[Dest any](t reflect.Type, field string) (accessor[Dest], error
 			case reflect.Struct:
 				sf, found := t.FieldByName(part)
 				if !found {
-					part = strings.ReplaceAll(part, "_", "")
-
-					for i := range t.NumField() {
-						sf = t.Field(i)
-
-						if strings.ToLower(sf.Name) == part {
-							found = true
-
-							break
-						}
-					}
-
-					if !found {
-						return accessor[Dest]{}, fmt.Errorf("field %s not found in struct %s", field, t.Name())
-					}
+					return accessor[Dest]{}, fmt.Errorf("field %s not found in struct %s", field, t.Name())
 				}
 
 				if !sf.IsExported() {
