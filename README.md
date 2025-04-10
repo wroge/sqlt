@@ -10,4 +10,7 @@ import "github.com/wroge/sqlt"
 
 `sqlt` uses Go’s template engine to create a flexible, powerful, and type-safe SQL builder and struct mapper.  
 
-- Vertical Slice Architecture [Example](https://github.com/wroge/vertical-slice-architecture)
+- [Website](https://wroge.github.io/sqlt-docs)
+- [Go Doc][https://pkg.go.dev/github.com/wroge/sqlt]
+- [Example](https://github.com/wroge/vertical-slice-architecture)
+- [Benchmarks](https://github.com/wroge/bench-flix)
