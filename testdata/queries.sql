@@ -137,11 +137,11 @@
 
 {{ define "query" }}
     SELECT 
-        p.number, 										{{ ScanInt64 "Number" }}	
+        p.number, 										{{ ScanInt "Number" }}	
         p.name, 										{{ ScanString "Name" }}
-        p.height, 										{{ ScanFloat64 "Height" }}	
+        p.height, 										{{ ScanFloat "Height" }}	
         p.weight, 										{{ Scan "Weight" }}
-        p.generation, 									{{ ScanUint64 "Generation" }}
+        p.generation, 									{{ ScanUint "Generation" }}
         p.legendary, 									{{ ScanBool "Legendary" }}
         IFNULL(pt.type_names, '') AS type_names, 		{{ ScanStringSlice "Types" "," }}
         c.name AS classification, 						{{ ScanString "Classification" }}

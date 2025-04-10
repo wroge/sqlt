@@ -478,14 +478,14 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 
 		t = template.New("").Funcs(template.FuncMap{
 			"Raw": func(sql string) Raw { return Raw(sql) },
-			"Context": func(key string) any {
-				return ContextKey(key)
+			"Context": func(key string, path ...reflect.Value) any {
+				return nil
 			},
 			"Scan":            d.scan,
 			"ScanString":      d.scanString,
-			"ScanInt64":       d.scanInt64,
-			"ScanUint64":      d.scanUint64,
-			"ScanFloat64":     d.scanFloat64,
+			"ScanInt":         d.scanInt,
+			"ScanUint":        d.scanUint,
+			"ScanFloat":       d.scanFloat,
 			"ScanBool":        d.scanBool,
 			"ScanTime":        d.scanTime,
 			"ScanJSON":        d.scanJSON,
@@ -508,7 +508,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 		panic(fmt.Errorf("check template at %s: %w", location, err))
 	}
 
-	if err = d.escapeNode(t, t.Tree.Root); err != nil {
+	if err = d.escapeNode(t, t.Root); err != nil {
 		panic(fmt.Errorf("escape template at %s: %w", location, err))
 	}
 
@@ -533,8 +533,62 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 			}
 
 			r.tpl.Funcs(template.FuncMap{
-				"Context": func(key string) any {
-					return r.ctx.Value(ContextKey(key))
+				"Context": func(key string, path ...reflect.Value) (any, error) {
+					value := r.ctx.Value(ContextKey(key))
+					if value == nil || len(path) == 0 {
+						return value, nil
+					}
+
+					v := reflect.ValueOf(value)
+
+					for _, p := range path {
+						switch v.Kind() {
+						default:
+							return nil, fmt.Errorf("invalid path %s for value of kind %s", p.String(), v.Kind())
+						case reflect.Struct:
+							v = v.FieldByName(p.String())
+							if !v.IsValid() {
+								return nil, fmt.Errorf("invalid path %s for value of kind %s", p.String(), v.Kind())
+							}
+						case reflect.Slice, reflect.Array:
+							if !p.CanInt() {
+								return nil, fmt.Errorf("path %s is not an int index", p.String())
+							}
+
+							index := int(p.Int())
+
+							if index < 0 || index >= v.Len() {
+								return nil, fmt.Errorf("invalid path %s: index out of bounds", p.String())
+							}
+
+							v = v.Index(index)
+							if !v.IsValid() {
+								return nil, fmt.Errorf("invalid path %s for value of kind %s", p.String(), v.Kind())
+							}
+						case reflect.Map:
+							mapKeyType := v.Type().Key()
+
+							if !p.IsValid() || !p.Type().AssignableTo(mapKeyType) {
+								return nil, fmt.Errorf("invalid map key %s: not assignable to map key type %s", p.String(), mapKeyType)
+							}
+
+							if !mapKeyType.Comparable() {
+								return nil, fmt.Errorf("cannot access map with key %s: key type is not comparable", mapKeyType)
+							}
+
+							val := v.MapIndex(p)
+							if !val.IsValid() {
+								return nil, fmt.Errorf("invalid path %s: key not found in map", p.String())
+							}
+							v = val
+						}
+					}
+
+					if !v.IsValid() || !v.CanInterface() {
+						return nil, fmt.Errorf("cannot interface value at path: invalid or inaccessible")
+					}
+
+					return v.Interface(), nil
 				},
 				ident: func(arg any) Raw {
 					switch a := arg.(type) {
@@ -835,7 +889,7 @@ func (a accessor[Dest]) scanString() (Scanner[Dest], error) {
 	}, nil
 }
 
-func (a accessor[Dest]) scanInt64() (Scanner[Dest], error) {
+func (a accessor[Dest]) scanInt() (Scanner[Dest], error) {
 	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *int64
@@ -863,7 +917,7 @@ func (a accessor[Dest]) scanInt64() (Scanner[Dest], error) {
 	}, nil
 }
 
-func (a accessor[Dest]) scanUint64() (Scanner[Dest], error) {
+func (a accessor[Dest]) scanUint() (Scanner[Dest], error) {
 	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *uint64
@@ -891,7 +945,7 @@ func (a accessor[Dest]) scanUint64() (Scanner[Dest], error) {
 	}, nil
 }
 
-func (a accessor[Dest]) scanFloat64() (Scanner[Dest], error) {
+func (a accessor[Dest]) scanFloat() (Scanner[Dest], error) {
 	if a.pointer {
 		return func() (any, func(dest *Dest) error) {
 			var src *float64
@@ -1110,7 +1164,7 @@ func (a accessor[Dest]) scanStringTime(layout string, location string) (Scanner[
 				}
 			}
 
-			return time.Time{}, fmt.Errorf("cannot parse '%s' into time.Time", str)
+			return time.Time{}, fmt.Errorf("cannot parse %s into time.Time", str)
 		}
 	}
 
@@ -1199,11 +1253,11 @@ func (d *destinator[Dest]) scan(field string) (Scanner[Dest], error) {
 		case reflect.String:
 			return a.scanString()
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return a.scanInt64()
+			return a.scanInt()
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return a.scanUint64()
+			return a.scanUint()
 		case reflect.Float32, reflect.Float64:
-			return a.scanFloat64()
+			return a.scanFloat()
 		case reflect.Bool:
 			return a.scanBool()
 		}
@@ -1226,35 +1280,35 @@ func (d *destinator[Dest]) scanString(field string) (Scanner[Dest], error) {
 	})
 }
 
-func (d *destinator[Dest]) scanInt64(field string) (Scanner[Dest], error) {
+func (d *destinator[Dest]) scanInt(field string) (Scanner[Dest], error) {
 	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		switch a.typ.Kind() {
 		default:
 			return nil, fmt.Errorf("scan int64: type %s is not supported", a.typ)
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return a.scanInt64()
+			return a.scanInt()
 		}
 	})
 }
 
-func (d *destinator[Dest]) scanUint64(field string) (Scanner[Dest], error) {
+func (d *destinator[Dest]) scanUint(field string) (Scanner[Dest], error) {
 	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		switch a.typ.Kind() {
 		default:
 			return nil, fmt.Errorf("scan uint64: type %s is not supported", a.typ)
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return a.scanUint64()
+			return a.scanUint()
 		}
 	})
 }
 
-func (d *destinator[Dest]) scanFloat64(field string) (Scanner[Dest], error) {
+func (d *destinator[Dest]) scanFloat(field string) (Scanner[Dest], error) {
 	return d.Cache(field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		switch a.typ.Kind() {
 		default:
 			return nil, fmt.Errorf("scan float64: type %s is not supported", a.typ)
 		case reflect.Float32, reflect.Float64:
-			return a.scanFloat64()
+			return a.scanFloat()
 		}
 	})
 }
@@ -1396,7 +1450,7 @@ func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error 
 	case *parse.TemplateNode:
 		tpl := t.Lookup(v.Name)
 
-		return d.escapeNode(tpl, tpl.Tree.Root)
+		return d.escapeNode(tpl, tpl.Root)
 	}
 
 	return nil
