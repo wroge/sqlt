@@ -51,25 +51,17 @@ var (
 			sqlt.ParseFiles("./testdata/queries.sql"),
 		},
 	}
-
-	create = sqlt.Exec[any](config, sqlt.Lookup("create"))
-
-	insert = sqlt.Transaction(
-		nil,
-		sqlt.Exec[[][]string](config, sqlt.Lookup("insert_types")),
-		sqlt.Exec[[][]string](config, sqlt.Lookup("insert_classifications")),
-		sqlt.Exec[[][]string](config, sqlt.Lookup("insert_abilities")),
-		sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemons")),
-		sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_types")),
-		sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_classifications")),
-		sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_abilities")),
-	)
-
-	query = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query"))
-
-	queryFirst = sqlt.First[Query, Pokemon](config, sqlt.Lookup("query"))
-
-	queryOne = sqlt.One[Query, Pokemon](config, sqlt.Lookup("query"))
+	create                       = sqlt.Exec[any](config, sqlt.Lookup("create"))
+	insertTypes                  = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_types"))
+	insertClassifications        = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_classifications"))
+	insertAbilities              = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_abilities"))
+	insertPokemons               = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemons"))
+	insertPokemonTypes           = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_types"))
+	insertPokemonClassifications = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_classifications"))
+	insertPokemonAbilities       = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_abilities"))
+	query                        = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query"))
+	queryFirst                   = sqlt.First[Query, Pokemon](config, sqlt.Lookup("query"))
+	queryOne                     = sqlt.One[Query, Pokemon](config, sqlt.Lookup("query"))
 )
 
 func TestQueryPokemon(t *testing.T) {
@@ -95,7 +87,37 @@ func TestQueryPokemon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = insert.Exec(ctx, db, records[1:])
+	_, err = insertTypes.Exec(ctx, db, records[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = insertClassifications.Exec(ctx, db, records[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = insertAbilities.Exec(ctx, db, records[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = insertPokemons.Exec(ctx, db, records[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = insertPokemonTypes.Exec(ctx, db, records[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = insertPokemonClassifications.Exec(ctx, db, records[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = insertPokemonAbilities.Exec(ctx, db, records[1:])
 	if err != nil {
 		t.Fatal(err)
 	}

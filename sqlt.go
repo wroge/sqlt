@@ -382,48 +382,6 @@ type Scanner[Dest any] func() (any, func(dest *Dest) error)
 
 type Raw string
 
-type ContextKey string
-
-type ContextStatement[Param any] interface {
-	ExecContext(ctx context.Context, db DB, param Param) (context.Context, error)
-}
-
-func Transaction[Param any](txOpts *sql.TxOptions, stmts ...ContextStatement[Param]) *TransactionStatement[Param] {
-	return &TransactionStatement[Param]{
-		txOpts: txOpts,
-		stmts:  stmts,
-	}
-}
-
-type TransactionStatement[Param any] struct {
-	txOpts *sql.TxOptions
-	stmts  []ContextStatement[Param]
-}
-
-type TxBeginner interface {
-	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
-}
-
-func (ts *TransactionStatement[Param]) Exec(ctx context.Context, db TxBeginner, param Param) (context.Context, error) {
-	tx, err := db.BeginTx(ctx, ts.txOpts)
-	if err != nil {
-		return ctx, err
-	}
-
-	for _, d := range ts.stmts {
-		ctx, err = d.ExecContext(ctx, tx, param)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-
-			return ctx, errors.Join(err, tx.Rollback())
-		}
-	}
-
-	return ctx, tx.Commit()
-}
-
 func Exec[Param any](opts ...Option) *Statement[Param, any, sql.Result] {
 	return Stmt[Param](getLocation(), ExecMode, func(ctx context.Context, db DB, expr Expression[any]) (sql.Result, error) {
 		return db.ExecContext(ctx, expr.SQL, expr.Args...)
@@ -477,10 +435,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 		d = newDestinator[Dest]()
 
 		t = template.New("").Funcs(template.FuncMap{
-			"Raw": func(sql string) Raw { return Raw(sql) },
-			"Context": func(key string, path ...reflect.Value) any {
-				return nil
-			},
+			"Raw":             func(sql string) Raw { return Raw(sql) },
 			"Scan":            d.scan,
 			"ScanString":      d.scanString,
 			"ScanInt":         d.scanInt,
@@ -533,63 +488,6 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 			}
 
 			r.tpl.Funcs(template.FuncMap{
-				"Context": func(key string, path ...reflect.Value) (any, error) {
-					value := r.ctx.Value(ContextKey(key))
-					if value == nil || len(path) == 0 {
-						return value, nil
-					}
-
-					v := reflect.ValueOf(value)
-
-					for _, p := range path {
-						switch v.Kind() {
-						default:
-							return nil, fmt.Errorf("invalid path %s for value of kind %s", p.String(), v.Kind())
-						case reflect.Struct:
-							v = v.FieldByName(p.String())
-							if !v.IsValid() {
-								return nil, fmt.Errorf("invalid path %s for value of kind %s", p.String(), v.Kind())
-							}
-						case reflect.Slice, reflect.Array:
-							if !p.CanInt() {
-								return nil, fmt.Errorf("path %s is not an int index", p.String())
-							}
-
-							index := int(p.Int())
-
-							if index < 0 || index >= v.Len() {
-								return nil, fmt.Errorf("invalid path %s: index out of bounds", p.String())
-							}
-
-							v = v.Index(index)
-							if !v.IsValid() {
-								return nil, fmt.Errorf("invalid path %s for value of kind %s", p.String(), v.Kind())
-							}
-						case reflect.Map:
-							mapKeyType := v.Type().Key()
-
-							if !p.IsValid() || !p.Type().AssignableTo(mapKeyType) {
-								return nil, fmt.Errorf("invalid map key %s: not assignable to map key type %s", p.String(), mapKeyType)
-							}
-
-							if !mapKeyType.Comparable() {
-								return nil, fmt.Errorf("cannot access map with key %s: key type is not comparable", mapKeyType)
-							}
-
-							val := v.MapIndex(p)
-							if !val.IsValid() {
-								return nil, fmt.Errorf("invalid path %s: key not found in map", p.String())
-							}
-							v = val
-						}
-					}
-
-					if !v.IsValid() || !v.CanInterface() {
-						return nil, fmt.Errorf("cannot interface value at path: invalid or inaccessible")
-					}
-
-					return v.Interface(), nil
-				},
 				ident: func(arg any) Raw {
 					switch a := arg.(type) {
 					case Raw:
@@ -647,51 +545,12 @@ type Statement[Param any, Dest any, Result any] struct {
 	log      Log
 }
 
-func (d *Statement[Param, Dest, Result]) ExecContext(ctx context.Context, db DB, param Param) (context.Context, error) {
-	res, err := d.execOptions(ctx, db, param, false)
-	if err != nil {
-		return ctx, err
-	}
-
-	switch r := any(res).(type) {
-	case context.Context:
-		return r, nil
-	case *sql.Rows:
-		var result []any
-
-		for r.Next() {
-			var data any
-
-			if err = r.Scan(&data); err != nil {
-				return nil, errors.Join(err, r.Close())
-			}
-
-			result = append(result, data)
-		}
-
-		return context.WithValue(ctx, ContextKey(d.name), result), errors.Join(r.Close(), r.Err())
-	case *sql.Row:
-		var data any
-
-		if err = r.Scan(&data); err != nil {
-			return nil, err
-		}
-
-		return context.WithValue(ctx, ContextKey(d.name), data), nil
-	}
-
-	return context.WithValue(ctx, ContextKey(d.name), res), nil
-}
-
-func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (Result, error) {
-	return d.execOptions(ctx, db, param, d.cache != nil && d.hasher != nil)
-}
-
-func (d *Statement[Param, Dest, Result]) execOptions(ctx context.Context, db DB, param Param, withCache bool) (result Result, err error) {
+func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
 	var (
-		expr   Expression[Dest]
-		hash   uint64
-		cached bool
+		expr      Expression[Dest]
+		hash      uint64
+		withCache = d.cache != nil && d.hasher != nil
+		cached    bool
 	)
 
 	if d.log != nil {
