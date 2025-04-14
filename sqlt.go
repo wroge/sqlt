@@ -394,43 +394,47 @@ type Scanner[Dest any] func() (any, func(dest *Dest) error)
 
 type Raw string
 
-func Exec[Param any](opts ...Option) *Statement[Param, any, sql.Result] {
+func Exec[Param any](opts ...Option) Statement[Param, sql.Result] {
 	return Stmt[Param](getLocation(), ExecMode, func(ctx context.Context, db DB, expr Expression[any]) (sql.Result, error) {
 		return db.ExecContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
-func QueryRow[Param any](opts ...Option) *Statement[Param, any, *sql.Row] {
+func QueryRow[Param any](opts ...Option) Statement[Param, *sql.Row] {
 	return Stmt[Param](getLocation(), QueryRowMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Row, error) {
 		return db.QueryRowContext(ctx, expr.SQL, expr.Args...), nil
 	}, opts...)
 }
 
-func Query[Param any](opts ...Option) *Statement[Param, any, *sql.Rows] {
+func Query[Param any](opts ...Option) Statement[Param, *sql.Rows] {
 	return Stmt[Param](getLocation(), QueryMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Rows, error) {
 		return db.QueryContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
-func First[Param any, Dest any](opts ...Option) *Statement[Param, Dest, Dest] {
+func First[Param any, Dest any](opts ...Option) Statement[Param, Dest] {
 	return Stmt[Param](getLocation(), FirstMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
 		return expr.First(ctx, db)
 	}, opts...)
 }
 
-func One[Param any, Dest any](opts ...Option) *Statement[Param, Dest, Dest] {
+func One[Param any, Dest any](opts ...Option) Statement[Param, Dest] {
 	return Stmt[Param](getLocation(), OneMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
 		return expr.One(ctx, db)
 	}, opts...)
 }
 
-func All[Param any, Dest any](opts ...Option) *Statement[Param, Dest, []Dest] {
+func All[Param any, Dest any](opts ...Option) Statement[Param, []Dest] {
 	return Stmt[Param](getLocation(), AllMode, func(ctx context.Context, db DB, expr Expression[Dest]) ([]Dest, error) {
 		return expr.All(ctx, db)
 	}, opts...)
 }
 
-func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) *Statement[Param, Dest, Result] {
+type Statement[Param, Result any] interface {
+	Exec(ctx context.Context, db DB, param Param) (Result, error)
+}
+
+func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) Statement[Param, Result] {
 	if location == "" {
 		location = getLocation()
 	}
@@ -528,7 +532,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 		}
 	}
 
-	return &Statement[Param, Dest, Result]{
+	return &statement[Param, Dest, Result]{
 		name:     t.Name(),
 		location: location,
 		mode:     mode,
@@ -540,7 +544,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 	}
 }
 
-type Statement[Param any, Dest any, Result any] struct {
+type statement[Param any, Dest any, Result any] struct {
 	name     string
 	location string
 	mode     Mode
@@ -551,25 +555,25 @@ type Statement[Param any, Dest any, Result any] struct {
 	log      Log
 }
 
-func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
+func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
 	var (
 		expr      Expression[Dest]
 		hash      uint64
-		withCache = d.cache != nil && d.hasher != nil
+		withCache = s.cache != nil && s.hasher != nil
 		cached    bool
 	)
 
-	if d.log != nil {
+	if s.log != nil {
 		now := time.Now()
 
 		_, inTx := db.(*sql.Tx)
 
 		defer func() {
-			d.log(ctx, Info{
-				Template:    d.name,
-				Location:    d.location,
+			s.log(ctx, Info{
+				Template:    s.name,
+				Location:    s.location,
 				Duration:    time.Since(now),
-				Mode:        d.mode,
+				Mode:        s.mode,
 				SQL:         expr.SQL,
 				Args:        expr.Args,
 				Err:         err,
@@ -584,44 +588,44 @@ func (d *Statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 
 		hasher.Reset()
 
-		err = d.hasher(param, hasher)
+		err = s.hasher(param, hasher)
 		if err != nil {
-			return result, fmt.Errorf("statement at %s: %w", d.location, err)
+			return result, fmt.Errorf("statement at %s: %w", s.location, err)
 		}
 
 		hash = hasher.Sum64()
 
 		hashPool.Put(hasher)
 
-		expr, cached = d.cache.Get(hash)
+		expr, cached = s.cache.Get(hash)
 		if cached {
-			result, err = d.exec(ctx, db, expr)
+			result, err = s.exec(ctx, db, expr)
 			if err != nil {
-				return result, fmt.Errorf("statement at %s: %w", d.location, err)
+				return result, fmt.Errorf("statement at %s: %w", s.location, err)
 			}
 
 			return result, nil
 		}
 	}
 
-	r := d.pool.Get().(*runner[Param, Dest])
+	r := s.pool.Get().(*runner[Param, Dest])
 
 	r.ctx = ctx
 
 	expr, err = r.expr(param)
 	if err != nil {
-		return result, fmt.Errorf("statement at %s: %w", d.location, err)
+		return result, fmt.Errorf("statement at %s: %w", s.location, err)
 	}
 
-	d.pool.Put(r)
+	s.pool.Put(r)
 
 	if withCache {
-		_ = d.cache.Add(hash, expr)
+		_ = s.cache.Add(hash, expr)
 	}
 
-	result, err = d.exec(ctx, db, expr)
+	result, err = s.exec(ctx, db, expr)
 	if err != nil {
-		return result, fmt.Errorf("statement at %s: %w", d.location, err)
+		return result, fmt.Errorf("statement at %s: %w", s.location, err)
 	}
 
 	return result, nil
