@@ -500,7 +500,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 						r.args = append(r.args, arg)
 
 						if positional {
-							return Raw(placeholder + strconv.Itoa(len(r.args)))
+							return Raw(fmt.Sprintf(placeholder, len(r.args)))
 						}
 
 						return Raw(placeholder)
