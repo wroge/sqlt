@@ -34,6 +34,18 @@ type Option interface {
 	Configure(config *Config)
 }
 
+func Configure(opts ...Option) Config {
+	var config = Config{
+		Placeholder: Question,
+	}
+
+	for _, o := range opts {
+		o.Configure(&config)
+	}
+
+	return config
+}
+
 type Config struct {
 	Placeholder Placeholder
 	Templates   []Template
@@ -423,13 +435,7 @@ func Stmt[Param any, Dest any, Result any](location string, mode Mode, exec func
 		location = getLocation()
 	}
 
-	config := &Config{
-		Placeholder: Question,
-	}
-
-	for _, o := range opts {
-		o.Configure(config)
-	}
+	config := Configure(opts...)
 
 	var (
 		d = newDestinator[Dest]()
