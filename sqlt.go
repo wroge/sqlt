@@ -1076,7 +1076,7 @@ func (d *destinator[Dest]) scanStringTime(field string, layout string, location 
 		}
 
 		if layout == "" {
-			return nil, fmt.Errorf("scan string time: no layout")
+			return nil, errors.New("scan string time: no layout")
 		}
 
 		if a.pointer {

@@ -22,6 +22,6 @@ linters:
     - forcetypeassert
     - exhaustruct
     - exhaustive
-    # - err113
+    - err113
     - depguard
     - cyclop
