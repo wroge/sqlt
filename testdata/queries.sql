@@ -20,7 +20,8 @@
         height NUMERIC,
         weight NUMERIC,
         generation INTEGER,
-        legendary BOOLEAN
+        legendary BOOLEAN,
+        today DATE
     );
 
     CREATE TABLE IF NOT EXISTS pokemon_types (
@@ -81,7 +82,7 @@
 {{ end }}
 
 {{ define "insert_pokemons" }}
-    INSERT INTO pokemons (number, name, height, weight, generation, legendary) VALUES
+    INSERT INTO pokemons (number, name, height, weight, generation, legendary, today) VALUES
     {{ range $i, $p := . }}
         {{ if $i }}, {{ end }}
         (
@@ -91,8 +92,10 @@
             , {{ float64 (index $p 6) }}
             , {{ atoi (index $p 8) }}
             , {{ eq (index $p 9) "Yes" }}
+            , {{ now }}
         )
-    {{ end }};
+    {{ end }}
+    RETURNING number;
 {{ end }}
 
 {{ define "insert_pokemon_types" }}
@@ -137,16 +140,24 @@
 
 {{ define "query" }}
     SELECT 
-        p.number, 										{{ ScanInt "Number" }}	
-        p.name, 										{{ ScanString "Name" }}
-        p.height, 										{{ ScanFloat "Height" }}	
-        p.weight, 										{{ Scan "Weight" }}
-        p.generation, 									{{ ScanUint "Generation" }}
-        p.legendary, 									{{ ScanBool "Legendary" }}
-        IFNULL(pt.type_names, '') AS type_names, 		{{ ScanStringSlice "Types" "," }}
-        c.name AS classification, 						{{ ScanString "Classification" }}
-        IFNULL(pa.ability_names, '') AS ability_names,	{{ ScanStringSlice "Abilities" "," }}
-        '2000-01-01' AS some_date                       {{ ScanStringTime "SomeDate" "DateOnly" "UTC" }}
+        p.number, 									{{ Scan "Number" }}	
+        cast(p.number AS TEXT), 					{{ ScanText "BigNumber" }}	
+        p.number, 									{{ Scan "NumberP" }}	
+        CONCAT('https://www.bisafans.de/pokedex/', 
+            printf('%03d', p.number) ,'.php'),      {{ ScanBinary "Bisafans" }}	
+        p.name, 							        {{ Scan "Name" }}
+        p.height, 							        {{ Scan "Height" }}	
+        p.height, 							        {{ Scan "HeightP" }}	
+        p.weight, 							        {{ Scan "Weight" }}
+        p.generation, 						        {{ Scan "Generation" }}
+        p.generation, 						        {{ Scan "GenerationP" }}
+        p.legendary, 						        {{ Scan "Legendary" }}
+        p.legendary, 						        {{ Scan "LegendaryP" }}
+        pt.type_names, 		                        {{ ScanStringSlice "Types" "," }}
+        c.name, 						            {{ Scan "Classification" }}
+        pa.ability_names,	                        {{ ScanStringSlice "Abilities" "," }}
+        '2000-01-01',                               {{ ScanStringTime "SomeDate" "DateOnly" "UTC" }}
+        p.today                                     {{ Scan "Today" }}
     FROM pokemons p
     LEFT JOIN (
         SELECT pokemon_number, GROUP_CONCAT(types.name, ',') AS type_names

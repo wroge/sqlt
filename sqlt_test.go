@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
+	"fmt"
+	"math/big"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -15,15 +18,22 @@ import (
 
 type Pokemon struct {
 	Number         int64             `json:"number"`
+	BigNumber      big.Int           `json:"bignumber"`
+	NumberP        *int64            `json:"numberp"`
+	Bisafans       url.URL           `json:"bisafans"`
 	Name           string            `json:"name"`
 	Height         float64           `json:"height"`
+	HeightP        *float64          `json:"heightp"`
 	Weight         sql.Null[float64] `json:"weight"`
 	Generation     uint64            `json:"generation"`
+	GenerationP    *uint64           `json:"generationp"`
 	Legendary      bool              `json:"legendary"`
+	LegendaryP     *bool             `json:"legendaryp"`
 	Types          []string          `json:"types"`
 	Classification *string           `json:"classification"`
 	Abilities      []string          `json:"abilities"`
 	SomeDate       time.Time         `json:"some_date,omitzero"`
+	Today          time.Time         `json:"today,omitzero"`
 }
 
 func NewPointer[T any](t T) Pointer[T] {
@@ -47,20 +57,24 @@ var (
 		Placeholder: sqlt.Question,
 		Cache:       &sqlt.Cache{},
 		Templates: []sqlt.Template{
+			sqlt.MissingKeyError(),
 			sqlt.Funcs(sprig.TxtFuncMap()),
 			sqlt.ParseFiles("./testdata/queries.sql"),
 		},
+		Log: func(ctx context.Context, info sqlt.Info) {
+			fmt.Println(info.Template, info.SQL)
+		},
 	}
 	create                       = sqlt.Exec[any](config, sqlt.Lookup("create"))
-	insertTypes                  = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_types"))
-	insertClassifications        = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_classifications"))
-	insertAbilities              = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_abilities"))
-	insertPokemons               = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemons"))
-	insertPokemonTypes           = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_types"))
-	insertPokemonClassifications = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_classifications"))
-	insertPokemonAbilities       = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_abilities"))
-	query                        = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query"))
-	queryFirst                   = sqlt.First[Query, Pokemon](config, sqlt.Lookup("query"))
+	insertTypes                  = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_types"))
+	insertClassifications        = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_classifications"))
+	insertAbilities              = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Dollar, sqlt.Lookup("insert_abilities"))
+	insertPokemons               = sqlt.All[[][]string, int](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemons"))
+	insertPokemonTypes           = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemon_types"))
+	insertPokemonClassifications = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemon_classifications"))
+	insertPokemonAbilities       = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemon_abilities"))
+	query                        = sqlt.All[Query, Pokemon](config, sqlt.NoExpirationCache(100), sqlt.Lookup("query"))
+	queryFirst                   = sqlt.First[Query, Pokemon](config, sqlt.UnlimitedSizeCache(time.Second), sqlt.Lookup("query"))
 	queryOne                     = sqlt.One[Query, Pokemon](config, sqlt.Lookup("query"))
 )
 
@@ -136,6 +150,18 @@ func TestQueryPokemon(t *testing.T) {
 
 	rattata, err := queryFirst.Exec(ctx, db, Query{
 		Classification: NewPointer("Mouse Pokémon"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if rattata.Name != "Rattata" {
+		t.Errorf("Expected Rattata, got %s", rattata.Name)
+	}
+
+	rattata, err = queryOne.Exec(ctx, db, Query{
+		Classification: NewPointer("Mouse Pokémon"),
+		WeightRange:    NewPointer([2]float64{3, 4}),
 	})
 	if err != nil {
 		t.Fatal(err)
