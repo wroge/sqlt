@@ -57,12 +57,11 @@ var (
 		Placeholder: sqlt.Question,
 		Cache:       &sqlt.Cache{},
 		Templates: []sqlt.Template{
-			sqlt.MissingKeyError(),
 			sqlt.Funcs(sprig.TxtFuncMap()),
 			sqlt.ParseFiles("./testdata/queries.sql"),
 		},
 		Log: func(ctx context.Context, info sqlt.Info) {
-			fmt.Println(info.Template, info.SQL)
+			fmt.Println(info.Template)
 		},
 	}
 	create                       = sqlt.Exec[any](config, sqlt.Lookup("create"))

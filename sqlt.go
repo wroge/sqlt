@@ -24,16 +24,21 @@ import (
 	"github.com/jba/templatecheck"
 )
 
+// DB abstracts a minimal SQL interface for querying and executing statements.
+// It is compatible with both *sql.DB and *sql.Tx.
 type DB interface {
 	QueryContext(ctx context.Context, sql string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, sql string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, sql string, args ...any) (sql.Result, error)
 }
 
+// Option allows for flexible configuration of a statement or engine.
+// Implementations apply settings to the provided Config.
 type Option interface {
 	Configure(config *Config)
 }
 
+// Configure returns a Config instance with all provided Options applied.
 func Configure(opts ...Option) Config {
 	var config = Config{
 		Placeholder: Question,
@@ -46,6 +51,7 @@ func Configure(opts ...Option) Config {
 	return config
 }
 
+// Config holds settings for statement generation, caching, logging, and template behavior.
 type Config struct {
 	Placeholder Placeholder
 	Templates   []Template
@@ -54,6 +60,7 @@ type Config struct {
 	Hasher      Hasher
 }
 
+// Configure applies the non-zero settings from this Config onto another Config.
 func (c Config) Configure(config *Config) {
 	if c.Placeholder != "" {
 		config.Placeholder = c.Placeholder
@@ -76,25 +83,24 @@ func (c Config) Configure(config *Config) {
 	}
 }
 
-// Cache controls expression caching.
-// Size ≤ 0 means unlimited cache.
-// Expiration ≤ 0 prevents expiration.
+// Cache configures the behavior of the expression result cache.
+// A Size ≤ 0 disables size limiting. An Expiration ≤ 0 disables entry expiration.
 type Cache struct {
 	Size       int
 	Expiration time.Duration
 }
 
-// Configure applies Config settings.
+// Configure sets this Cache into the provided Config.
 func (c *Cache) Configure(config *Config) {
 	config.Cache = c
 }
 
-// NoCache disables caching.
+// NoCache returns nil, indicating that expression caching should be disabled.
 func NoCache() *Cache {
 	return nil
 }
 
-// NoExpirationCache enables a non-expiring cache.
+// NoExpirationCache creates a cache with a fixed size and no expiration.
 func NoExpirationCache(size int) *Cache {
 	return &Cache{
 		Size:       size,
@@ -102,7 +108,7 @@ func NoExpirationCache(size int) *Cache {
 	}
 }
 
-// UnlimitedSizeCache enables an unlimited-size cache.
+// UnlimitedSizeCache creates a cache without size constraints but with expiration.
 func UnlimitedSizeCache(expiration time.Duration) *Cache {
 	return &Cache{
 		Size:       0,
@@ -110,113 +116,95 @@ func UnlimitedSizeCache(expiration time.Duration) *Cache {
 	}
 }
 
-// Hasher generates cache keys for parameters.
+// Hasher defines a function that writes a unique, deterministic representation
+// of the given parameter to the provided writer, typically for caching purposes.
 type Hasher func(param any, writer io.Writer) error
 
-// Configure applies Config settings.
+// Configure sets this Hasher into the provided Config.
 func (h Hasher) Configure(config *Config) {
 	config.Hasher = h
 }
 
-// DefaultHasher encodes parameters as JSON for caching.
+// DefaultHasher returns a Hasher that serializes parameters as JSON.
+// This provides stable and consistent cache keys.
 func DefaultHasher() Hasher {
 	return func(param any, writer io.Writer) error {
 		return json.NewEncoder(writer).Encode(param)
 	}
 }
 
-// Placeholder defines static or positional (`%d`) placeholders.
-// Default: `'?'`.
+// Placeholder defines the syntax used to replace SQL parameters in templates.
+// Can be a constant (e.g. '?') or positional (e.g. '$%d').
 type Placeholder string
 
-// Configure applies Config settings.
+// Configure sets this Placeholder into the provided Config.
 func (p Placeholder) Configure(config *Config) {
 	config.Placeholder = p
 }
 
 const (
-	// Question is the default placeholder.
+	// Question is the default SQL placeholder ('?') for anonymous parameters.
 	Question Placeholder = "?"
-	// Dollar uses positional placeholders ($1, $2).
+	// Dollar uses PostgreSQL-style positional placeholders ($1, $2, ...).
 	Dollar Placeholder = "$%d"
-	// Colon uses positional placeholders (:1, :2).
+	// Colon uses Oracle-style positional placeholders (:1, :2, ...).
 	Colon Placeholder = ":%d"
-	// AtP uses positional placeholders (@p1, @p2).
+	// AtP uses T-SQL-style placeholders (@p1, @p2, ...).
 	AtP Placeholder = "@p%d"
 )
 
-// Template modifies a text/template.Template.
+// Template is a functional option that transforms or extends a text/template.Template.
+// Useful for parsing, naming, or registering custom functions.
 type Template func(t *template.Template) (*template.Template, error)
 
-// Configure applies Config settings.
+// Configure appends this Template modifier to the Config’s template list.
 func (to Template) Configure(config *Config) {
 	config.Templates = append(config.Templates, to)
 }
 
-// Name creates a named template.
+// Name creates a Template option that defines a new named template.
 func Name(name string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.New(name), nil
 	}
 }
 
-// Parse parses a template string.
+// Parse returns a Template option that parses and adds the provided template text.
 func Parse(text string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Parse(text)
 	}
 }
 
-// ParseFS loads templates from a filesystem.
+// ParseFS returns a Template option that loads and parses templates from the given fs.FS using patterns.
 func ParseFS(fs fs.FS, patterns ...string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseFS(fs, patterns...)
 	}
 }
 
-// ParseFiles loads templates from files.
+// ParseFiles returns a Template option that loads and parses templates from the specified files.
 func ParseFiles(filenames ...string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseFiles(filenames...)
 	}
 }
 
-// ParseGlob loads templates matching a pattern.
+// ParseGlob returns a Template option that loads templates matching a glob pattern.
 func ParseGlob(pattern string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.ParseGlob(pattern)
 	}
 }
 
-// Funcs adds custom functions to a template.
+// Funcs returns a Template option that registers the provided functions to the template.
 func Funcs(fm template.FuncMap) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		return tpl.Funcs(fm), nil
 	}
 }
 
-// MissingKeyInvalid treats missing keys as errors.
-func MissingKeyInvalid() Template {
-	return func(tpl *template.Template) (*template.Template, error) {
-		return tpl.Option("missingkey=invalid"), nil
-	}
-}
-
-// MissingKeyZero replaces missing keys with zero values.
-func MissingKeyZero() Template {
-	return func(tpl *template.Template) (*template.Template, error) {
-		return tpl.Option("missingkey=zero"), nil
-	}
-}
-
-// MissingKeyError throws an error on missing keys.
-func MissingKeyError() Template {
-	return func(tpl *template.Template) (*template.Template, error) {
-		return tpl.Option("missingkey=error"), nil
-	}
-}
-
-// Lookup retrieves a named template.
+// Lookup returns a Template option that retrieves a named template from the template set.
 func Lookup(name string) Template {
 	return func(tpl *template.Template) (*template.Template, error) {
 		tpl = tpl.Lookup(name)
@@ -228,15 +216,15 @@ func Lookup(name string) Template {
 	}
 }
 
-// Log can be used to apply logging.
+// Log defines a function used to log execution metadata for each SQL operation.
 type Log func(ctx context.Context, info Info)
 
-// Configure applies Config settings.
+// Configure sets this Log function into the provided Config.
 func (l Log) Configure(config *Config) {
 	config.Log = l
 }
 
-// Info contains loggable execution details.
+// Info holds metadata about an executed SQL statement, including duration, mode, parameters, and errors.
 type Info struct {
 	Duration    time.Duration
 	Mode        Mode
@@ -249,30 +237,34 @@ type Info struct {
 	Transaction bool
 }
 
-// Mode identifies SQL statement types.
+// Mode describes the type of SQL operation being executed (e.g. query, exec).
 type Mode string
 
 const (
-	// ExecMode for 'Exec' statements.
+	// ExecMode indicates a statement that executes (e.g. CREATE, INSERT, UPDATE) without returning rows.
 	ExecMode Mode = "Exec"
-	// QueryRowMode for 'QueryRow' statements.
+	// QueryRowMode indicates a query that returns a single row using QueryRowContext.
 	QueryRowMode Mode = "QueryRow"
-	// QueryMode for 'Query' statements.
+	// QueryMode indicates a query that returns multiple rows using QueryContext.
 	QueryMode Mode = "Query"
-	// FirstMode for 'First' statements.
+	// FirstMode indicates a query expecting the first row, if available.
 	FirstMode Mode = "First"
-	// OneMode for 'One' statements.
+	// OneMode expects exactly one result row; returns an error if zero or multiple rows.
 	OneMode Mode = "One"
-	// AllMode for 'All' statements.
+	// AllMode retrieves all rows matching the query.
 	AllMode Mode = "All"
 )
 
+// Expression represents a compiled SQL statement with its arguments and destination mappers.
+// It is generated from a template and ready for execution.
 type Expression[Dest any] struct {
 	SQL      string
 	Args     []any
 	Scanners []Scanner[Dest]
 }
 
+// DestMapper returns a slice of values for scanning and a function to map the scanned data into a destination.
+// It handles dynamic scanners that transform raw row data into the final result.
 func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) error, error) {
 	if len(e.Scanners) == 0 {
 		e.Scanners = []Scanner[Dest]{
@@ -310,16 +302,24 @@ func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) er
 	}, nil
 }
 
+// First executes the SQL expression and returns the first result row, if any.
+// Returns sql.ErrNoRows if no rows are found.
 func (e Expression[Dest]) First(ctx context.Context, db DB) (Dest, error) {
 	return e.fetchOne(ctx, db, false)
 }
 
+// ErrTooManyRows is returned when more than one row is found where only one was expected.
 var ErrTooManyRows = errors.New("too many rows")
 
+// One executes the expression and expects exactly one row.
+// Returns sql.ErrNoRows if no rows are found.
+// Returns ErrTooManyRows if more than one row is found.
 func (e Expression[Dest]) One(ctx context.Context, db DB) (Dest, error) {
 	return e.fetchOne(ctx, db, true)
 }
 
+// fetchOne is a shared internal helper to retrieve one result from the DB,
+// with an optional enforcement of exactly one result.
 func (e Expression[Dest]) fetchOne(ctx context.Context, db DB, enforeOne bool) (Dest, error) {
 	var one Dest
 
@@ -353,6 +353,7 @@ func (e Expression[Dest]) fetchOne(ctx context.Context, db DB, enforeOne bool) (
 	return one, errors.Join(rows.Close(), rows.Err())
 }
 
+// All executes the expression and returns all matching rows mapped into Dest values.
 func (e Expression[Dest]) All(ctx context.Context, db DB) ([]Dest, error) {
 	rows, err := db.QueryContext(ctx, e.SQL, e.Args...)
 	if err != nil {
@@ -384,54 +385,69 @@ func (e Expression[Dest]) All(ctx context.Context, db DB) ([]Dest, error) {
 	return all, errors.Join(rows.Close(), rows.Err())
 }
 
+// Scanner defines a two-part function that produces a scan target and a function
+// to assign the scanned value into a destination structure.
 type Scanner[Dest any] func() (any, func(dest *Dest) error)
 
+// Raw marks a string as raw SQL that should be inserted as-is into the template output,
+// bypassing placeholder replacement.
 type Raw string
 
+// Exec creates a Statement that executes an SQL command (e.g. CREATE, INSERT, UPDATE) and returns the sql.Result.
 func Exec[Param any](opts ...Option) Statement[Param, sql.Result] {
 	return newStmt[Param](ExecMode, func(ctx context.Context, db DB, expr Expression[any]) (sql.Result, error) {
 		return db.ExecContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
+// QueryRow creates a Statement that returns a single *sql.Row from the query.
 func QueryRow[Param any](opts ...Option) Statement[Param, *sql.Row] {
 	return newStmt[Param](QueryRowMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Row, error) {
 		return db.QueryRowContext(ctx, expr.SQL, expr.Args...), nil
 	}, opts...)
 }
 
+// Query creates a Statement that returns *sql.Rows for result iteration.
 func Query[Param any](opts ...Option) Statement[Param, *sql.Rows] {
 	return newStmt[Param](QueryMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Rows, error) {
 		return db.QueryContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
+// First creates a Statement that retrieves the first matching row mapped to Dest.
 func First[Param any, Dest any](opts ...Option) Statement[Param, Dest] {
 	return newStmt[Param](FirstMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
 		return expr.First(ctx, db)
 	}, opts...)
 }
 
+// One creates a Statement that expects exactly one row mapped into Dest.
+// Returns an error if zero or more than one row is returned.
 func One[Param any, Dest any](opts ...Option) Statement[Param, Dest] {
 	return newStmt[Param](OneMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
 		return expr.One(ctx, db)
 	}, opts...)
 }
 
+// All creates a Statement that retrieves all matching rows mapped into a slice of Dest.
 func All[Param any, Dest any](opts ...Option) Statement[Param, []Dest] {
 	return newStmt[Param](AllMode, func(ctx context.Context, db DB, expr Expression[Dest]) ([]Dest, error) {
 		return expr.All(ctx, db)
 	}, opts...)
 }
 
+// Statement represents a compiled, executable SQL statement.
 type Statement[Param, Result any] interface {
 	Exec(ctx context.Context, db DB, param Param) (Result, error)
 }
 
+// Stmt constructs a customizable Statement with explicit mode, executor, and options.
 func Stmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) Statement[Param, Result] {
 	return newStmt[Param](mode, exec, opts...)
 }
 
+// newStmt creates a new statement with template parsing, validation, and caching.
+// It returns a reusable, thread-safe Statement.
 func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) Statement[Param, Result] {
 	_, file, line, _ := runtime.Caller(3)
 
@@ -471,7 +487,7 @@ func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.C
 
 	t, err = t.Clone()
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("clone template at %s: %w", location, err))
 	}
 
 	var (
@@ -484,7 +500,6 @@ func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.C
 			tc, _ := t.Clone()
 
 			r := &runner[Param, Dest]{
-				ctx:       context.Background(),
 				tpl:       tc,
 				sqlWriter: &sqlWriter{},
 			}
@@ -536,6 +551,8 @@ func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.C
 	}
 }
 
+// statement is the internal implementation of Statement.
+// It holds configuration, compiled templates, a cache (optional), and the execution function.
 type statement[Param any, Dest any, Result any] struct {
 	name     string
 	location string
@@ -547,6 +564,8 @@ type statement[Param any, Dest any, Result any] struct {
 	log      Log
 }
 
+// Exec renders the template with the given param, applies caching (if enabled),
+// and executes the resulting SQL expression using the provided DB.
 func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
 	var (
 		expr      Expression[Dest]
@@ -623,6 +642,8 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	return result, nil
 }
 
+// accessor provides reflection-based field access into a destination struct.
+// It stores field index paths for nested access and handles pointer dereferencing.
 type accessor[Dest any] struct {
 	typ         reflect.Type
 	pointerType reflect.Type
@@ -630,6 +651,8 @@ type accessor[Dest any] struct {
 	indices     []int
 }
 
+// access returns a reflect.Value for the target field in the destination struct,
+// creating intermediate pointers if necessary.
 func (a accessor[Dest]) access(d *Dest) reflect.Value {
 	v := reflect.ValueOf(d).Elem()
 
@@ -650,6 +673,8 @@ func (a accessor[Dest]) access(d *Dest) reflect.Value {
 	return v
 }
 
+// Common reflect.Type instances for interface checks and built-in Go types
+// used when mapping DB results to struct fields.
 var (
 	scannerType           = reflect.TypeFor[sql.Scanner]()
 	timeType              = reflect.TypeFor[time.Time]()
@@ -658,6 +683,8 @@ var (
 	byteSliceType         = reflect.TypeFor[[]byte]()
 )
 
+// newDestinator creates a new destination manager for a given result type,
+// used to generate and cache field scanners.
 func newDestinator[Dest any]() *destinator[Dest] {
 	return &destinator[Dest]{
 		store: map[string]Scanner[Dest]{},
@@ -665,12 +692,14 @@ func newDestinator[Dest any]() *destinator[Dest] {
 	}
 }
 
+// destinator generates and caches scanners for mapping query results into fields of Dest structs.
 type destinator[Dest any] struct {
 	mu    sync.RWMutex
 	store map[string]Scanner[Dest]
 	typ   reflect.Type
 }
 
+// makeAccessor analyzes the struct type and field path and builds an accessor.
 func (d *destinator[Dest]) makeAccessor(t reflect.Type, field string) (accessor[Dest], error) {
 	indices := []int{}
 
@@ -725,6 +754,7 @@ func (d *destinator[Dest]) makeAccessor(t reflect.Type, field string) (accessor[
 	return a, nil
 }
 
+// cache checks for a cached scanner by key or builds and stores a new one using the provided function.
 func (d *destinator[Dest]) cache(key string, field string, f func(a accessor[Dest]) (Scanner[Dest], error)) (Scanner[Dest], error) {
 	d.mu.RLock()
 	scanner, ok := d.store[key]
@@ -751,6 +781,8 @@ func (d *destinator[Dest]) cache(key string, field string, f func(a accessor[Des
 	return scanner, nil
 }
 
+// scan generates a scanner for common primitive types (string, int, time.Time, etc.)
+// and assigns the scanned value to the target field.
 func (d *destinator[Dest]) scan(field string) (Scanner[Dest], error) {
 	return d.cache(field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		if a.pointerType.Implements(scannerType) {
@@ -928,6 +960,7 @@ func (d *destinator[Dest]) scan(field string) (Scanner[Dest], error) {
 	})
 }
 
+// scanJSON generates a scanner that unmarshals JSON-encoded data into the destination field.
 func (d *destinator[Dest]) scanJSON(field string) (Scanner[Dest], error) {
 	return d.cache("JSON:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		if a.typ == byteSliceType {
@@ -966,6 +999,7 @@ func (d *destinator[Dest]) scanJSON(field string) (Scanner[Dest], error) {
 	})
 }
 
+// scanBinary generates a scanner that uses encoding.BinaryUnmarshaler to decode the field value.
 func (d *destinator[Dest]) scanBinary(field string) (Scanner[Dest], error) {
 	return d.cache("Binary:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		if !a.pointerType.Implements(binaryUnmarshalerType) {
@@ -986,6 +1020,7 @@ func (d *destinator[Dest]) scanBinary(field string) (Scanner[Dest], error) {
 	})
 }
 
+// scanText generates a scanner that uses encoding.TextUnmarshaler to parse text values from the DB.
 func (d *destinator[Dest]) scanText(field string) (Scanner[Dest], error) {
 	return d.cache("Text:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		if !a.pointerType.Implements(textUnmarshalerType) {
@@ -1006,8 +1041,10 @@ func (d *destinator[Dest]) scanText(field string) (Scanner[Dest], error) {
 	})
 }
 
+// scanStringSlice splits a string from the DB into a []string using the given separator,
+// and assigns it to the destination field.
 func (d *destinator[Dest]) scanStringSlice(field string, sep string) (Scanner[Dest], error) {
-	return d.cache("StringSlice:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.cache("StringSlice:"+field+":"+sep, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		if a.typ.Kind() != reflect.Slice || a.typ.Elem().Kind() != reflect.String {
 			return nil, fmt.Errorf("scan string slice: cannot set []string in type %s", a.typ)
 		}
@@ -1038,6 +1075,7 @@ func (d *destinator[Dest]) scanStringSlice(field string, sep string) (Scanner[De
 	})
 }
 
+// layoutMap maps human-friendly layout aliases to standard Go time layouts.
 var layoutMap = map[string]string{
 	"DateTime":    time.DateTime,
 	"DateOnly":    time.DateOnly,
@@ -1060,8 +1098,10 @@ var layoutMap = map[string]string{
 	"StampNano":   time.StampNano,
 }
 
+// scanStringTime parses a time.Time value from a string field using a layout and time zone location.
+// Supports both pointer and value destinations.
 func (d *destinator[Dest]) scanStringTime(field string, layout string, location string) (Scanner[Dest], error) {
-	return d.cache("StringTime:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+	return d.cache("StringTime:"+field+":"+layout+":"+location, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		if a.typ != timeType {
 			return nil, fmt.Errorf("scan string time: type %s is not time.Time", a.typ)
 		}
@@ -1117,7 +1157,9 @@ func (d *destinator[Dest]) scanStringTime(field string, layout string, location 
 	})
 }
 
-// idea is stolen from here: https://github.com/mhilton/sqltemplate/blob/main/escape.go
+// escapeNode walks the parsed template tree and ensures each SQL-producing node ends with a call to the ident() function.
+// This ensures correct placeholder binding in templates.
+// Inspired by https://github.com/mhilton/sqltemplate/blob/main/escape.go.
 func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error {
 	switch v := n.(type) {
 	case *parse.ActionNode:
@@ -1194,14 +1236,19 @@ func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error 
 	return nil
 }
 
+// hashPool is a sync.Pool of xxhash.Digest instances used to generate cache keys efficiently.
 var hashPool = sync.Pool{
 	New: func() any {
 		return xxhash.New()
 	},
 }
 
+// ident is the special template function name injected into expressions
+// to bind template output to argument placeholders.
 var ident = "__sqlt__"
 
+// runner holds context, state, and buffers needed to execute a template with a specific Param.
+// It collects SQL text, placeholders, and scanners.
 type runner[Param any, Dest any] struct {
 	ctx       context.Context
 	tpl       *template.Template
@@ -1210,29 +1257,35 @@ type runner[Param any, Dest any] struct {
 	scanners  []Scanner[Dest]
 }
 
+// expr renders the SQL template with the given Param,
+// capturing the resulting SQL string, arguments, and scanners.
 func (r *runner[Param, Dest]) expr(param Param) (Expression[Dest], error) {
 	if err := r.tpl.Execute(r.sqlWriter, param); err != nil {
 		return Expression[Dest]{}, err
 	}
 
 	expr := Expression[Dest]{
-		SQL:      r.sqlWriter.toString(),
+		SQL:      r.sqlWriter.String(),
 		Args:     r.args,
 		Scanners: r.scanners,
 	}
 
 	r.ctx = context.Background()
+	r.sqlWriter.Reset()
 	r.args = make([]any, 0, len(expr.Args))
 	r.scanners = make([]Scanner[Dest], 0, len(expr.Scanners))
 
 	return expr, nil
 }
 
+// sqlWriter writes template output into a normalized SQL string,
+// collapsing whitespace and preserving consistent formatting.
 type sqlWriter struct {
 	data []byte
 }
 
-// Write implements io.Writer.
+// Write implements io.Writer by normalizing and buffering SQL text,
+// collapsing whitespace and preparing it for execution.
 func (w *sqlWriter) Write(data []byte) (int, error) {
 	for _, b := range data {
 		switch b {
@@ -1248,7 +1301,12 @@ func (w *sqlWriter) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-func (w *sqlWriter) toString() string {
+func (w *sqlWriter) Reset() {
+	w.data = w.data[:0]
+}
+
+// String returns the accumulated SQL string and resets the writer buffer.
+func (w *sqlWriter) String() string {
 	n := len(w.data)
 
 	if n == 0 {
@@ -1257,9 +1315,5 @@ func (w *sqlWriter) toString() string {
 		n--
 	}
 
-	s := string(w.data[:n])
-
-	w.data = w.data[:0]
-
-	return s
+	return string(w.data[:n])
 }
