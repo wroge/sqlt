@@ -36,7 +36,7 @@ jobs:
           filename: coverage.out
           green: 70
           yellow: 50
-          link: https://github.com/wroge/sqlt/actions
+          link: https://github.com/go-sqlt/sqlt/actions
 
       - name: Check if README.md Changed
         uses: tj-actions/verify-changed-files@v16
@@ -58,4 +58,3 @@ jobs:
         with:
           github_token: ${{ secrets.ACTIONS_PAT }}
           branch: main
-
