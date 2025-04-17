@@ -28,10 +28,7 @@ jobs:
       - name: Test
         run: go test -coverprofile=coverage.txt ./...
 
-      - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+      - name: Go Coverage Badge # Pass the `coverage.out` output to this action
+        uses: tj-actions/coverage-badge-go@v3.0.0
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          file: coverage.out
-          verbose: true
-          fail_ci_if_error: true
+          filename: coverage.out
