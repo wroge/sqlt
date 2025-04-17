@@ -56,3 +56,4 @@ jobs:
           github_token: ${{ secrets.ACTIONS_PAT }}
           branch: main
           color: green
+          target: https://github.com/wroge/sqlt/actions
