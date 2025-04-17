@@ -3,15 +3,13 @@ name: Go
 on:
   push:
     branches: ["main"]
-  pull_request:
-    branches: ["main"]
 
 jobs:
   check:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -51,9 +49,9 @@ jobs:
           git add README.md
           git commit -m "chore: update coverage badge"
 
-      - name: Push Changes
+      - name: Push Changes to main
         if: steps.verify-changed-files.outputs.files_changed == 'true'
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ github.head_ref }}
+          branch: main
