@@ -1237,7 +1237,7 @@ func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error 
 					continue
 				}
 
-				location, ok := cmd.Args[2].(*parse.StringNode)
+				location, ok := cmd.Args[3].(*parse.StringNode)
 				if !ok {
 					continue
 				}
