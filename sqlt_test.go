@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Masterminds/sprig/v3"
-	"github.com/wroge/sqlt"
+	"github.com/go-sqlt/sqlt"
 	_ "modernc.org/sqlite"
 )
 

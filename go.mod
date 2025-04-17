@@ -1,4 +1,4 @@
-module github.com/wroge/sqlt
+module github.com/go-sqlt/sqlt
 
 go 1.23
 
