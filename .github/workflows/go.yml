@@ -34,6 +34,9 @@ jobs:
         uses: tj-actions/coverage-badge-go@v3.0.0
         with:
           filename: coverage.out
+          green: 70
+          yellow: 50
+          link: https://github.com/wroge/sqlt/actions
 
       - name: Check if README.md Changed
         uses: tj-actions/verify-changed-files@v16
@@ -55,6 +58,4 @@ jobs:
         with:
           github_token: ${{ secrets.ACTIONS_PAT }}
           branch: main
-          green: 70
-          yellow: 50
-          link: https://github.com/wroge/sqlt/actions
+
