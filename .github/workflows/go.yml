@@ -28,7 +28,7 @@ jobs:
       - name: Test
         run: go test -coverprofile=coverage.txt ./...
 
-      - name: Go Coverage Badge # Pass the `coverage.out` output to this action
+      - name: Go Coverage Badge
         uses: tj-actions/coverage-badge-go@v3.0.0
         with:
-          filename: coverage.out
+          filename: coverage.txt
