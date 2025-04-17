@@ -34,6 +34,8 @@ type Pokemon struct {
 	Abilities      []string          `json:"abilities"`
 	SomeDate       time.Time         `json:"some_date,omitzero"`
 	Today          time.Time         `json:"today,omitzero"`
+	Meta           map[string]string `json:"meta,omitempty"`
+	MetaBytes      []byte            `json:"meta_bytes,omitempty"`
 }
 
 func NewPointer[T any](t T) Pointer[T] {

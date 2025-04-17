@@ -157,7 +157,9 @@
         c.name, 						            {{ Scan "Classification" }}
         pa.ability_names,	                        {{ ScanStringSlice "Abilities" "," }}
         '2000-01-01',                               {{ ScanStringTime "SomeDate" "DateOnly" "UTC" }}
-        p.today                                     {{ Scan "Today" }}
+        p.today,                                    {{ Scan "Today" }}
+        JSON('{"hello": "world"}'),                 {{ ScanJSON "Meta" }}
+        JSON('{"hello": "world"}')                  {{ ScanJSON "MetaBytes" }}
     FROM pokemons p
     LEFT JOIN (
         SELECT pokemon_number, GROUP_CONCAT(types.name, ',') AS type_names
