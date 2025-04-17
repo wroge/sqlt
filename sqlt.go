@@ -449,7 +449,7 @@ func Stmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.Cont
 // newStmt creates a new statement with template parsing, validation, and caching.
 // It returns a reusable, thread-safe Statement.
 func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) Statement[Param, Result] {
-	_, file, line, _ := runtime.Caller(3)
+	_, file, line, _ := runtime.Caller(2)
 
 	location := file + ":" + strconv.Itoa(line)
 
@@ -1189,10 +1189,6 @@ func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error 
 		}
 
 		for _, cmd := range v.Cmds {
-			if !strings.HasPrefix(cmd.Args[0].String(), "Scan") {
-				continue
-			}
-
 			if len(cmd.Args) < 2 {
 				continue
 			}
@@ -1202,9 +1198,54 @@ func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error 
 				continue
 			}
 
-			_, err := d.makeAccessor(d.typ, node.Text)
-			if err != nil {
-				return err
+			switch cmd.Args[0].String() {
+			default:
+				continue
+			case "Scan":
+				_, err := d.scan(node.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanJSON":
+				_, err := d.scanJSON(node.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanBinary":
+				_, err := d.scanJSON(node.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanText":
+				_, err := d.scanText(node.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanStringSlice":
+				sep, ok := cmd.Args[2].(*parse.StringNode)
+				if !ok {
+					continue
+				}
+
+				_, err := d.scanStringSlice(node.Text, sep.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanStringTime":
+				layout, ok := cmd.Args[2].(*parse.StringNode)
+				if !ok {
+					continue
+				}
+
+				location, ok := cmd.Args[2].(*parse.StringNode)
+				if !ok {
+					continue
+				}
+
+				_, err := d.scanStringTime(node.Text, layout.Text, location.Text)
+				if err != nil {
+					return err
+				}
 			}
 		}
 
