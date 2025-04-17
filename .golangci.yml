@@ -25,3 +25,4 @@ linters:
     - err113
     - depguard
     - cyclop
+    - gocyclo
