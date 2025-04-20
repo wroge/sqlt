@@ -26,3 +26,4 @@ linters:
     - depguard
     - cyclop
     - gocyclo
+    - maintidx

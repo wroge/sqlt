@@ -140,26 +140,30 @@
 
 {{ define "query" }}
     SELECT 
-        p.number, 									{{ Scan "Number" }}	
+        p.number, 									{{ ScanInt "Number" }}	
         cast(p.number AS TEXT), 					{{ ScanText "BigNumber" }}	
-        p.number, 									{{ Scan "NumberP" }}	
+        p.number, 									{{ ScanInt "NumberP" }}	
         CONCAT('https://www.bisafans.de/pokedex/', 
             printf('%03d', p.number) ,'.php'),      {{ ScanBinary "Bisafans" }}	
-        p.name, 							        {{ Scan "Name" }}
-        p.height, 							        {{ Scan "Height" }}	
-        p.height, 							        {{ Scan "HeightP" }}	
+        p.name, 							        {{ ScanString "Name" }}
+        p.height, 							        {{ ScanFloat "Height" }}	
+        p.height, 							        {{ ScanFloat "HeightP" }}	
         p.weight, 							        {{ Scan "Weight" }}
-        p.generation, 						        {{ Scan "Generation" }}
-        p.generation, 						        {{ Scan "GenerationP" }}
-        p.legendary, 						        {{ Scan "Legendary" }}
-        p.legendary, 						        {{ Scan "LegendaryP" }}
+        p.generation, 						        {{ ScanUint "Generation" }}
+        p.generation, 						        {{ ScanUint "GenerationP" }}
+        p.legendary, 						        {{ ScanBool "Legendary" }}
+        p.legendary, 						        {{ ScanBool "LegendaryP" }}
         pt.type_names, 		                        {{ ScanStringSlice "Types" "," }}
-        c.name, 						            {{ Scan "Classification" }}
+        c.name, 						            {{ ScanString "Classification" }}
         pa.ability_names,	                        {{ ScanStringSlice "Abilities" "," }}
         '2000-01-01',                               {{ ScanStringTime "SomeDate" "DateOnly" "UTC" }}
-        p.today,                                    {{ Scan "Today" }}
+        p.today,                                    {{ ScanTime "Today" }}
         JSON('{"hello": "world"}'),                 {{ ScanJSON "Meta" }}
-        JSON('{"hello": "world"}')                  {{ ScanJSON "MetaBytes" }}
+        JSON('{"hello": "world"}'),                 {{ ScanBytes "MetaBytes" }}
+        '100,-200,300',                             {{ ScanIntSlice "IntSlice" "," }}
+        '100,200,300',                              {{ ScanUintSlice "UintSlice" "," }}
+        '1.23,4.56',                                {{ ScanFloatSlice "FloatSlice" "," }}
+        'true,false'                                {{ ScanBoolSlice "BoolSlice" "," }}
     FROM pokemons p
     LEFT JOIN (
         SELECT pokemon_number, GROUP_CONCAT(types.name, ',') AS type_names

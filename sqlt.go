@@ -41,7 +41,7 @@ type Option interface {
 // Configure returns a Config instance with all provided Options applied.
 func Configure(opts ...Option) Config {
 	var config = Config{
-		Placeholder: Question,
+		Placeholder: Question{},
 	}
 
 	for _, o := range opts {
@@ -53,6 +53,7 @@ func Configure(opts ...Option) Config {
 
 // Config holds settings for statement generation, caching, logging, and template behavior.
 type Config struct {
+	Dialect     string
 	Placeholder Placeholder
 	Templates   []Template
 	Log         Log
@@ -62,7 +63,11 @@ type Config struct {
 
 // Configure applies the non-zero settings from this Config onto another Config.
 func (c Config) Configure(config *Config) {
-	if c.Placeholder != "" {
+	if c.Dialect != "" {
+		config.Dialect = c.Dialect
+	}
+
+	if c.Placeholder != nil {
 		config.Placeholder = c.Placeholder
 	}
 
@@ -133,25 +138,99 @@ func DefaultHasher() Hasher {
 	}
 }
 
-// Placeholder defines the syntax used to replace SQL parameters in templates.
-// Can be a constant (e.g. '?') or positional (e.g. '$%d').
-type Placeholder string
-
-// Configure sets this Placeholder into the provided Config.
-func (p Placeholder) Configure(config *Config) {
-	config.Placeholder = p
+func Postgres() Dialect {
+	return Dialect{
+		Name:        "Postgres",
+		Placeholder: Dollar{},
+	}
 }
 
-const (
-	// Question is the default SQL placeholder ('?') for anonymous parameters.
-	Question Placeholder = "?"
-	// Dollar uses PostgreSQL-style positional placeholders ($1, $2, ...).
-	Dollar Placeholder = "$%d"
-	// Colon uses Oracle-style positional placeholders (:1, :2, ...).
-	Colon Placeholder = ":%d"
-	// AtP uses T-SQL-style placeholders (@p1, @p2, ...).
-	AtP Placeholder = "@p%d"
-)
+func Sqlite() Dialect {
+	return Dialect{
+		Name:        "Sqlite",
+		Placeholder: Question{},
+	}
+}
+
+type Dialect struct {
+	Name        string
+	Placeholder Placeholder
+}
+
+func (d Dialect) Configure(config *Config) {
+	if d.Placeholder != nil {
+		config.Placeholder = d.Placeholder
+	}
+
+	if d.Name != "" {
+		config.Dialect = d.Name
+	}
+}
+
+// Placeholder is used to replace SQL parameters in templates.
+type Placeholder interface {
+	WritePlaceholder(pos int, writer io.Writer) error
+}
+
+// Question is a placeholder format used by sqlite.
+type Question struct{}
+
+// WritePlaceholder implements Placeholder.
+func (Question) WritePlaceholder(pos int, writer io.Writer) error {
+	_, err := writer.Write([]byte("?"))
+
+	return err
+}
+
+// Configure allows Question to be used as Option.
+func (Question) Configure(config *Config) {
+	config.Placeholder = Question{}
+}
+
+// Dollar is a placeholder format used by postgres.
+type Dollar struct{}
+
+// WritePlaceholder implements Placeholder.
+func (Dollar) WritePlaceholder(pos int, writer io.Writer) error {
+	_, err := writer.Write([]byte("$" + strconv.Itoa(pos)))
+
+	return err
+}
+
+// Configure allows Dollar to be used as Option.
+func (Dollar) Configure(config *Config) {
+	config.Placeholder = Dollar{}
+}
+
+// Colon is a placeholder format used by oracle.
+type Colon struct{}
+
+// WritePlaceholder implements Placeholder.
+func (Colon) WritePlaceholder(pos int, writer io.Writer) error {
+	_, err := writer.Write([]byte(":" + strconv.Itoa(pos)))
+
+	return err
+}
+
+// Configure allows Colon to be used as Option.
+func (Colon) Configure(config *Config) {
+	config.Placeholder = Colon{}
+}
+
+// AtP is a placeholder format used by sql server.
+type AtP struct{}
+
+// WritePlaceholder implements Placeholder.
+func (AtP) WritePlaceholder(pos int, writer io.Writer) error {
+	_, err := writer.Write([]byte("@p" + strconv.Itoa(pos)))
+
+	return err
+}
+
+// Configure allows AtP to be used as Option.
+func (AtP) Configure(config *Config) {
+	config.Placeholder = AtP{}
+}
 
 // Template is a functional option that transforms or extends a text/template.Template.
 // Useful for parsing, naming, or registering custom functions.
@@ -226,34 +305,14 @@ func (l Log) Configure(config *Config) {
 
 // Info holds metadata about an executed SQL statement, including duration, mode, parameters, and errors.
 type Info struct {
-	Duration    time.Duration
-	Mode        Mode
-	Template    string
-	Location    string
-	SQL         string
-	Args        []any
-	Err         error
-	Cached      bool
-	Transaction bool
+	Duration time.Duration
+	Template string
+	Location string
+	SQL      string
+	Args     []any
+	Err      error
+	Cached   bool
 }
-
-// Mode describes the type of SQL operation being executed (e.g. query, exec).
-type Mode string
-
-const (
-	// ExecMode indicates a statement that executes (e.g. CREATE, INSERT, UPDATE) without returning rows.
-	ExecMode Mode = "Exec"
-	// QueryRowMode indicates a query that returns a single row using QueryRowContext.
-	QueryRowMode Mode = "QueryRow"
-	// QueryMode indicates a query that returns multiple rows using QueryContext.
-	QueryMode Mode = "Query"
-	// FirstMode indicates a query expecting the first row, if available.
-	FirstMode Mode = "First"
-	// OneMode expects exactly one result row; returns an error if zero or multiple rows.
-	OneMode Mode = "One"
-	// AllMode retrieves all rows matching the query.
-	AllMode Mode = "All"
-)
 
 // Expression represents a compiled SQL statement with its arguments and destination mappers.
 // It is generated from a template and ready for execution.
@@ -320,7 +379,7 @@ func (e Expression[Dest]) One(ctx context.Context, db DB) (Dest, error) {
 
 // fetchOne is a shared internal helper to retrieve one result from the DB,
 // with an optional enforcement of exactly one result.
-func (e Expression[Dest]) fetchOne(ctx context.Context, db DB, enforeOne bool) (Dest, error) {
+func (e Expression[Dest]) fetchOne(ctx context.Context, db DB, enforceOne bool) (Dest, error) {
 	var one Dest
 
 	rows, err := db.QueryContext(ctx, e.SQL, e.Args...)
@@ -346,11 +405,11 @@ func (e Expression[Dest]) fetchOne(ctx context.Context, db DB, enforeOne bool) (
 		return one, errors.Join(err, rows.Close())
 	}
 
-	if enforeOne && rows.Next() {
+	if enforceOne && rows.Next() {
 		return one, errors.Join(ErrTooManyRows, rows.Close())
 	}
 
-	return one, errors.Join(rows.Close(), rows.Err())
+	return one, errors.Join(rows.Err(), rows.Close())
 }
 
 // All executes the expression and returns all matching rows mapped into Dest values.
@@ -382,41 +441,40 @@ func (e Expression[Dest]) All(ctx context.Context, db DB) ([]Dest, error) {
 		all = append(all, dest)
 	}
 
-	return all, errors.Join(rows.Close(), rows.Err())
+	return all, errors.Join(rows.Err(), rows.Close())
 }
 
 // Scanner defines a two-part function that produces a scan target and a function
 // to assign the scanned value into a destination structure.
 type Scanner[Dest any] func() (any, func(dest *Dest) error)
 
-// Raw marks a string as raw SQL that should be inserted as-is into the template output,
-// bypassing placeholder replacement.
+// Raw marks SQL to be inserted unchanged, bypassing placeholder substitution and whitespace collapsing.
 type Raw string
 
 // Exec creates a Statement that executes an SQL command (e.g. CREATE, INSERT, UPDATE) and returns the sql.Result.
 func Exec[Param any](opts ...Option) Statement[Param, sql.Result] {
-	return newStmt[Param](ExecMode, func(ctx context.Context, db DB, expr Expression[any]) (sql.Result, error) {
+	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[any]) (sql.Result, error) {
 		return db.ExecContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
 // QueryRow creates a Statement that returns a single *sql.Row from the query.
 func QueryRow[Param any](opts ...Option) Statement[Param, *sql.Row] {
-	return newStmt[Param](QueryRowMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Row, error) {
+	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[any]) (*sql.Row, error) {
 		return db.QueryRowContext(ctx, expr.SQL, expr.Args...), nil
 	}, opts...)
 }
 
 // Query creates a Statement that returns *sql.Rows for result iteration.
 func Query[Param any](opts ...Option) Statement[Param, *sql.Rows] {
-	return newStmt[Param](QueryMode, func(ctx context.Context, db DB, expr Expression[any]) (*sql.Rows, error) {
+	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[any]) (*sql.Rows, error) {
 		return db.QueryContext(ctx, expr.SQL, expr.Args...)
 	}, opts...)
 }
 
 // First creates a Statement that retrieves the first matching row mapped to Dest.
 func First[Param any, Dest any](opts ...Option) Statement[Param, Dest] {
-	return newStmt[Param](FirstMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
+	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
 		return expr.First(ctx, db)
 	}, opts...)
 }
@@ -424,14 +482,14 @@ func First[Param any, Dest any](opts ...Option) Statement[Param, Dest] {
 // One creates a Statement that expects exactly one row mapped into Dest.
 // Returns an error if zero or more than one row is returned.
 func One[Param any, Dest any](opts ...Option) Statement[Param, Dest] {
-	return newStmt[Param](OneMode, func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
+	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
 		return expr.One(ctx, db)
 	}, opts...)
 }
 
 // All creates a Statement that retrieves all matching rows mapped into a slice of Dest.
 func All[Param any, Dest any](opts ...Option) Statement[Param, []Dest] {
-	return newStmt[Param](AllMode, func(ctx context.Context, db DB, expr Expression[Dest]) ([]Dest, error) {
+	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[Dest]) ([]Dest, error) {
 		return expr.All(ctx, db)
 	}, opts...)
 }
@@ -442,13 +500,13 @@ type Statement[Param, Result any] interface {
 }
 
 // Stmt constructs a customizable Statement with explicit mode, executor, and options.
-func Stmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) Statement[Param, Result] {
-	return newStmt[Param](mode, exec, opts...)
+func Stmt[Param any, Dest any, Result any](exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) Statement[Param, Result] {
+	return newStmt[Param](exec, opts...)
 }
 
 // newStmt creates a new statement with template parsing, validation, and caching.
 // It returns a reusable, thread-safe Statement.
-func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) Statement[Param, Result] {
+func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) Statement[Param, Result] {
 	_, file, line, _ := runtime.Caller(2)
 
 	location := file + ":" + strconv.Itoa(line)
@@ -459,12 +517,24 @@ func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.C
 		d = newDestinator[Dest]()
 
 		t = template.New("").Funcs(template.FuncMap{
+			"Dialect":         func() string { return config.Dialect },
 			"Raw":             func(sql string) Raw { return Raw(sql) },
 			"Scan":            d.scan,
+			"ScanBytes":       d.scanBytes,
+			"ScanTime":        d.scanTime,
+			"ScanString":      d.scanString,
+			"ScanInt":         d.scanInt,
+			"ScanUint":        d.scanUint,
+			"ScanFloat":       d.scanFloat,
+			"ScanBool":        d.scanBool,
 			"ScanJSON":        d.scanJSON,
 			"ScanBinary":      d.scanBinary,
 			"ScanText":        d.scanText,
 			"ScanStringSlice": d.scanStringSlice,
+			"ScanIntSlice":    d.scanIntSlice,
+			"ScanUintSlice":   d.scanUintSlice,
+			"ScanFloatSlice":  d.scanFloatSlice,
+			"ScanBoolSlice":   d.scanBoolSlice,
 			"ScanStringTime":  d.scanStringTime,
 		})
 		err error
@@ -473,27 +543,22 @@ func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.C
 	for _, to := range config.Templates {
 		t, err = to(t)
 		if err != nil {
-			panic(fmt.Errorf("parse template at %s: %w", location, err))
+			panic(fmt.Errorf("statement at %s: parse template: %w", location, err))
 		}
 	}
 
 	if err = templatecheck.CheckText(t, *new(Param)); err != nil {
-		panic(fmt.Errorf("check template at %s: %w", location, err))
+		panic(fmt.Errorf("statement at %s: check template: %w", location, err))
 	}
 
 	if err = d.escapeNode(t, t.Root); err != nil {
-		panic(fmt.Errorf("escape template at %s: %w", location, err))
+		panic(fmt.Errorf("statement at %s: escape template: %w", location, err))
 	}
 
 	t, err = t.Clone()
 	if err != nil {
-		panic(fmt.Errorf("clone template at %s: %w", location, err))
+		panic(fmt.Errorf("statement at %s: clone template: %w", location, err))
 	}
-
-	var (
-		placeholder = string(config.Placeholder)
-		positional  = strings.Contains(placeholder, "%d")
-	)
 
 	pool := &sync.Pool{
 		New: func() any {
@@ -505,22 +570,20 @@ func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.C
 			}
 
 			r.tpl.Funcs(template.FuncMap{
-				ident: func(arg any) Raw {
+				ident: func(arg any) (Raw, error) {
 					switch a := arg.(type) {
 					case Raw:
-						return a
+						r.sqlWriter.data = append(r.sqlWriter.data, []byte(a)...)
+
+						return Raw(""), nil
 					case Scanner[Dest]:
 						r.scanners = append(r.scanners, a)
 
-						return Raw("")
+						return Raw(""), nil
 					default:
 						r.args = append(r.args, arg)
 
-						if positional {
-							return Raw(fmt.Sprintf(placeholder, len(r.args)))
-						}
-
-						return Raw(placeholder)
+						return Raw(""), config.Placeholder.WritePlaceholder(len(r.args), r.sqlWriter)
 					}
 				},
 			})
@@ -542,7 +605,6 @@ func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.C
 	return &statement[Param, Dest, Result]{
 		name:     t.Name(),
 		location: location,
-		mode:     mode,
 		hasher:   config.Hasher,
 		cache:    cache,
 		pool:     pool,
@@ -556,7 +618,6 @@ func newStmt[Param any, Dest any, Result any](mode Mode, exec func(ctx context.C
 type statement[Param any, Dest any, Result any] struct {
 	name     string
 	location string
-	mode     Mode
 	hasher   Hasher
 	cache    *expirable.LRU[uint64, Expression[Dest]]
 	exec     func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)
@@ -577,19 +638,15 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	if s.log != nil {
 		now := time.Now()
 
-		_, inTx := db.(*sql.Tx)
-
 		defer func() {
 			s.log(ctx, Info{
-				Template:    s.name,
-				Location:    s.location,
-				Duration:    time.Since(now),
-				Mode:        s.mode,
-				SQL:         expr.SQL,
-				Args:        expr.Args,
-				Err:         err,
-				Cached:      cached,
-				Transaction: inTx,
+				Template: s.name,
+				Location: s.location,
+				Duration: time.Since(now),
+				SQL:      expr.SQL,
+				Args:     expr.Args,
+				Err:      err,
+				Cached:   cached,
 			})
 		}()
 	}
@@ -601,7 +658,7 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 
 		err = s.hasher(param, hasher)
 		if err != nil {
-			return result, fmt.Errorf("statement at %s: %w", s.location, err)
+			return result, fmt.Errorf("statement at %s: hasher: %w", s.location, err)
 		}
 
 		hash = hasher.Sum64()
@@ -612,7 +669,7 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 		if cached {
 			result, err = s.exec(ctx, db, expr)
 			if err != nil {
-				return result, fmt.Errorf("statement at %s: %w", s.location, err)
+				return result, fmt.Errorf("statement at %s: cached execution: %w", s.location, err)
 			}
 
 			return result, nil
@@ -621,11 +678,9 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 
 	r := s.pool.Get().(*runner[Param, Dest])
 
-	r.ctx = ctx
-
 	expr, err = r.expr(param)
 	if err != nil {
-		return result, fmt.Errorf("statement at %s: %w", s.location, err)
+		return result, fmt.Errorf("statement at %s: expression: %w", s.location, err)
 	}
 
 	s.pool.Put(r)
@@ -636,7 +691,7 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 
 	result, err = s.exec(ctx, db, expr)
 	if err != nil {
-		return result, fmt.Errorf("statement at %s: %w", s.location, err)
+		return result, fmt.Errorf("statement at %s: execution: %w", s.location, err)
 	}
 
 	return result, nil
@@ -681,6 +736,7 @@ var (
 	textUnmarshalerType   = reflect.TypeFor[encoding.TextUnmarshaler]()
 	binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
 	byteSliceType         = reflect.TypeFor[[]byte]()
+	jsonMessageType       = reflect.TypeFor[json.RawMessage]()
 )
 
 // newDestinator creates a new destination manager for a given result type,
@@ -781,189 +837,181 @@ func (d *destinator[Dest]) cache(key string, field string, f func(a accessor[Des
 	return scanner, nil
 }
 
-// scan generates a scanner for common primitive types (string, int, time.Time, etc.)
-// and assigns the scanned value to the target field.
+// scan generates a scanner for values implementing sql.Scanner.
 func (d *destinator[Dest]) scan(field string) (Scanner[Dest], error) {
 	return d.cache(field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		if a.pointerType.Implements(scannerType) {
+		if !a.pointerType.Implements(scannerType) {
+			return nil, fmt.Errorf("scan: type %s doesn't implement sql.Scanner", a.typ)
+		}
+
+		return func() (any, func(dest *Dest) error) {
+			var src any
+
+			return &src, func(dest *Dest) error {
+				return a.access(dest).Addr().Interface().(sql.Scanner).Scan(src)
+			}
+		}, nil
+	})
+}
+
+func (d *destinator[Dest]) scanBytes(field string) (Scanner[Dest], error) {
+	return d.cache("Bytes:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.typ != byteSliceType {
+			return nil, fmt.Errorf("scan bytes: type %s is not of type []byte", a.typ)
+		}
+
+		return func() (any, func(dest *Dest) error) {
+			var src []byte
+
+			return &src, func(dest *Dest) error {
+				if len(src) == 0 {
+					return nil
+				}
+
+				a.access(dest).Set(reflect.ValueOf(src))
+
+				return nil
+			}
+		}, nil
+	})
+}
+
+// scanTime generates a scanner for time.Time values.
+func (d *destinator[Dest]) scanTime(field string) (Scanner[Dest], error) {
+	return d.cache("Time:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.typ != timeType {
+			return nil, fmt.Errorf("scan time: type %s is not of type time.Time", a.typ)
+		}
+
+		if a.pointer {
 			return func() (any, func(dest *Dest) error) {
-				var src any
+				var src *time.Time
 
 				return &src, func(dest *Dest) error {
-					return a.access(dest).Addr().Interface().(sql.Scanner).Scan(src)
+					if src == nil {
+						return nil
+					}
+
+					a.access(dest).Set(reflect.ValueOf(*src))
+
+					return nil
 				}
 			}, nil
 		}
 
+		return func() (any, func(dest *Dest) error) {
+			var src time.Time
+
+			return &src, func(dest *Dest) error {
+				a.access(dest).Set(reflect.ValueOf(src))
+
+				return nil
+			}
+		}, nil
+	})
+}
+
+// scanAny is a helper function.
+func scanAny[T any, Dest any](pointer bool, set func(dest *Dest, src T)) Scanner[Dest] {
+	if pointer {
+		return func() (any, func(dest *Dest) error) {
+			var src *T
+
+			return &src, func(dest *Dest) error {
+				if src == nil {
+					return nil
+				}
+
+				set(dest, *src)
+
+				return nil
+			}
+		}
+	}
+
+	return func() (any, func(dest *Dest) error) {
+		var src T
+
+		return &src, func(dest *Dest) error {
+			set(dest, src)
+
+			return nil
+		}
+	}
+}
+
+// scanString generates a scanner for string values.
+func (d *destinator[Dest]) scanString(field string) (Scanner[Dest], error) {
+	return d.cache("String:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.typ.Kind() != reflect.String {
+			return nil, fmt.Errorf("scan string: type %s is not of kind string", a.typ)
+		}
+
+		return scanAny(a.pointer, func(dest *Dest, src string) {
+			a.access(dest).SetString(src)
+		}), nil
+	})
+}
+
+// scanBool generates a scanner for bool values.
+func (d *destinator[Dest]) scanBool(field string) (Scanner[Dest], error) {
+	return d.cache("Bool:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.typ.Kind() != reflect.Bool {
+			return nil, fmt.Errorf("scan bool: type %s is not of kind bool", a.typ)
+		}
+
+		return scanAny(a.pointer, func(dest *Dest, src bool) {
+			a.access(dest).SetBool(src)
+		}), nil
+	})
+}
+
+// scanInt generates a scanner for int values.
+func (d *destinator[Dest]) scanInt(field string) (Scanner[Dest], error) {
+	return d.cache("Int:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
 		switch a.typ.Kind() {
-		case reflect.String:
-			if a.pointer {
-				return func() (any, func(dest *Dest) error) {
-					var src *string
-
-					return &src, func(dest *Dest) error {
-						if src == nil {
-							return nil
-						}
-
-						a.access(dest).SetString(*src)
-
-						return nil
-					}
-				}, nil
-			}
-
-			return func() (any, func(dest *Dest) error) {
-				var src string
-
-				return &src, func(dest *Dest) error {
-					a.access(dest).SetString(src)
-
-					return nil
-				}
-			}, nil
+		default:
+			return nil, fmt.Errorf("scan int: type %s is not of kind int", a.typ)
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			if a.pointer {
-				return func() (any, func(dest *Dest) error) {
-					var src *int64
+			return scanAny(a.pointer, func(dest *Dest, src int64) {
+				a.access(dest).SetInt(src)
+			}), nil
+		}
+	})
+}
 
-					return &src, func(dest *Dest) error {
-						if src == nil {
-							return nil
-						}
-
-						a.access(dest).SetInt(*src)
-
-						return nil
-					}
-				}, nil
-			}
-
-			return func() (any, func(dest *Dest) error) {
-				var src int64
-
-				return &src, func(dest *Dest) error {
-					a.access(dest).SetInt(src)
-
-					return nil
-				}
-			}, nil
+// scanUint generates a scanner for uint values.
+func (d *destinator[Dest]) scanUint(field string) (Scanner[Dest], error) {
+	return d.cache("Uint:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		switch a.typ.Kind() {
+		default:
+			return nil, fmt.Errorf("scan uint: type %s is not of kind uint", a.typ)
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			if a.pointer {
-				return func() (any, func(dest *Dest) error) {
-					var src *uint64
-
-					return &src, func(dest *Dest) error {
-						if src == nil {
-							return nil
-						}
-
-						a.access(dest).SetUint(*src)
-
-						return nil
-					}
-				}, nil
-			}
-
-			return func() (any, func(dest *Dest) error) {
-				var src uint64
-
-				return &src, func(dest *Dest) error {
-					a.access(dest).SetUint(src)
-
-					return nil
-				}
-			}, nil
-		case reflect.Float32, reflect.Float64:
-			if a.pointer {
-				return func() (any, func(dest *Dest) error) {
-					var src *float64
-
-					return &src, func(dest *Dest) error {
-						if src == nil {
-							return nil
-						}
-
-						a.access(dest).SetFloat(*src)
-
-						return nil
-					}
-				}, nil
-			}
-
-			return func() (any, func(dest *Dest) error) {
-				var src float64
-
-				return &src, func(dest *Dest) error {
-					a.access(dest).SetFloat(src)
-
-					return nil
-				}
-			}, nil
-		case reflect.Bool:
-			if a.pointer {
-				return func() (any, func(dest *Dest) error) {
-					var src *bool
-
-					return &src, func(dest *Dest) error {
-						if src == nil {
-							return nil
-						}
-
-						a.access(dest).SetBool(*src)
-
-						return nil
-					}
-				}, nil
-			}
-
-			return func() (any, func(dest *Dest) error) {
-				var src bool
-
-				return &src, func(dest *Dest) error {
-					a.access(dest).SetBool(src)
-
-					return nil
-				}
-			}, nil
+			return scanAny(a.pointer, func(dest *Dest, src uint64) {
+				a.access(dest).SetUint(src)
+			}), nil
 		}
+	})
+}
 
-		if a.typ == timeType {
-			if a.pointer {
-				return func() (any, func(dest *Dest) error) {
-					var src *time.Time
-
-					return &src, func(dest *Dest) error {
-						if src == nil {
-							return nil
-						}
-
-						a.access(dest).Set(reflect.ValueOf(*src))
-
-						return nil
-					}
-				}, nil
-			}
-
-			return func() (any, func(dest *Dest) error) {
-				var src time.Time
-
-				return &src, func(dest *Dest) error {
-					a.access(dest).Set(reflect.ValueOf(src))
-
-					return nil
-				}
-			}, nil
+// scanFloat generates a scanner for float values.
+func (d *destinator[Dest]) scanFloat(field string) (Scanner[Dest], error) {
+	return d.cache("Float:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		switch a.typ.Kind() {
+		default:
+			return nil, fmt.Errorf("scan float: type %s is not of kind float", a.typ)
+		case reflect.Float64, reflect.Float32:
+			return scanAny(a.pointer, func(dest *Dest, src float64) {
+				a.access(dest).SetFloat(src)
+			}), nil
 		}
-
-		return nil, fmt.Errorf("scan: type %s is not supported", a.typ)
 	})
 }
 
 // scanJSON generates a scanner that unmarshals JSON-encoded data into the destination field.
 func (d *destinator[Dest]) scanJSON(field string) (Scanner[Dest], error) {
 	return d.cache("JSON:"+field, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		if a.typ == byteSliceType {
+		if a.typ == jsonMessageType {
 			return func() (any, func(dest *Dest) error) {
 				var src []byte
 
@@ -972,13 +1020,7 @@ func (d *destinator[Dest]) scanJSON(field string) (Scanner[Dest], error) {
 						return nil
 					}
 
-					var raw json.RawMessage
-
-					if err := json.Unmarshal(src, &raw); err != nil {
-						return err
-					}
-
-					a.access(dest).SetBytes(raw)
+					a.access(dest).Set(reflect.ValueOf(src))
 
 					return nil
 				}
@@ -1028,25 +1070,40 @@ func (d *destinator[Dest]) scanText(field string) (Scanner[Dest], error) {
 		}
 
 		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[[]byte]
+			var src []byte
 
 			return &src, func(dest *Dest) error {
-				if !src.Valid {
+				if len(src) == 0 {
 					return nil
 				}
 
-				return a.access(dest).Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText(src.V)
+				return a.access(dest).Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText(src)
 			}
 		}, nil
 	})
 }
 
-// scanStringSlice splits a string from the DB into a []string using the given separator,
-// and assigns it to the destination field.
-func (d *destinator[Dest]) scanStringSlice(field string, sep string) (Scanner[Dest], error) {
-	return d.cache("StringSlice:"+field+":"+sep, field, func(a accessor[Dest]) (Scanner[Dest], error) {
-		if a.typ.Kind() != reflect.Slice || a.typ.Elem().Kind() != reflect.String {
-			return nil, fmt.Errorf("scan string slice: cannot set []string in type %s", a.typ)
+func (d *destinator[Dest]) scanStringSliceSetter(t string, kinds []reflect.Kind, field string, sep string, set func(value reflect.Value, str string) error) (Scanner[Dest], error) {
+	lt := strings.ToLower(t)
+
+	return d.cache(t+"Slice:"+field+":"+sep, field, func(a accessor[Dest]) (Scanner[Dest], error) {
+		if a.typ.Kind() != reflect.Slice {
+			return nil, fmt.Errorf("scan %s slice: cannot set []%s in type %s", lt, lt, a.typ)
+		}
+
+		var indirections int
+
+		elem := a.typ.Elem()
+		for elem.Kind() == reflect.Pointer {
+			elem = elem.Elem()
+
+			indirections++
+
+			continue
+		}
+
+		if !slices.Contains(kinds, elem.Kind()) {
+			return nil, fmt.Errorf("scan %s slice: cannot set []%s in type %s", lt, lt, a.typ)
 		}
 
 		return func() (any, func(dest *Dest) error) {
@@ -1066,12 +1123,96 @@ func (d *destinator[Dest]) scanStringSlice(field string, sep string) (Scanner[De
 				value.Set(reflect.MakeSlice(a.typ, len(split), len(split)))
 
 				for i, v := range split {
-					value.Index(i).SetString(v)
+					index := value.Index(i)
+
+					for range indirections {
+						if index.IsNil() {
+							index.Set(reflect.New(index.Type().Elem()))
+						}
+
+						index = index.Elem()
+					}
+
+					if err := set(index, v); err != nil {
+						return err
+					}
 				}
 
 				return nil
 			}
 		}, nil
+	})
+}
+
+// scanStringSlice splits a string from the DB into a []string using the given separator,
+// and assigns it to the destination field.
+func (d *destinator[Dest]) scanStringSlice(field string, sep string) (Scanner[Dest], error) {
+	return d.scanStringSliceSetter("String",
+		[]reflect.Kind{reflect.String},
+		field, sep, func(value reflect.Value, str string) error {
+			value.SetString(str)
+
+			return nil
+		})
+}
+
+// scanIntSlice splits a string from the DB and converts each part to int.
+func (d *destinator[Dest]) scanIntSlice(field string, sep string) (Scanner[Dest], error) {
+	return d.scanStringSliceSetter("Int",
+		[]reflect.Kind{reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64},
+		field, sep, func(value reflect.Value, str string) error {
+			v, err := strconv.ParseInt(str, 10, 64)
+			if err != nil {
+				return err
+			}
+
+			value.SetInt(v)
+
+			return nil
+		})
+}
+
+// scanUintSlice splits a string from the DB and converts each part to uint.
+func (d *destinator[Dest]) scanUintSlice(field string, sep string) (Scanner[Dest], error) {
+	return d.scanStringSliceSetter("Uint",
+		[]reflect.Kind{reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64},
+		field, sep, func(value reflect.Value, str string) error {
+			v, err := strconv.ParseUint(str, 10, 64)
+			if err != nil {
+				return err
+			}
+
+			value.SetUint(v)
+
+			return nil
+		})
+}
+
+// scanFloatSlice splits a string from the DB and converts each part to float.
+func (d *destinator[Dest]) scanFloatSlice(field string, sep string) (Scanner[Dest], error) {
+	return d.scanStringSliceSetter("Float", []reflect.Kind{reflect.Float32, reflect.Float64}, field, sep, func(value reflect.Value, str string) error {
+		v, err := strconv.ParseFloat(str, 64)
+		if err != nil {
+			return err
+		}
+
+		value.SetFloat(v)
+
+		return nil
+	})
+}
+
+// scanBoolSlice splits a string from the DB and converts each part to bool.
+func (d *destinator[Dest]) scanBoolSlice(field string, sep string) (Scanner[Dest], error) {
+	return d.scanStringSliceSetter("Bool", []reflect.Kind{reflect.Bool}, field, sep, func(value reflect.Value, str string) error {
+		v, err := strconv.ParseBool(str)
+		if err != nil {
+			return err
+		}
+
+		value.SetBool(v)
+
+		return nil
 	})
 }
 
@@ -1206,13 +1347,48 @@ func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error 
 				if err != nil {
 					return err
 				}
+			case "ScanBytes":
+				_, err := d.scanBytes(node.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanTime":
+				_, err := d.scanTime(node.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanString":
+				_, err := d.scanString(node.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanInt":
+				_, err := d.scanInt(node.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanUint":
+				_, err := d.scanUint(node.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanFloat":
+				_, err := d.scanFloat(node.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanBool":
+				_, err := d.scanBool(node.Text)
+				if err != nil {
+					return err
+				}
 			case "ScanJSON":
 				_, err := d.scanJSON(node.Text)
 				if err != nil {
 					return err
 				}
 			case "ScanBinary":
-				_, err := d.scanJSON(node.Text)
+				_, err := d.scanBinary(node.Text)
 				if err != nil {
 					return err
 				}
@@ -1228,6 +1404,46 @@ func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error 
 				}
 
 				_, err := d.scanStringSlice(node.Text, sep.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanIntSlice":
+				sep, ok := cmd.Args[2].(*parse.StringNode)
+				if !ok {
+					continue
+				}
+
+				_, err := d.scanIntSlice(node.Text, sep.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanUintSlice":
+				sep, ok := cmd.Args[2].(*parse.StringNode)
+				if !ok {
+					continue
+				}
+
+				_, err := d.scanUintSlice(node.Text, sep.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanFloatSlice":
+				sep, ok := cmd.Args[2].(*parse.StringNode)
+				if !ok {
+					continue
+				}
+
+				_, err := d.scanFloatSlice(node.Text, sep.Text)
+				if err != nil {
+					return err
+				}
+			case "ScanBoolSlice":
+				sep, ok := cmd.Args[2].(*parse.StringNode)
+				if !ok {
+					continue
+				}
+
+				_, err := d.scanBoolSlice(node.Text, sep.Text)
 				if err != nil {
 					return err
 				}
@@ -1270,6 +1486,9 @@ func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error 
 		)
 	case *parse.TemplateNode:
 		tpl := t.Lookup(v.Name)
+		if tpl == nil {
+			return fmt.Errorf("template %s not found", v.Name)
+		}
 
 		return d.escapeNode(tpl, tpl.Root)
 	}
@@ -1291,7 +1510,6 @@ var ident = "__sqlt__"
 // runner holds context, state, and buffers needed to execute a template with a specific Param.
 // It collects SQL text, placeholders, and scanners.
 type runner[Param any, Dest any] struct {
-	ctx       context.Context
 	tpl       *template.Template
 	sqlWriter *sqlWriter
 	args      []any
@@ -1311,7 +1529,6 @@ func (r *runner[Param, Dest]) expr(param Param) (Expression[Dest], error) {
 		Scanners: r.scanners,
 	}
 
-	r.ctx = context.Background()
 	r.sqlWriter.Reset()
 	r.args = make([]any, 0, len(expr.Args))
 	r.scanners = make([]Scanner[Dest], 0, len(expr.Scanners))

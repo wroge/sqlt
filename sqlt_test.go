@@ -17,25 +17,29 @@ import (
 )
 
 type Pokemon struct {
-	Number         int64             `json:"number"`
-	BigNumber      big.Int           `json:"bignumber"`
-	NumberP        *int64            `json:"numberp"`
-	Bisafans       url.URL           `json:"bisafans"`
-	Name           string            `json:"name"`
-	Height         float64           `json:"height"`
-	HeightP        *float64          `json:"heightp"`
-	Weight         sql.Null[float64] `json:"weight"`
-	Generation     uint64            `json:"generation"`
-	GenerationP    *uint64           `json:"generationp"`
-	Legendary      bool              `json:"legendary"`
-	LegendaryP     *bool             `json:"legendaryp"`
-	Types          []string          `json:"types"`
-	Classification *string           `json:"classification"`
-	Abilities      []string          `json:"abilities"`
-	SomeDate       time.Time         `json:"some_date,omitzero"`
-	Today          time.Time         `json:"today,omitzero"`
-	Meta           map[string]string `json:"meta,omitempty"`
-	MetaBytes      []byte            `json:"meta_bytes,omitempty"`
+	Number         int64
+	BigNumber      big.Int
+	NumberP        *int64
+	Bisafans       url.URL
+	Name           string
+	Height         float64
+	HeightP        *float64
+	Weight         sql.Null[float64]
+	Generation     uint64
+	GenerationP    *uint64
+	Legendary      bool
+	LegendaryP     *bool
+	Types          []*string
+	Classification *string
+	Abilities      []string
+	SomeDate       time.Time
+	Today          time.Time
+	Meta           map[string]string
+	MetaBytes      []byte
+	IntSlice       []int64
+	UintSlice      []uint64
+	FloatSlice     []float64
+	BoolSlice      []bool
 }
 
 func NewPointer[T any](t T) Pointer[T] {
@@ -56,7 +60,8 @@ type Query struct {
 
 var (
 	config = sqlt.Config{
-		Placeholder: sqlt.Question,
+		Dialect:     "Sqlite",
+		Placeholder: sqlt.Question{},
 		Cache:       &sqlt.Cache{},
 		Templates: []sqlt.Template{
 			sqlt.Funcs(sprig.TxtFuncMap()),
@@ -66,10 +71,10 @@ var (
 			fmt.Println(info.Template)
 		},
 	}
-	create                       = sqlt.Exec[any](config, sqlt.Lookup("create"))
+	create                       = sqlt.Exec[any](config, sqlt.Sqlite(), sqlt.Lookup("create"))
 	insertTypes                  = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_types"))
 	insertClassifications        = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_classifications"))
-	insertAbilities              = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Dollar, sqlt.Lookup("insert_abilities"))
+	insertAbilities              = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Dollar{}, sqlt.Lookup("insert_abilities"))
 	insertPokemons               = sqlt.All[[][]string, int](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemons"))
 	insertPokemonTypes           = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemon_types"))
 	insertPokemonClassifications = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemon_classifications"))
