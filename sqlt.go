@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,8 +17,10 @@ import (
 	"text/template"
 	"text/template/parse"
 	"time"
+	"unicode"
 
 	"github.com/cespare/xxhash/v2"
+	"github.com/goccy/go-json"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/jba/templatecheck"
 )
@@ -32,278 +33,204 @@ type DB interface {
 	ExecContext(ctx context.Context, sql string, args ...any) (sql.Result, error)
 }
 
-// Option allows for flexible configuration of a statement or engine.
-// Implementations apply settings to the provided Config.
-type Option interface {
-	Configure(config *Config)
-}
-
-// Configure returns a Config instance with all provided Options applied.
-func Configure(opts ...Option) Config {
-	var config = Config{
-		Placeholder: Question{},
-	}
-
-	for _, o := range opts {
-		o.Configure(&config)
-	}
-
-	return config
-}
-
 // Config holds settings for statement generation, caching, logging, and template behavior.
 type Config struct {
-	Dialect     string
-	Placeholder Placeholder
-	Templates   []Template
-	Log         Log
-	Cache       *Cache
-	Hasher      Hasher
+	Dialect              string
+	Placeholder          func(pos int, writer io.Writer) error
+	Templates            []func(t *template.Template) (*template.Template, error)
+	Log                  func(ctx context.Context, info Info)
+	ExpressionSize       int
+	ExpressionExpiration time.Duration
 }
 
-// Configure applies the non-zero settings from this Config onto another Config.
-func (c Config) Configure(config *Config) {
-	if c.Dialect != "" {
-		config.Dialect = c.Dialect
+// With returns a new Config with all provided configs layered on top.
+// Later configs override earlier ones.
+func (c Config) With(configs ...Config) Config {
+	var merged Config
+
+	for _, override := range append([]Config{c}, configs...) {
+		if override.Dialect != "" {
+			merged.Dialect = override.Dialect
+		}
+
+		if override.Placeholder != nil {
+			merged.Placeholder = override.Placeholder
+		}
+
+		if len(override.Templates) > 0 {
+			merged.Templates = append(merged.Templates, override.Templates...)
+		}
+
+		if override.Log != nil {
+			merged.Log = override.Log
+		}
+
+		if override.ExpressionExpiration != 0 {
+			merged.ExpressionExpiration = override.ExpressionExpiration
+		}
+
+		if override.ExpressionSize != 0 {
+			merged.ExpressionSize = override.ExpressionSize
+		}
 	}
 
-	if c.Placeholder != nil {
-		config.Placeholder = c.Placeholder
-	}
+	return merged
+}
 
-	if len(c.Templates) > 0 {
-		config.Templates = append(config.Templates, c.Templates...)
-	}
+// Sqlite is the default configuration with a Question placeholder.
+func Sqlite() Config {
+	return Dialect("Sqlite").With(Question())
+}
 
-	if c.Log != nil {
-		config.Log = c.Log
-	}
+// Postgres sets the Dialect function to "Postgres" and uses a Dollar placeholder.
+func Postgres() Config {
+	return Dialect("Postgres").With(Dollar())
+}
 
-	if c.Cache != nil {
-		config.Cache = c.Cache
-	}
-
-	if c.Hasher != nil {
-		config.Hasher = c.Hasher
+// Dialect sets the value of the Dialect function.
+func Dialect(name string) Config {
+	return Config{
+		Dialect: name,
 	}
 }
 
-// Cache configures the behavior of the expression result cache.
-// A Size ≤ 0 disables size limiting. An Expiration ≤ 0 disables entry expiration.
-type Cache struct {
-	Size       int
-	Expiration time.Duration
+func Cache(size int, exp time.Duration) Config {
+	return Config{
+		ExpressionSize:       size,
+		ExpressionExpiration: exp,
+	}
 }
 
-// Configure sets this Cache into the provided Config.
-func (c *Cache) Configure(config *Config) {
-	config.Cache = c
-}
-
-// NoCache returns nil, indicating that expression caching should be disabled.
-func NoCache() *Cache {
-	return nil
+// NoCache disables expression caching by setting size and expiration to zero.
+func NoCache() Config {
+	return Cache(0, 0)
 }
 
 // NoExpirationCache creates a cache with a fixed size and no expiration.
-func NoExpirationCache(size int) *Cache {
-	return &Cache{
-		Size:       size,
-		Expiration: 0,
-	}
+func NoExpirationCache(size int) Config {
+	return Cache(size, -1)
 }
 
 // UnlimitedSizeCache creates a cache without size constraints but with expiration.
-func UnlimitedSizeCache(expiration time.Duration) *Cache {
-	return &Cache{
-		Size:       0,
-		Expiration: expiration,
+func UnlimitedSizeCache(expiration time.Duration) Config {
+	return Cache(-1, expiration)
+}
+
+// Placeholder configures how argument placeholders are rendered in SQL statements.
+// For example, it can output ?, $1, :1, or @p1 depending on the SQL dialect.
+func Placeholder(f func(pos int, writer io.Writer) error) Config {
+	return Config{
+		Placeholder: f,
 	}
-}
-
-// Hasher defines a function that writes a unique, deterministic representation
-// of the given parameter to the provided writer, typically for caching purposes.
-type Hasher func(param any, writer io.Writer) error
-
-// Configure sets this Hasher into the provided Config.
-func (h Hasher) Configure(config *Config) {
-	config.Hasher = h
-}
-
-// DefaultHasher returns a Hasher that serializes parameters as JSON.
-// This provides stable and consistent cache keys.
-func DefaultHasher() Hasher {
-	return func(param any, writer io.Writer) error {
-		return json.NewEncoder(writer).Encode(param)
-	}
-}
-
-func Postgres() Dialect {
-	return Dialect{
-		Name:        "Postgres",
-		Placeholder: Dollar{},
-	}
-}
-
-func Sqlite() Dialect {
-	return Dialect{
-		Name:        "Sqlite",
-		Placeholder: Question{},
-	}
-}
-
-type Dialect struct {
-	Name        string
-	Placeholder Placeholder
-}
-
-func (d Dialect) Configure(config *Config) {
-	if d.Placeholder != nil {
-		config.Placeholder = d.Placeholder
-	}
-
-	if d.Name != "" {
-		config.Dialect = d.Name
-	}
-}
-
-// Placeholder is used to replace SQL parameters in templates.
-type Placeholder interface {
-	WritePlaceholder(pos int, writer io.Writer) error
 }
 
 // Question is a placeholder format used by sqlite.
-type Question struct{}
+func Question() Config {
+	return Placeholder(func(pos int, writer io.Writer) error {
+		_, err := writer.Write([]byte("?"))
 
-// WritePlaceholder implements Placeholder.
-func (Question) WritePlaceholder(pos int, writer io.Writer) error {
-	_, err := writer.Write([]byte("?"))
-
-	return err
-}
-
-// Configure allows Question to be used as Option.
-func (Question) Configure(config *Config) {
-	config.Placeholder = Question{}
+		return err
+	})
 }
 
 // Dollar is a placeholder format used by postgres.
-type Dollar struct{}
+func Dollar() Config {
+	return Placeholder(func(pos int, writer io.Writer) error {
+		_, err := writer.Write([]byte("$" + strconv.Itoa(pos)))
 
-// WritePlaceholder implements Placeholder.
-func (Dollar) WritePlaceholder(pos int, writer io.Writer) error {
-	_, err := writer.Write([]byte("$" + strconv.Itoa(pos)))
-
-	return err
-}
-
-// Configure allows Dollar to be used as Option.
-func (Dollar) Configure(config *Config) {
-	config.Placeholder = Dollar{}
+		return err
+	})
 }
 
 // Colon is a placeholder format used by oracle.
-type Colon struct{}
+func Colon() Config {
+	return Placeholder(func(pos int, writer io.Writer) error {
+		_, err := writer.Write([]byte(":" + strconv.Itoa(pos)))
 
-// WritePlaceholder implements Placeholder.
-func (Colon) WritePlaceholder(pos int, writer io.Writer) error {
-	_, err := writer.Write([]byte(":" + strconv.Itoa(pos)))
-
-	return err
-}
-
-// Configure allows Colon to be used as Option.
-func (Colon) Configure(config *Config) {
-	config.Placeholder = Colon{}
+		return err
+	})
 }
 
 // AtP is a placeholder format used by sql server.
-type AtP struct{}
+func AtP() Config {
+	return Placeholder(func(pos int, writer io.Writer) error {
+		_, err := writer.Write([]byte("@p" + strconv.Itoa(pos)))
 
-// WritePlaceholder implements Placeholder.
-func (AtP) WritePlaceholder(pos int, writer io.Writer) error {
-	_, err := writer.Write([]byte("@p" + strconv.Itoa(pos)))
-
-	return err
+		return err
+	})
 }
 
-// Configure allows AtP to be used as Option.
-func (AtP) Configure(config *Config) {
-	config.Placeholder = AtP{}
-}
-
-// Template is a functional option that transforms or extends a text/template.Template.
-// Useful for parsing, naming, or registering custom functions.
-type Template func(t *template.Template) (*template.Template, error)
-
-// Configure appends this Template modifier to the Config’s template list.
-func (to Template) Configure(config *Config) {
-	config.Templates = append(config.Templates, to)
-}
-
-// Name creates a Template option that defines a new named template.
-func Name(name string) Template {
-	return func(tpl *template.Template) (*template.Template, error) {
-		return tpl.New(name), nil
+// Template defines a function that modifies a Go text/template before execution.
+func Template(f func(t *template.Template) (*template.Template, error)) Config {
+	return Config{
+		Templates: []func(t *template.Template) (*template.Template, error){
+			f,
+		},
 	}
 }
 
-// Parse returns a Template option that parses and adds the provided template text.
-func Parse(text string) Template {
-	return func(tpl *template.Template) (*template.Template, error) {
-		return tpl.Parse(text)
-	}
+// Name creates a Template config that defines a new named template.
+func Name(name string) Config {
+	return Template(func(t *template.Template) (*template.Template, error) {
+		return t.New(name), nil
+	})
 }
 
-// ParseFS returns a Template option that loads and parses templates from the given fs.FS using patterns.
-func ParseFS(fs fs.FS, patterns ...string) Template {
-	return func(tpl *template.Template) (*template.Template, error) {
-		return tpl.ParseFS(fs, patterns...)
-	}
+// Parse returns a Template config that parses and adds the provided template text.
+func Parse(text string) Config {
+	return Template(func(t *template.Template) (*template.Template, error) {
+		return t.Parse(text)
+	})
 }
 
-// ParseFiles returns a Template option that loads and parses templates from the specified files.
-func ParseFiles(filenames ...string) Template {
-	return func(tpl *template.Template) (*template.Template, error) {
-		return tpl.ParseFiles(filenames...)
-	}
+// ParseFS returns a Template config that loads and parses templates from the given fs.FS using patterns.
+func ParseFS(fs fs.FS, patterns ...string) Config {
+	return Template(func(t *template.Template) (*template.Template, error) {
+		return t.ParseFS(fs, patterns...)
+	})
 }
 
-// ParseGlob returns a Template option that loads templates matching a glob pattern.
-func ParseGlob(pattern string) Template {
-	return func(tpl *template.Template) (*template.Template, error) {
-		return tpl.ParseGlob(pattern)
-	}
+// ParseFiles returns a Template config that loads and parses templates from the specified files.
+func ParseFiles(filenames ...string) Config {
+	return Template(func(t *template.Template) (*template.Template, error) {
+		return t.ParseFiles(filenames...)
+	})
 }
 
-// Funcs returns a Template option that registers the provided functions to the template.
-func Funcs(fm template.FuncMap) Template {
-	return func(tpl *template.Template) (*template.Template, error) {
-		return tpl.Funcs(fm), nil
-	}
+// ParseGlob returns a Template config that loads templates matching a glob pattern.
+func ParseGlob(pattern string) Config {
+	return Template(func(t *template.Template) (*template.Template, error) {
+		return t.ParseGlob(pattern)
+	})
 }
 
-// Lookup returns a Template option that retrieves a named template from the template set.
-func Lookup(name string) Template {
-	return func(tpl *template.Template) (*template.Template, error) {
-		tpl = tpl.Lookup(name)
-		if tpl == nil {
+// Funcs returns a Template config that registers the provided functions to the template.
+func Funcs(fm template.FuncMap) Config {
+	return Template(func(t *template.Template) (*template.Template, error) {
+		return t.Funcs(fm), nil
+	})
+}
+
+// Lookup returns a Template config that retrieves a named template from the template set.
+func Lookup(name string) Config {
+	return Template(func(t *template.Template) (*template.Template, error) {
+		t = t.Lookup(name)
+		if t == nil {
 			return nil, fmt.Errorf("template %s not found", name)
 		}
 
-		return tpl, nil
-	}
+		return t, nil
+	})
 }
 
 // Log defines a function used to log execution metadata for each SQL operation.
-type Log func(ctx context.Context, info Info)
-
-// Configure sets this Log function into the provided Config.
-func (l Log) Configure(config *Config) {
-	config.Log = l
+func Log(l func(ctx context.Context, info Info)) Config {
+	return Config{
+		Log: l,
+	}
 }
 
-// Info holds metadata about an executed SQL statement, including duration, mode, parameters, and errors.
+// Info holds metadata about an executed SQL statement, including duration, parameters, and errors.
 type Info struct {
 	Duration time.Duration
 	Template string
@@ -361,8 +288,8 @@ func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) er
 	}, nil
 }
 
-// First executes the SQL expression and returns the first result row, if any.
-// Returns sql.ErrNoRows if no rows are found.
+// First executes the SQL expression and returns at most one result row.
+// If no row is found, returns sql.ErrNoRows.
 func (e Expression[Dest]) First(ctx context.Context, db DB) (Dest, error) {
 	return e.fetchOne(ctx, db, false)
 }
@@ -371,8 +298,8 @@ func (e Expression[Dest]) First(ctx context.Context, db DB) (Dest, error) {
 var ErrTooManyRows = errors.New("too many rows")
 
 // One executes the expression and expects exactly one row.
-// Returns sql.ErrNoRows if no rows are found.
-// Returns ErrTooManyRows if more than one row is found.
+// If no row is found, returns sql.ErrNoRows.
+// If more than one row is found, returns ErrTooManyRows.
 func (e Expression[Dest]) One(ctx context.Context, db DB) (Dest, error) {
 	return e.fetchOne(ctx, db, true)
 }
@@ -448,50 +375,50 @@ func (e Expression[Dest]) All(ctx context.Context, db DB) ([]Dest, error) {
 // to assign the scanned value into a destination structure.
 type Scanner[Dest any] func() (any, func(dest *Dest) error)
 
-// Raw marks SQL to be inserted unchanged, bypassing placeholder substitution and whitespace collapsing.
+// Raw marks SQL input to be used verbatim without modification by the template engine.
 type Raw string
 
-// Exec creates a Statement that executes an SQL command (e.g. CREATE, INSERT, UPDATE) and returns the sql.Result.
-func Exec[Param any](opts ...Option) Statement[Param, sql.Result] {
+// Exec renders the statement using the provided parameter, applies optional caching, and runs it on the given DB handle.
+func Exec[Param any](configs ...Config) Statement[Param, sql.Result] {
 	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[any]) (sql.Result, error) {
 		return db.ExecContext(ctx, expr.SQL, expr.Args...)
-	}, opts...)
+	}, configs...)
 }
 
 // QueryRow creates a Statement that returns a single *sql.Row from the query.
-func QueryRow[Param any](opts ...Option) Statement[Param, *sql.Row] {
+func QueryRow[Param any](configs ...Config) Statement[Param, *sql.Row] {
 	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[any]) (*sql.Row, error) {
 		return db.QueryRowContext(ctx, expr.SQL, expr.Args...), nil
-	}, opts...)
+	}, configs...)
 }
 
 // Query creates a Statement that returns *sql.Rows for result iteration.
-func Query[Param any](opts ...Option) Statement[Param, *sql.Rows] {
+func Query[Param any](configs ...Config) Statement[Param, *sql.Rows] {
 	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[any]) (*sql.Rows, error) {
 		return db.QueryContext(ctx, expr.SQL, expr.Args...)
-	}, opts...)
+	}, configs...)
 }
 
 // First creates a Statement that retrieves the first matching row mapped to Dest.
-func First[Param any, Dest any](opts ...Option) Statement[Param, Dest] {
+func First[Param any, Dest any](configs ...Config) Statement[Param, Dest] {
 	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
 		return expr.First(ctx, db)
-	}, opts...)
+	}, configs...)
 }
 
-// One creates a Statement that expects exactly one row mapped into Dest.
-// Returns an error if zero or more than one row is returned.
-func One[Param any, Dest any](opts ...Option) Statement[Param, Dest] {
+// One returns exactly one row mapped into Dest. If no row is found, it returns sql.ErrNoRows.
+// If more than one row is found, it returns ErrTooManyRows.
+func One[Param any, Dest any](configs ...Config) Statement[Param, Dest] {
 	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[Dest]) (Dest, error) {
 		return expr.One(ctx, db)
-	}, opts...)
+	}, configs...)
 }
 
 // All creates a Statement that retrieves all matching rows mapped into a slice of Dest.
-func All[Param any, Dest any](opts ...Option) Statement[Param, []Dest] {
+func All[Param any, Dest any](configs ...Config) Statement[Param, []Dest] {
 	return newStmt[Param](func(ctx context.Context, db DB, expr Expression[Dest]) ([]Dest, error) {
 		return expr.All(ctx, db)
-	}, opts...)
+	}, configs...)
 }
 
 // Statement represents a compiled, executable SQL statement.
@@ -499,19 +426,19 @@ type Statement[Param, Result any] interface {
 	Exec(ctx context.Context, db DB, param Param) (Result, error)
 }
 
-// Stmt constructs a customizable Statement with explicit mode, executor, and options.
-func Stmt[Param any, Dest any, Result any](exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) Statement[Param, Result] {
-	return newStmt[Param](exec, opts...)
+// Custom constructs a customizable Statement with executor and config options.
+func Custom[Param any, Dest any, Result any](exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), configs ...Config) Statement[Param, Result] {
+	return newStmt[Param](exec, configs...)
 }
 
 // newStmt creates a new statement with template parsing, validation, and caching.
 // It returns a reusable, thread-safe Statement.
-func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), opts ...Option) Statement[Param, Result] {
+func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error), configs ...Config) Statement[Param, Result] {
 	_, file, line, _ := runtime.Caller(2)
 
 	location := file + ":" + strconv.Itoa(line)
 
-	config := Configure(opts...)
+	config := Sqlite().With(configs...)
 
 	var (
 		d = newDestinator[Dest]()
@@ -540,8 +467,8 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		err error
 	)
 
-	for _, to := range config.Templates {
-		t, err = to(t)
+	for _, tpl := range config.Templates {
+		t, err = tpl(t)
 		if err != nil {
 			panic(fmt.Errorf("statement at %s: parse template: %w", location, err))
 		}
@@ -583,7 +510,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 					default:
 						r.args = append(r.args, arg)
 
-						return Raw(""), config.Placeholder.WritePlaceholder(len(r.args), r.sqlWriter)
+						return Raw(""), config.Placeholder(len(r.args), r.sqlWriter)
 					}
 				},
 			})
@@ -594,18 +521,13 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 
 	var cache *expirable.LRU[uint64, Expression[Dest]]
 
-	if config.Cache != nil {
-		cache = expirable.NewLRU[uint64, Expression[Dest]](config.Cache.Size, nil, config.Cache.Expiration)
-
-		if config.Hasher == nil {
-			config.Hasher = DefaultHasher()
-		}
+	if config.ExpressionSize != 0 || config.ExpressionExpiration != 0 {
+		cache = expirable.NewLRU[uint64, Expression[Dest]](config.ExpressionSize, nil, config.ExpressionExpiration)
 	}
 
 	return &statement[Param, Dest, Result]{
 		name:     t.Name(),
 		location: location,
-		hasher:   config.Hasher,
 		cache:    cache,
 		pool:     pool,
 		log:      config.Log,
@@ -618,21 +540,19 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 type statement[Param any, Dest any, Result any] struct {
 	name     string
 	location string
-	hasher   Hasher
 	cache    *expirable.LRU[uint64, Expression[Dest]]
 	exec     func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)
 	pool     *sync.Pool
-	log      Log
+	log      func(ctx context.Context, info Info)
 }
 
 // Exec renders the template with the given param, applies caching (if enabled),
 // and executes the resulting SQL expression using the provided DB.
 func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param Param) (result Result, err error) {
 	var (
-		expr      Expression[Dest]
-		hash      uint64
-		withCache = s.cache != nil && s.hasher != nil
-		cached    bool
+		expr   Expression[Dest]
+		hash   uint64
+		cached bool
 	)
 
 	if s.log != nil {
@@ -651,19 +571,13 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 		}()
 	}
 
-	if withCache {
-		hasher := hashPool.Get().(*xxhash.Digest)
-
-		hasher.Reset()
-
-		err = s.hasher(param, hasher)
+	if s.cache != nil {
+		b, err := json.Marshal(param)
 		if err != nil {
-			return result, fmt.Errorf("statement at %s: hasher: %w", s.location, err)
+			return result, fmt.Errorf("statement at %s: marshal json: %w", s.location, err)
 		}
 
-		hash = hasher.Sum64()
-
-		hashPool.Put(hasher)
+		hash = xxhash.Sum64(b)
 
 		expr, cached = s.cache.Get(hash)
 		if cached {
@@ -685,7 +599,7 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 
 	s.pool.Put(r)
 
-	if withCache {
+	if s.cache != nil {
 		_ = s.cache.Add(hash, expr)
 	}
 
@@ -697,8 +611,7 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	return result, nil
 }
 
-// accessor provides reflection-based field access into a destination struct.
-// It stores field index paths for nested access and handles pointer dereferencing.
+// accessor provides field-level reflective access to nested struct fields.
 type accessor[Dest any] struct {
 	typ         reflect.Type
 	pointerType reflect.Type
@@ -748,7 +661,7 @@ func newDestinator[Dest any]() *destinator[Dest] {
 	}
 }
 
-// destinator generates and caches scanners for mapping query results into fields of Dest structs.
+// destinator manages scan function registration and caching for result mappings.
 type destinator[Dest any] struct {
 	mu    sync.RWMutex
 	store map[string]Scanner[Dest]
@@ -1107,14 +1020,14 @@ func (d *destinator[Dest]) scanStringSliceSetter(t string, kinds []reflect.Kind,
 		}
 
 		return func() (any, func(dest *Dest) error) {
-			var src sql.Null[string]
+			var src *string
 
 			return &src, func(dest *Dest) error {
-				if !src.Valid || src.V == "" {
+				if src == nil || *src == "" {
 					return nil
 				}
 
-				split := slices.DeleteFunc(strings.Split(src.V, sep), func(d string) bool {
+				split := slices.DeleteFunc(strings.Split(*src, sep), func(d string) bool {
 					return d == ""
 				})
 
@@ -1496,19 +1409,11 @@ func (d *destinator[Dest]) escapeNode(t *template.Template, n parse.Node) error 
 	return nil
 }
 
-// hashPool is a sync.Pool of xxhash.Digest instances used to generate cache keys efficiently.
-var hashPool = sync.Pool{
-	New: func() any {
-		return xxhash.New()
-	},
-}
+// ident is the internal name for the binding function injected into SQL templates.
+// It ensures that expression values are correctly converted to placeholders (e.g., ?, $1, @p1).
+const ident = "__sqlt__"
 
-// ident is the special template function name injected into expressions
-// to bind template output to argument placeholders.
-var ident = "__sqlt__"
-
-// runner holds context, state, and buffers needed to execute a template with a specific Param.
-// It collects SQL text, placeholders, and scanners.
+// runner stores the intermediate state during template rendering and SQL generation.
 type runner[Param any, Dest any] struct {
 	tpl       *template.Template
 	sqlWriter *sqlWriter
@@ -1546,12 +1451,11 @@ type sqlWriter struct {
 // collapsing whitespace and preparing it for execution.
 func (w *sqlWriter) Write(data []byte) (int, error) {
 	for _, b := range data {
-		switch b {
-		case ' ', '\n', '\r', '\t':
+		if unicode.IsSpace(rune(b)) {
 			if len(w.data) > 0 && w.data[len(w.data)-1] != ' ' {
 				w.data = append(w.data, ' ')
 			}
-		default:
+		} else {
 			w.data = append(w.data, b)
 		}
 	}

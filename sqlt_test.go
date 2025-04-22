@@ -59,26 +59,23 @@ type Query struct {
 }
 
 var (
-	config = sqlt.Config{
-		Dialect:     "Sqlite",
-		Placeholder: sqlt.Question{},
-		Cache:       &sqlt.Cache{},
-		Templates: []sqlt.Template{
-			sqlt.Funcs(sprig.TxtFuncMap()),
-			sqlt.ParseFiles("./testdata/queries.sql"),
-		},
-		Log: func(ctx context.Context, info sqlt.Info) {
+	config = sqlt.Sqlite().With(
+		sqlt.NoCache(),
+		sqlt.Funcs(sprig.TxtFuncMap()),
+		sqlt.ParseFiles("./testdata/queries.sql"),
+		sqlt.Log(func(ctx context.Context, info sqlt.Info) {
 			fmt.Println(info.Template)
-		},
-	}
-	create                       = sqlt.Exec[any](config, sqlt.Sqlite(), sqlt.Lookup("create"))
-	insertTypes                  = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_types"))
-	insertClassifications        = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_classifications"))
-	insertAbilities              = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Dollar{}, sqlt.Lookup("insert_abilities"))
-	insertPokemons               = sqlt.All[[][]string, int](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemons"))
-	insertPokemonTypes           = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemon_types"))
-	insertPokemonClassifications = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemon_classifications"))
-	insertPokemonAbilities       = sqlt.Exec[[][]string](config, sqlt.NoCache(), sqlt.Lookup("insert_pokemon_abilities"))
+		}),
+	)
+
+	create                       = sqlt.Exec[any](config, sqlt.Lookup("create"))
+	insertTypes                  = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_types"))
+	insertClassifications        = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_classifications"))
+	insertAbilities              = sqlt.Exec[[][]string](config, sqlt.Dollar(), sqlt.Lookup("insert_abilities"))
+	insertPokemons               = sqlt.All[[][]string, int](config, sqlt.Lookup("insert_pokemons"))
+	insertPokemonTypes           = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_types"))
+	insertPokemonClassifications = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_classifications"))
+	insertPokemonAbilities       = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_abilities"))
 	query                        = sqlt.All[Query, Pokemon](config, sqlt.NoExpirationCache(100), sqlt.Lookup("query"))
 	queryFirst                   = sqlt.First[Query, Pokemon](config, sqlt.UnlimitedSizeCache(time.Second), sqlt.Lookup("query"))
 	queryOne                     = sqlt.One[Query, Pokemon](config, sqlt.Lookup("query"))

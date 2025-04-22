@@ -5,6 +5,7 @@ go 1.23
 require (
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/goccy/go-json v0.10.5
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jba/templatecheck v0.7.1
 	modernc.org/sqlite v1.36.1
