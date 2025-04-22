@@ -1,3 +1,4 @@
+// Package sqlt is a go template based sql builder and struct mapper.
 package sqlt
 
 import (
@@ -94,6 +95,8 @@ func Dialect(name string) Config {
 	}
 }
 
+// Cache is enables if size or expiration is not 0.
+// Negative size or expiration means unlimited or non-expirable cache.
 func Cache(size int, exp time.Duration) Config {
 	return Config{
 		ExpressionSize:       size,
@@ -126,7 +129,7 @@ func Placeholder(f func(pos int, writer io.Writer) error) Config {
 
 // Question is a placeholder format used by sqlite.
 func Question() Config {
-	return Placeholder(func(pos int, writer io.Writer) error {
+	return Placeholder(func(_ int, writer io.Writer) error {
 		_, err := writer.Write([]byte("?"))
 
 		return err
@@ -251,7 +254,7 @@ type Expression[Dest any] struct {
 
 // DestMapper returns a slice of values for scanning and a function to map the scanned data into a destination.
 // It handles dynamic scanners that transform raw row data into the final result.
-func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) error, error) {
+func (e Expression[Dest]) DestMapper() ([]any, func(dest *Dest) error, error) {
 	if len(e.Scanners) == 0 {
 		e.Scanners = []Scanner[Dest]{
 			func() (any, func(dest *Dest) error) {
@@ -289,9 +292,25 @@ func (e Expression[Dest]) DestMapper(rows *sql.Rows) ([]any, func(dest *Dest) er
 }
 
 // First executes the SQL expression and returns at most one result row.
-// If no row is found, returns sql.ErrNoRows.
 func (e Expression[Dest]) First(ctx context.Context, db DB) (Dest, error) {
-	return e.fetchOne(ctx, db, false)
+	var first Dest
+
+	row := db.QueryRowContext(ctx, e.SQL, e.Args...)
+
+	values, mapper, err := e.DestMapper()
+	if err != nil {
+		return first, err
+	}
+
+	if err = row.Scan(values...); err != nil {
+		return first, err
+	}
+
+	if err = mapper(&first); err != nil {
+		return first, err
+	}
+
+	return first, nil
 }
 
 // ErrTooManyRows is returned when more than one row is found where only one was expected.
@@ -301,12 +320,6 @@ var ErrTooManyRows = errors.New("too many rows")
 // If no row is found, returns sql.ErrNoRows.
 // If more than one row is found, returns ErrTooManyRows.
 func (e Expression[Dest]) One(ctx context.Context, db DB) (Dest, error) {
-	return e.fetchOne(ctx, db, true)
-}
-
-// fetchOne is a shared internal helper to retrieve one result from the DB,
-// with an optional enforcement of exactly one result.
-func (e Expression[Dest]) fetchOne(ctx context.Context, db DB, enforceOne bool) (Dest, error) {
 	var one Dest
 
 	rows, err := db.QueryContext(ctx, e.SQL, e.Args...)
@@ -318,7 +331,7 @@ func (e Expression[Dest]) fetchOne(ctx context.Context, db DB, enforceOne bool) 
 		return one, errors.Join(sql.ErrNoRows, rows.Close())
 	}
 
-	values, mapper, err := e.DestMapper(rows)
+	values, mapper, err := e.DestMapper()
 	if err != nil {
 		//nolint:sqlclosecheck
 		return one, errors.Join(err, rows.Close())
@@ -332,7 +345,7 @@ func (e Expression[Dest]) fetchOne(ctx context.Context, db DB, enforceOne bool) 
 		return one, errors.Join(err, rows.Close())
 	}
 
-	if enforceOne && rows.Next() {
+	if rows.Next() {
 		return one, errors.Join(ErrTooManyRows, rows.Close())
 	}
 
@@ -346,7 +359,7 @@ func (e Expression[Dest]) All(ctx context.Context, db DB) ([]Dest, error) {
 		return nil, err
 	}
 
-	values, mapper, err := e.DestMapper(rows)
+	values, mapper, err := e.DestMapper()
 	if err != nil {
 		//nolint:sqlclosecheck
 		return nil, errors.Join(err, rows.Close())
@@ -572,12 +585,15 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	}
 
 	if s.cache != nil {
-		b, err := json.Marshal(param)
+		hasher := hashPool.Get().(*hasher)
+
+		hash, err = hasher.create(param)
 		if err != nil {
-			return result, fmt.Errorf("statement at %s: marshal json: %w", s.location, err)
+			return result, fmt.Errorf("statement at %s: encode json: %w", s.location, err)
 		}
 
-		hash = xxhash.Sum64(b)
+		hasher.digest.Reset()
+		hashPool.Put(hasher)
 
 		expr, cached = s.cache.Get(hash)
 		if cached {
@@ -609,6 +625,35 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	}
 
 	return result, nil
+}
+
+// hasher wraps the json encoder and the hash digest.
+type hasher struct {
+	encoder *json.Encoder
+	digest  *xxhash.Digest
+}
+
+// create resets the digest, encodes the param and returns the hash.
+func (h *hasher) create(param any) (uint64, error) {
+	if err := h.encoder.Encode(param); err != nil {
+		return 0, err
+	}
+
+	return h.digest.Sum64(), nil
+}
+
+// hashPool is a sync.Pool of xxhash.Digest instances used to generate cache keys efficiently.
+var hashPool = sync.Pool{
+	New: func() any {
+		digest := xxhash.New()
+		encoder := json.NewEncoder(digest)
+		encoder.SetEscapeHTML(false)
+
+		return &hasher{
+			encoder: encoder,
+			digest:  digest,
+		}
+	},
 }
 
 // accessor provides field-level reflective access to nested struct fields.
