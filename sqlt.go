@@ -1549,7 +1549,7 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 
 	switch t.Kind() {
 	case reflect.Invalid:
-		return func(digest *xxhash.Digest, value reflect.Value) error {
+		return func(_ *xxhash.Digest, _ reflect.Value) error {
 			return nil
 		}
 	case reflect.Pointer:
@@ -1846,19 +1846,21 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 				return err
 			}
 
-			first := true
-			var valueHasher func(digest *xxhash.Digest, value reflect.Value) error
+			var (
+				first       = true
+				valueHasher func(digest *xxhash.Digest, value reflect.Value) error
+			)
 
 			for value := range value.Seq() {
 				if first {
 					valueHasher = makeHasher(value.Type())
+
+					first = false
 				} else {
 					_, err := digest.Write([]byte{','})
 					if err != nil {
 						return err
 					}
-
-					first = false
 				}
 
 				err = valueHasher(digest, value)
