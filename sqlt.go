@@ -709,9 +709,7 @@ func (d *destinator[Dest]) makeAccessor(t reflect.Type, field string) (accessor[
 	}
 
 	if field != "" {
-		parts := strings.Split(field, ".")
-
-		for _, part := range parts {
+		for part := range strings.SplitSeq(field, ".") {
 			switch t.Kind() {
 			default:
 				return accessor[Dest]{}, fmt.Errorf("invalid field access on type %s", t.Name())
@@ -1519,6 +1517,10 @@ func defaultHasher[Param any]() func(param any) (uint64, error) {
 	hasher := makeHasher(reflect.TypeFor[Param]())
 
 	return func(param any) (uint64, error) {
+		if param == nil {
+			return 0, nil
+		}
+
 		digest := hashPool.Get().(*xxhash.Digest)
 
 		err := hasher(digest, reflect.ValueOf(param))
@@ -1552,11 +1554,19 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 		return func(_ *xxhash.Digest, _ reflect.Value) error {
 			return nil
 		}
+	case reflect.Interface:
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() || value.IsZero() {
+				return nil
+			}
+
+			return makeHasher(value.Elem().Type())(digest, value.Elem())
+		}
 	case reflect.Pointer:
 		h := makeHasher(t.Elem())
 
 		return func(digest *xxhash.Digest, value reflect.Value) error {
-			if value.IsNil() {
+			if !value.IsValid() || value.IsZero() {
 				return nil
 			}
 
@@ -1564,6 +1574,10 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 		}
 	case reflect.String:
 		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() {
+				return nil
+			}
+
 			_, err := digest.WriteString(value.String())
 			if err != nil {
 				return err
@@ -1573,6 +1587,10 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() {
+				return nil
+			}
+
 			err := binary.Write(digest, binary.LittleEndian, value.Int())
 			if err != nil {
 				return err
@@ -1582,6 +1600,10 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 		}
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() {
+				return nil
+			}
+
 			err := binary.Write(digest, binary.LittleEndian, value.Uint())
 			if err != nil {
 				return err
@@ -1591,6 +1613,10 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 		}
 	case reflect.Float32, reflect.Float64:
 		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() {
+				return nil
+			}
+
 			err := binary.Write(digest, binary.LittleEndian, value.Float())
 			if err != nil {
 				return err
@@ -1600,6 +1626,10 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 		}
 	case reflect.Complex64, reflect.Complex128:
 		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() {
+				return nil
+			}
+
 			err := binary.Write(digest, binary.LittleEndian, value.Complex())
 			if err != nil {
 				return err
@@ -1609,6 +1639,10 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 		}
 	case reflect.Bool:
 		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() {
+				return nil
+			}
+
 			err := binary.Write(digest, binary.LittleEndian, value.Bool())
 			if err != nil {
 				return err
@@ -1620,6 +1654,10 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 		valueHasher := makeHasher(t.Elem())
 
 		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() || value.IsZero() {
+				return nil
+			}
+
 			_, err := digest.Write([]byte{'['})
 			if err != nil {
 				return err
@@ -1651,31 +1689,54 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 		valueHasher := makeHasher(t.Elem())
 
 		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() || value.IsZero() {
+				return nil
+			}
+
+			type kvPair struct {
+				Hash uint64
+				Key  reflect.Value
+			}
+
+			keys := value.MapKeys()
+			hashedKeys := make([]kvPair, 0, len(keys))
+
+			for _, k := range keys {
+				tmpDigest := xxhash.New()
+				if err := keyHasher(tmpDigest, k); err != nil {
+					return err
+				}
+
+				hashedKeys = append(hashedKeys, kvPair{
+					Hash: tmpDigest.Sum64(),
+					Key:  k,
+				})
+			}
+
+			slices.SortFunc(hashedKeys, func(a, b kvPair) int {
+				switch {
+				case a.Hash < b.Hash:
+					return -1
+				case a.Hash > b.Hash:
+					return 1
+				default:
+					return 0
+				}
+			})
+
 			_, err := digest.Write([]byte{'{'})
 			if err != nil {
 				return err
 			}
 
-			keys := value.MapKeys()
-
-			slices.SortFunc(keys, func(a, b reflect.Value) int {
-				return strings.Compare(a.String(), b.String())
-			})
-
-			for i, k := range keys {
+			for i, pair := range hashedKeys {
 				if i > 0 {
 					if _, err := digest.Write([]byte{','}); err != nil {
 						return err
 					}
 				}
 
-				val := value.MapIndex(k)
-				if !val.IsValid() || val.IsNil() {
-					continue
-				}
-
-				err := keyHasher(digest, k)
-				if err != nil {
+				if err := keyHasher(digest, pair.Key); err != nil {
 					return err
 				}
 
@@ -1683,8 +1744,12 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 					return err
 				}
 
-				err = valueHasher(digest, val)
-				if err != nil {
+				val := value.MapIndex(pair.Key)
+				if !val.IsValid() || (val.Kind() == reflect.Pointer && val.IsNil()) {
+					continue
+				}
+
+				if err := valueHasher(digest, val); err != nil {
 					return err
 				}
 			}
@@ -1718,6 +1783,10 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 		}
 
 		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() || value.IsZero() {
+				return nil
+			}
+
 			_, err := digest.Write([]byte{'{'})
 			if err != nil {
 				return err
@@ -1761,12 +1830,21 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 
 	if t.Implements(reflect.TypeFor[encoding.BinaryMarshaler]()) {
 		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if !value.IsValid() || value.IsZero() {
+				return nil
+			}
+
 			b, err := value.Interface().(encoding.BinaryMarshaler).MarshalBinary()
 			if err != nil {
 				return err
 			}
 
-			return binary.Write(digest, binary.LittleEndian, b)
+			_, err = digest.Write(b)
+			if err != nil {
+				return err
+			}
+
+			return nil
 		}
 	}
 
@@ -1777,7 +1855,7 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 
 	if t.CanSeq2() {
 		return func(digest *xxhash.Digest, value reflect.Value) error {
-			if value.IsNil() {
+			if !value.IsValid() || value.IsZero() {
 				return nil
 			}
 
@@ -1837,7 +1915,7 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 
 	if t.CanSeq() {
 		return func(digest *xxhash.Digest, value reflect.Value) error {
-			if value.IsNil() {
+			if !value.IsValid() || value.IsZero() {
 				return nil
 			}
 
@@ -1879,11 +1957,7 @@ func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflec
 	}
 
 	return func(digest *xxhash.Digest, value reflect.Value) error {
-		if value.Kind() == reflect.Invalid {
-			return errors.New("invalid value")
-		}
-
-		if value.IsZero() {
+		if !value.IsValid() || value.IsZero() {
 			return nil
 		}
 
