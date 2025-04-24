@@ -184,7 +184,16 @@
         AND p.height >= {{ index .HeightRange 0 }} AND p.height <= {{ index .HeightRange 1 }}
     {{ end }}
     {{ if .WeightRange }}
-        AND p.weight >= {{ index .WeightRange 0 }} AND p.weight <= {{ index .WeightRange 1 }}
+        {{ $first := true }}
+        {{ range $v := .WeightRange }}
+            {{ if not $first }}
+                AND p.weight <= {{ $v }}
+            {{ end }}
+            {{ if $first }}
+                AND p.weight >= {{ $v }}
+                {{ $first = false }}
+            {{ end }}
+        {{ end }}
     {{ end }}
     {{ if .Generation }}
         AND p.generation = {{ .Generation }}
@@ -202,8 +211,8 @@
             )
         )
     {{ end }}
-    {{ if .Classification }}
-        AND c.name = {{ .Classification }}
+    {{ with .Classification }}
+        AND c.name = {{ . }}
     {{ end }}
     {{ if .AbilityOneOf }}
         AND p.number IN (

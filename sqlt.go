@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,7 +23,6 @@ import (
 	"unicode"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/goccy/go-json"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/jba/templatecheck"
 )
@@ -42,6 +43,7 @@ type Config struct {
 	Log                  func(ctx context.Context, info Info)
 	ExpressionSize       int
 	ExpressionExpiration time.Duration
+	Hasher               func(any) (uint64, error)
 }
 
 // With returns a new Config with all provided configs layered on top.
@@ -72,6 +74,10 @@ func (c Config) With(configs ...Config) Config {
 
 		if override.ExpressionSize != 0 {
 			merged.ExpressionSize = override.ExpressionSize
+		}
+
+		if override.Hasher != nil {
+			merged.Hasher = override.Hasher
 		}
 	}
 
@@ -291,7 +297,7 @@ func (e Expression[Dest]) DestMapper() ([]any, func(dest *Dest) error, error) {
 	}, nil
 }
 
-// First executes the SQL expression and returns at most one result row.
+// First executes the SQL expression and returns the first result row.
 func (e Expression[Dest]) First(ctx context.Context, db DB) (Dest, error) {
 	var first Dest
 
@@ -536,6 +542,15 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 
 	if config.ExpressionSize != 0 || config.ExpressionExpiration != 0 {
 		cache = expirable.NewLRU[uint64, Expression[Dest]](config.ExpressionSize, nil, config.ExpressionExpiration)
+
+		if config.Hasher == nil {
+			config.Hasher = defaultHasher[Param]()
+		}
+
+		_, err = config.Hasher(*new(Param))
+		if err != nil {
+			panic(fmt.Errorf("statement at %s: hashing param: %w", location, err))
+		}
 	}
 
 	return &statement[Param, Dest, Result]{
@@ -545,6 +560,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		pool:     pool,
 		log:      config.Log,
 		exec:     exec,
+		hasher:   config.Hasher,
 	}
 }
 
@@ -557,6 +573,7 @@ type statement[Param any, Dest any, Result any] struct {
 	exec     func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)
 	pool     *sync.Pool
 	log      func(ctx context.Context, info Info)
+	hasher   func(any) (uint64, error)
 }
 
 // Exec renders the template with the given param, applies caching (if enabled),
@@ -585,15 +602,10 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	}
 
 	if s.cache != nil {
-		hasher := hashPool.Get().(*hasher)
-
-		hash, err = hasher.create(param)
+		hash, err = s.hasher(param)
 		if err != nil {
-			return result, fmt.Errorf("statement at %s: encode json: %w", s.location, err)
+			return result, fmt.Errorf("statement at %s: hashing param: %w", s.location, err)
 		}
-
-		hasher.digest.Reset()
-		hashPool.Put(hasher)
 
 		expr, cached = s.cache.Get(hash)
 		if cached {
@@ -625,35 +637,6 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	}
 
 	return result, nil
-}
-
-// hasher wraps the json encoder and the hash digest.
-type hasher struct {
-	encoder *json.Encoder
-	digest  *xxhash.Digest
-}
-
-// create resets the digest, encodes the param and returns the hash.
-func (h *hasher) create(param any) (uint64, error) {
-	if err := h.encoder.Encode(param); err != nil {
-		return 0, err
-	}
-
-	return h.digest.Sum64(), nil
-}
-
-// hashPool is a sync.Pool of xxhash.Digest instances used to generate cache keys efficiently.
-var hashPool = sync.Pool{
-	New: func() any {
-		digest := xxhash.New()
-		encoder := json.NewEncoder(digest)
-		encoder.SetEscapeHTML(false)
-
-		return &hasher{
-			encoder: encoder,
-			digest:  digest,
-		}
-	},
 }
 
 // accessor provides field-level reflective access to nested struct fields.
@@ -1523,4 +1506,395 @@ func (w *sqlWriter) String() string {
 	}
 
 	return string(w.data[:n])
+}
+
+// hashPool is a sync.Pool of xxhash.Digest instances used to generate cache keys efficiently.
+var hashPool = sync.Pool{
+	New: func() any {
+		return xxhash.New()
+	},
+}
+
+func defaultHasher[Param any]() func(param any) (uint64, error) {
+	hasher := makeHasher(reflect.TypeFor[Param]())
+
+	return func(param any) (uint64, error) {
+		digest := hashPool.Get().(*xxhash.Digest)
+
+		err := hasher(digest, reflect.ValueOf(param))
+		if err != nil {
+			return 0, err
+		}
+
+		hash := digest.Sum64()
+
+		digest.Reset()
+
+		hashPool.Put(digest)
+
+		return hash, nil
+	}
+}
+
+var hasherCache sync.Map
+
+func makeHasher(t reflect.Type) (hashFn func(digest *xxhash.Digest, value reflect.Value) error) {
+	if cached, ok := hasherCache.Load(t); ok {
+		return cached.(func(*xxhash.Digest, reflect.Value) error)
+	}
+
+	defer func() {
+		hasherCache.Store(t, hashFn)
+	}()
+
+	switch t.Kind() {
+	case reflect.Invalid:
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			return nil
+		}
+	case reflect.Pointer:
+		h := makeHasher(t.Elem())
+
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if value.IsNil() {
+				return nil
+			}
+
+			return h(digest, value.Elem())
+		}
+	case reflect.String:
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			_, err := digest.WriteString(value.String())
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			err := binary.Write(digest, binary.LittleEndian, value.Int())
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			err := binary.Write(digest, binary.LittleEndian, value.Uint())
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	case reflect.Float32, reflect.Float64:
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			err := binary.Write(digest, binary.LittleEndian, value.Float())
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	case reflect.Complex64, reflect.Complex128:
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			err := binary.Write(digest, binary.LittleEndian, value.Complex())
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	case reflect.Bool:
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			err := binary.Write(digest, binary.LittleEndian, value.Bool())
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	case reflect.Array, reflect.Slice:
+		valueHasher := makeHasher(t.Elem())
+
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			_, err := digest.Write([]byte{'['})
+			if err != nil {
+				return err
+			}
+
+			for i := range value.Len() {
+				if i > 0 {
+					_, err := digest.Write([]byte{','})
+					if err != nil {
+						return err
+					}
+				}
+
+				err := valueHasher(digest, value.Index(i))
+				if err != nil {
+					return err
+				}
+			}
+
+			_, err = digest.Write([]byte{']'})
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	case reflect.Map:
+		keyHasher := makeHasher(t.Key())
+		valueHasher := makeHasher(t.Elem())
+
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			_, err := digest.Write([]byte{'{'})
+			if err != nil {
+				return err
+			}
+
+			keys := value.MapKeys()
+
+			slices.SortFunc(keys, func(a, b reflect.Value) int {
+				return strings.Compare(a.String(), b.String())
+			})
+
+			for i, k := range keys {
+				if i > 0 {
+					if _, err := digest.Write([]byte{','}); err != nil {
+						return err
+					}
+				}
+
+				val := value.MapIndex(k)
+				if !val.IsValid() || val.IsNil() {
+					continue
+				}
+
+				err := keyHasher(digest, k)
+				if err != nil {
+					return err
+				}
+
+				if _, err := digest.Write([]byte{':'}); err != nil {
+					return err
+				}
+
+				err = valueHasher(digest, val)
+				if err != nil {
+					return err
+				}
+			}
+
+			_, err = digest.Write([]byte{'}'})
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	case reflect.Struct:
+		fields := make([]string, 0, t.NumField())
+
+		for i := range t.NumField() {
+			sf := t.Field(i)
+
+			if sf.IsExported() {
+				fields = append(fields, sf.Name)
+			}
+		}
+
+		slices.Sort(fields)
+
+		hashers := make([]func(digest *xxhash.Digest, value reflect.Value) error, len(fields))
+
+		for i, field := range fields {
+			sf, _ := t.FieldByName(field)
+
+			hashers[i] = makeHasher(sf.Type)
+		}
+
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			_, err := digest.Write([]byte{'{'})
+			if err != nil {
+				return err
+			}
+
+			for i, hasher := range hashers {
+				if hasher == nil {
+					continue
+				}
+
+				if i > 0 {
+					if _, err := digest.Write([]byte{','}); err != nil {
+						return err
+					}
+				}
+
+				name := fields[i]
+
+				_, err := digest.WriteString(name)
+				if err != nil {
+					return err
+				}
+
+				if _, err := digest.Write([]byte{':'}); err != nil {
+					return err
+				}
+
+				if err = hasher(digest, value.FieldByName(name)); err != nil {
+					return err
+				}
+			}
+
+			_, err = digest.Write([]byte{'}'})
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	}
+
+	if t.Implements(reflect.TypeFor[encoding.BinaryMarshaler]()) {
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			b, err := value.Interface().(encoding.BinaryMarshaler).MarshalBinary()
+			if err != nil {
+				return err
+			}
+
+			return binary.Write(digest, binary.LittleEndian, b)
+		}
+	}
+
+	type Pair struct {
+		Key   reflect.Value
+		Value reflect.Value
+	}
+
+	if t.CanSeq2() {
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if value.IsNil() {
+				return nil
+			}
+
+			_, err := digest.Write([]byte{'{'})
+			if err != nil {
+				return err
+			}
+
+			var pairs []Pair
+
+			for key, val := range value.Seq2() {
+				pairs = append(pairs, Pair{
+					Key:   key,
+					Value: val,
+				})
+			}
+
+			slices.SortFunc(pairs, func(a, b Pair) int {
+				return strings.Compare(a.Key.String(), b.Key.String())
+			})
+
+			var keyHasher, valueHasher func(digest *xxhash.Digest, value reflect.Value) error
+
+			for i, pair := range pairs {
+				if i == 0 {
+					keyHasher = makeHasher(pair.Key.Type())
+					valueHasher = makeHasher(pair.Value.Type())
+				}
+
+				if i > 0 {
+					if _, err := digest.Write([]byte{','}); err != nil {
+						return err
+					}
+				}
+
+				if err := keyHasher(digest, pair.Key); err != nil {
+					return err
+				}
+
+				if _, err := digest.Write([]byte{':'}); err != nil {
+					return err
+				}
+
+				if err := valueHasher(digest, pair.Value); err != nil {
+					return err
+				}
+			}
+
+			_, err = digest.Write([]byte{'}'})
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	}
+
+	if t.CanSeq() {
+		return func(digest *xxhash.Digest, value reflect.Value) error {
+			if value.IsNil() {
+				return nil
+			}
+
+			_, err := digest.Write([]byte{'['})
+			if err != nil {
+				return err
+			}
+
+			first := true
+			var valueHasher func(digest *xxhash.Digest, value reflect.Value) error
+
+			for value := range value.Seq() {
+				if first {
+					valueHasher = makeHasher(value.Type())
+				} else {
+					_, err := digest.Write([]byte{','})
+					if err != nil {
+						return err
+					}
+
+					first = false
+				}
+
+				err = valueHasher(digest, value)
+				if err != nil {
+					return err
+				}
+			}
+
+			_, err = digest.Write([]byte{']'})
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	}
+
+	return func(digest *xxhash.Digest, value reflect.Value) error {
+		if value.Kind() == reflect.Invalid {
+			return errors.New("invalid value")
+		}
+
+		if value.IsZero() {
+			return nil
+		}
+
+		b, err := json.Marshal(value.Interface())
+		if err != nil {
+			return err
+		}
+
+		_, err = digest.Write(b)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
 }

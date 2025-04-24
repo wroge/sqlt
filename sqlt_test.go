@@ -4,10 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
-	"fmt"
+	"iter"
 	"math/big"
 	"net/url"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ type Pointer[T any] *T
 
 type Query struct {
 	HeightRange    Pointer[[2]float64]
-	WeightRange    Pointer[[2]float64]
+	WeightRange    iter.Seq[float64]
 	Generation     Pointer[uint64]
 	Legendary      Pointer[bool]
 	TypeOneOf      Pointer[[]string]
@@ -64,7 +65,9 @@ var (
 		sqlt.Funcs(sprig.TxtFuncMap()),
 		sqlt.ParseFiles("./testdata/queries.sql"),
 		sqlt.Log(func(ctx context.Context, info sqlt.Info) {
-			fmt.Println(info.Template)
+			// if info.Template == "query" {
+			// 	fmt.Println(info.Template, info.SQL, info.Args)
+			// }
 		}),
 	)
 
@@ -78,7 +81,7 @@ var (
 	insertPokemonAbilities       = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_abilities"))
 	query                        = sqlt.All[Query, Pokemon](config, sqlt.NoExpirationCache(100), sqlt.Lookup("query"))
 	queryFirst                   = sqlt.First[Query, Pokemon](config, sqlt.UnlimitedSizeCache(time.Second), sqlt.Lookup("query"))
-	queryOne                     = sqlt.One[Query, Pokemon](config, sqlt.Lookup("query"))
+	queryOne                     = sqlt.One[Query, Pokemon](config, sqlt.Cache(-1, -1), sqlt.Lookup("query"))
 )
 
 func TestQueryPokemon(t *testing.T) {
@@ -164,7 +167,7 @@ func TestQueryPokemon(t *testing.T) {
 
 	rattata, err = queryOne.Exec(ctx, db, Query{
 		Classification: NewPointer("Mouse Pokémon"),
-		WeightRange:    NewPointer([2]float64{3, 4}),
+		WeightRange:    slices.Values([]float64{3, 4}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +179,7 @@ func TestQueryPokemon(t *testing.T) {
 
 	rattata, err = queryOne.Exec(ctx, db, Query{
 		Classification: NewPointer("Mouse Pokémon"),
-		WeightRange:    NewPointer([2]float64{3, 4}),
+		WeightRange:    slices.Values([]float64{3, 4}),
 	})
 	if err != nil {
 		t.Fatal(err)
