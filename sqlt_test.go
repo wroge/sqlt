@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"text/template"
 	"time"
 
 	"github.com/Masterminds/sprig/v3"
@@ -34,13 +35,11 @@ type Pokemon struct {
 	Classification *string
 	Abilities      []string
 	SomeDate       time.Time
+	SomeDateP      *time.Time
 	Today          time.Time
+	TodayP         *time.Time
 	Meta           map[string]string
 	MetaBytes      []byte
-	IntSlice       []int64
-	UintSlice      []uint64
-	FloatSlice     []float64
-	BoolSlice      []bool
 }
 
 func NewPointer[T any](t T) Pointer[T] {
@@ -54,15 +53,33 @@ type Query struct {
 	WeightRange    iter.Seq[float64]
 	Generation     Pointer[uint64]
 	Legendary      Pointer[bool]
-	TypeOneOf      Pointer[[]string]
+	TypeOneOf      []string
 	Classification Pointer[string]
-	AbilityOneOf   Pointer[[]string]
+	AbilityOneOf   map[string]struct{}
+	Date           time.Time
+	URL            *url.URL
+	Big            big.Int
 }
 
 var (
 	config = sqlt.Sqlite().With(
 		sqlt.NoCache(),
 		sqlt.Funcs(sprig.TxtFuncMap()),
+		sqlt.Funcs(template.FuncMap{
+			"SetToSeq": func(m map[string]struct{}) iter.Seq2[int, string] {
+				return func(yield func(int, string) bool) {
+					var index int
+
+					for v := range m {
+						if !yield(index, v) {
+							return
+						}
+
+						index++
+					}
+				}
+			},
+		}),
 		sqlt.ParseFiles("./testdata/queries.sql"),
 		sqlt.Log(func(ctx context.Context, info sqlt.Info) {
 			// if info.Template == "query" {
@@ -143,7 +160,7 @@ func TestQueryPokemon(t *testing.T) {
 	}
 
 	pokemons, err := query.Exec(ctx, db, Query{
-		TypeOneOf:  NewPointer([]string{"Dragon"}),
+		TypeOneOf:  []string{"Dragon"},
 		Generation: NewPointer[uint64](1),
 	})
 	if err != nil {
@@ -156,6 +173,12 @@ func TestQueryPokemon(t *testing.T) {
 
 	rattata, err := queryFirst.Exec(ctx, db, Query{
 		Classification: NewPointer("Mouse Pokémon"),
+		AbilityOneOf: map[string]struct{}{
+			"Run-away": {},
+		},
+		Big:  *big.NewInt(10),
+		URL:  &url.URL{Host: "localhost"},
+		Date: time.Now(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -168,6 +191,10 @@ func TestQueryPokemon(t *testing.T) {
 	rattata, err = queryOne.Exec(ctx, db, Query{
 		Classification: NewPointer("Mouse Pokémon"),
 		WeightRange:    slices.Values([]float64{3, 4}),
+		AbilityOneOf: map[string]struct{}{
+			"Run-away": {},
+			"Hustle":   {},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
