@@ -2,13 +2,6 @@
 // enabling type-safe, readable, and composable query definitions
 // using Go's standard text/template syntax.
 //
-// It integrates with the standard database/sql package and works with structs
-// via reflection-based field descriptions from the structscan package.
-//
-// SQL templates are parsed at compile time and executed at runtime,
-// with support for placeholder interpolation (e.g., ?, $1, :param), optional caching,
-// decoding of complex types (JSON, time, URL, etc.), and template-level configuration.
-//
 // Example:
 //
 /*
@@ -91,15 +84,14 @@ import (
 	"github.com/jba/templatecheck"
 )
 
-// DB abstracts a minimal SQL interface for querying and executing statements.
-// It is compatible with both *sql.DB and *sql.Tx.
+// DB is compatible with both *sql.DB and *sql.Tx.
 type DB interface {
 	QueryContext(ctx context.Context, sql string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, sql string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, sql string, args ...any) (sql.Result, error)
 }
 
-// Config holds settings for statement generation, caching, logging, and template behavior.
+// Config holds settings for statement generation, expression caching, logging, and template behavior.
 type Config struct {
 	Dialect              string
 	Placeholder          func(pos int, writer io.Writer) error
@@ -110,8 +102,7 @@ type Config struct {
 	Hasher               func(any) (uint64, error)
 }
 
-// With returns a new Config with all provided configs layered on top.
-// Later configs override earlier ones.
+// With merges configs. Later configs override earlier ones.
 func (c Config) With(configs ...Config) Config {
 	var merged Config
 
@@ -172,8 +163,9 @@ func Hasher(fn func(param any) (uint64, error)) Config {
 	}
 }
 
-// Cache is enables if size or expiration is not 0.
+// Cache is enabled if size or expiration is not 0.
 // Negative size or expiration means unlimited or non-expirable cache.
+// Be careful when using non-hermetic template functions!
 func Cache(size int, exp time.Duration) Config {
 	return Config{
 		ExpressionSize:       size,
@@ -187,17 +179,19 @@ func NoCache() Config {
 }
 
 // NoExpirationCache creates a cache with a fixed size and no expiration.
+// Be careful when using non-hermetic template functions!
 func NoExpirationCache(size int) Config {
 	return Cache(size, -1)
 }
 
 // UnlimitedSizeCache creates a cache without size constraints but with expiration.
+// Be careful when using non-hermetic template functions!
 func UnlimitedSizeCache(expiration time.Duration) Config {
 	return Cache(-1, expiration)
 }
 
 // Placeholder configures how argument placeholders are rendered in SQL statements.
-// For example, it can output ?, $1, :1, or @p1 depending on the SQL dialect.
+// For example, it can output ?, $1, or @p1 depending on the SQL dialect.
 func Placeholder(f func(pos int, writer io.Writer) error) Config {
 	return Config{
 		Placeholder: f,
@@ -552,7 +546,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 }
 
 // statement is the internal implementation of Statement.
-// It holds configuration, compiled templates, a cache (optional), and the execution function.
+// It holds configuration, compiled templates, a, expression cache (optional), and the execution function.
 type statement[Param any, Dest any, Result any] struct {
 	name     string
 	location string
