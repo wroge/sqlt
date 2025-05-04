@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
+	"fmt"
 	"iter"
 	"math/big"
 	"net/url"
@@ -82,9 +83,9 @@ var (
 		}),
 		sqlt.ParseFiles("./testdata/queries.sql"),
 		sqlt.Log(func(ctx context.Context, info sqlt.Info) {
-			// if info.Template == "query" {
-			// 	fmt.Println(info.Template, info.SQL, info.Args)
-			// }
+			if info.Template == "query" {
+				fmt.Println(info.Template, info.SQL, info.Args)
+			}
 		}),
 	)
 

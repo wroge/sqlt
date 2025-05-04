@@ -1,4 +1,71 @@
-// Package sqlt is a go template based sql builder and struct mapper.
+// Package sqlt provides a declarative SQL template engine for Go,
+// enabling type-safe, readable, and composable query definitions
+// using Go's standard text/template syntax.
+//
+// It integrates with the standard database/sql package and works with structs
+// via reflection-based field descriptions from the structscan package.
+//
+// SQL templates are parsed at compile time and executed at runtime,
+// with support for placeholder interpolation (e.g., ?, $1, :param), optional caching,
+// decoding of complex types (JSON, time, URL, etc.), and template-level configuration.
+//
+// Example:
+//
+/*
+	package main
+
+	import (
+		"context"
+		"database/sql"
+		"fmt"
+		"math/big"
+		"net/url"
+		"time"
+
+		"github.com/go-sqlt/sqlt"
+		_ "modernc.org/sqlite"
+	)
+
+	type Data struct {
+		Int      int64
+		String   *string
+		Bool     bool
+		Time     time.Time
+		Big      *big.Int
+		URL      *url.URL
+		IntSlice []int32
+		JSON     map[string]any
+	}
+
+	var (
+		query = sqlt.All[any, Data](sqlt.Parse(`
+			SELECT
+				100                                    {{ Data.Int }}
+				, '200'                                {{ Data.String }}
+				, true                                 {{ Data.Bool }}
+				, '2025-05-01'                         {{ Data.Time.String (ParseTime DateOnly UTC) }}
+				, '300'                                {{ Data.Big.Bytes UnmarshalText }}
+				, 'https://example.com/path?query=yes' {{ Data.URL.Bytes UnmarshalBinary }}
+				, '400,500,600'                        {{ Data.IntSlice.String (Split "," (ParseInt 10 64)) }}
+				, '{"hello":"world"}'                  {{ Data.JSON.Bytes UnmarshalJSON }}
+		`))
+	)
+
+	func main() {
+		db, err := sql.Open("sqlite", ":memory:")
+		if err != nil {
+			panic(err)
+		}
+
+		data, err := query.Exec(context.Background(), db, nil)
+		if err != nil {
+			panic(err)
+		}
+
+		fmt.Println(data)
+		// [{100 0x14000011580 true 2025-05-01 00:00:00 +0000 UTC 300 https://example.com/path?query=yes [400 500 600] map[hello:world]}]
+	}
+*/
 package sqlt
 
 import (
@@ -8,6 +75,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"reflect"
 	"runtime"
 	"strconv"
 	"sync"
@@ -341,27 +409,64 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 	config := Sqlite().With(configs...)
 
 	var (
-		s = structscan.New[Dest]()
-
 		t = template.New("").Funcs(template.FuncMap{
-			"Dialect":         func() string { return config.Dialect },
-			"Raw":             func(sql string) Raw { return Raw(sql) },
-			"Scan":            s.Scan,
-			"ScanBytes":       s.ScanBytes,
-			"ScanTime":        s.ScanTime,
-			"ScanString":      s.ScanString,
-			"ScanInt":         s.ScanInt,
-			"ScanUint":        s.ScanUint,
-			"ScanFloat":       s.ScanFloat,
-			"ScanBool":        s.ScanBool,
-			"ScanJSON":        s.ScanJSON,
-			"ScanBinary":      s.ScanBinary,
-			"ScanText":        s.ScanText,
-			"ScanStringSlice": s.ScanStringSlice,
-			"ScanStringTime":  s.ScanStringTime,
+			"Dialect": func() string { return config.Dialect },
+			"Raw":     func(sql string) Raw { return Raw(sql) },
 		})
 		err error
 	)
+
+	schema := structscan.Describe[Dest]()
+
+	t.Funcs(template.FuncMap{
+		"Schema": func() structscan.Schema[Dest] {
+			return schema
+		},
+		"ParseInt":        structscan.ParseInt,
+		"ParseUint":       structscan.ParseUint,
+		"ParseFloat":      structscan.ParseFloat,
+		"ParseBool":       structscan.ParseBool,
+		"ParseComplex":    structscan.ParseComplex,
+		"UnmarshalJSON":   structscan.UnmarshalJSON,
+		"UnmarshalText":   structscan.UnmarshalText,
+		"UnmarshalBinary": structscan.UnmarshalBinary,
+		"Split":           structscan.Split,
+
+		"ParseTime":   structscan.ParseTime,
+		"DateTime":    staticFunc(time.DateTime),
+		"DateOnly":    staticFunc(time.DateOnly),
+		"TimeOnly":    staticFunc(time.TimeOnly),
+		"RFC3339":     staticFunc(time.RFC3339),
+		"RFC3339Nano": staticFunc(time.RFC3339Nano),
+		"Layout":      staticFunc(time.Layout),
+		"ANSIC":       staticFunc(time.ANSIC),
+		"UnixDate":    staticFunc(time.UnixDate),
+		"RubyDate":    staticFunc(time.RubyDate),
+		"RFC822":      staticFunc(time.RFC822),
+		"RFC822Z":     staticFunc(time.RFC822Z),
+		"RFC850":      staticFunc(time.RFC850),
+		"RFC1123":     staticFunc(time.RFC1123),
+		"RFC1123Z":    staticFunc(time.RFC1123Z),
+		"Kitchen":     staticFunc(time.Kitchen),
+		"Stamp":       staticFunc(time.Stamp),
+		"StampMilli":  staticFunc(time.StampMilli),
+		"StampMicro":  staticFunc(time.StampMicro),
+		"StampNano":   staticFunc(time.StampNano),
+		"UTC":         staticFunc(time.UTC),
+		//nolint:gosmopolitan
+		"Local":        staticFunc(time.Local),
+		"LoadLocation": time.LoadLocation,
+	})
+
+	typ := reflect.TypeFor[Dest]()
+
+	if typ.Name() != "" {
+		t.Funcs(template.FuncMap{
+			typ.Name(): func() structscan.Schema[Dest] {
+				return schema
+			},
+		})
+	}
 
 	for _, tpl := range config.Templates {
 		t, err = tpl(t)
@@ -375,7 +480,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		panic(fmt.Errorf("statement at %s: check template: %w", location, err))
 	}
 
-	if err = escapeNode(s, t, t.Root); err != nil {
+	if err = escapeNode(t, t.Root); err != nil {
 		panic(fmt.Errorf("statement at %s: escape template: %w", location, err))
 	}
 
@@ -524,14 +629,14 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 // escapeNode walks the parsed template tree and ensures each SQL-producing node ends with a call to the ident() function.
 // This ensures correct placeholder binding in templates.
 // Inspired by https://github.com/mhilton/sqltemplate/blob/main/escape.go.
-func escapeNode[T any](s *structscan.Struct[T], t *template.Template, n parse.Node) error {
+func escapeNode(t *template.Template, n parse.Node) error {
 	switch v := n.(type) {
 	case *parse.ActionNode:
-		return escapeNode(s, t, v.Pipe)
+		return escapeNode(t, v.Pipe)
 	case *parse.IfNode:
 		return twoErrors(
-			escapeNode(s, t, v.List),
-			escapeNode(s, t, v.ElseList),
+			escapeNode(t, v.List),
+			escapeNode(t, v.ElseList),
 		)
 	case *parse.ListNode:
 		if v == nil {
@@ -539,7 +644,7 @@ func escapeNode[T any](s *structscan.Struct[T], t *template.Template, n parse.No
 		}
 
 		for _, n := range v.Nodes {
-			if err := escapeNode(s, t, n); err != nil {
+			if err := escapeNode(t, n); err != nil {
 				return err
 			}
 		}
@@ -550,102 +655,6 @@ func escapeNode[T any](s *structscan.Struct[T], t *template.Template, n parse.No
 
 		if len(v.Cmds) < 1 {
 			return nil
-		}
-
-		for _, cmd := range v.Cmds {
-			if len(cmd.Args) < 2 {
-				continue
-			}
-
-			node, ok := cmd.Args[1].(*parse.StringNode)
-			if !ok {
-				continue
-			}
-
-			switch cmd.Args[0].String() {
-			default:
-				continue
-			case "Scan":
-				_, err := s.Scan(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanBytes":
-				_, err := s.ScanBytes(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanTime":
-				_, err := s.ScanTime(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanString":
-				_, err := s.ScanString(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanInt":
-				_, err := s.ScanInt(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanUint":
-				_, err := s.ScanUint(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanFloat":
-				_, err := s.ScanFloat(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanBool":
-				_, err := s.ScanBool(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanJSON":
-				_, err := s.ScanJSON(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanBinary":
-				_, err := s.ScanBinary(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanText":
-				_, err := s.ScanText(node.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanStringSlice":
-				sep, ok := cmd.Args[2].(*parse.StringNode)
-				if !ok {
-					continue
-				}
-
-				_, err := s.ScanStringSlice(node.Text, sep.Text)
-				if err != nil {
-					return err
-				}
-			case "ScanStringTime":
-				layout, ok := cmd.Args[2].(*parse.StringNode)
-				if !ok {
-					continue
-				}
-
-				location, ok := cmd.Args[3].(*parse.StringNode)
-				if !ok {
-					continue
-				}
-
-				_, err := s.ScanStringTime(node.Text, layout.Text, location.Text)
-				if err != nil {
-					return err
-				}
-			}
 		}
 
 		cmd := v.Cmds[len(v.Cmds)-1]
@@ -659,13 +668,13 @@ func escapeNode[T any](s *structscan.Struct[T], t *template.Template, n parse.No
 		})
 	case *parse.RangeNode:
 		return twoErrors(
-			escapeNode(s, t, v.List),
-			escapeNode(s, t, v.ElseList),
+			escapeNode(t, v.List),
+			escapeNode(t, v.ElseList),
 		)
 	case *parse.WithNode:
 		return twoErrors(
-			escapeNode(s, t, v.List),
-			escapeNode(s, t, v.ElseList),
+			escapeNode(t, v.List),
+			escapeNode(t, v.ElseList),
 		)
 	case *parse.TemplateNode:
 		tpl := t.Lookup(v.Name)
@@ -673,7 +682,7 @@ func escapeNode[T any](s *structscan.Struct[T], t *template.Template, n parse.No
 			return fmt.Errorf("template %s not found", v.Name)
 		}
 
-		return escapeNode(s, tpl, tpl.Root)
+		return escapeNode(tpl, tpl.Root)
 	}
 
 	return nil
@@ -760,4 +769,10 @@ func twoErrors(err1, err2 error) error {
 	}
 
 	return errors.Join(err1, err2)
+}
+
+func staticFunc[T any](t T) func() T {
+	return func() T {
+		return t
+	}
 }

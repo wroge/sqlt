@@ -28,3 +28,7 @@ linters:
     - gocyclo
     - maintidx
     - nestif
+
+  exclusions:
+    paths-except:
+      - main.go
