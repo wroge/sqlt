@@ -68,6 +68,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -91,20 +92,156 @@ type DB interface {
 	ExecContext(ctx context.Context, sql string, args ...any) (sql.Result, error)
 }
 
+// Hasher used to hash arbitrary values for expression caching.
+type Hasher interface {
+	Hash(value any) (uint64, error)
+}
+
+// Logger can be injected via Config.
+type Logger interface {
+	Log(ctx context.Context, info Info)
+}
+
+// Slog implements the Logger interface.
+func Slog(logger *slog.Logger) Config {
+	return Config{
+		Logger: StructuredLogger{
+			Logger: logger,
+			Message: func(i Info) (string, slog.Level, []slog.Attr) {
+				if i.Err != nil {
+					return i.Err.Error(), slog.LevelError, []slog.Attr{
+						slog.String("template", i.Template),
+						slog.String("location", i.Location),
+						slog.String("sql", i.SQL),
+						slog.Any("args", i.Args),
+						slog.Bool("cached", i.Cached),
+					}
+				}
+
+				msg := i.Location
+
+				if i.Template != "" {
+					msg = fmt.Sprintf("%s at %s", i.Template, i.Location)
+				}
+
+				return msg, slog.LevelInfo, []slog.Attr{
+					slog.Duration("duration", i.Duration),
+					slog.String("sql", i.SQL),
+					slog.Any("args", i.Args),
+					slog.Bool("cached", i.Cached),
+				}
+			},
+		},
+	}
+}
+
+// StructuredLogger implements the Logger interface.
+type StructuredLogger struct {
+	Logger  *slog.Logger
+	Message func(Info) (string, slog.Level, []slog.Attr)
+}
+
+// Log implements the Logger interface.
+func (l StructuredLogger) Log(ctx context.Context, info Info) {
+	msg, lvl, attrs := l.Message(info)
+
+	l.Logger.LogAttrs(ctx, lvl, msg, attrs...)
+}
+
+type ParseOption struct {
+	New      string
+	Lookup   string
+	Text     string
+	Files    []string
+	Glob     string
+	FS       fs.FS
+	Patterns []string
+}
+
+func New(name string) Config {
+	return Config{
+		ParseOptions: []ParseOption{
+			{
+				New: name,
+			},
+		},
+	}
+}
+
+func Lookup(name string) Config {
+	return Config{
+		ParseOptions: []ParseOption{
+			{
+				Lookup: name,
+			},
+		},
+	}
+}
+
+func Parse(txt string) Config {
+	return Config{
+		ParseOptions: []ParseOption{
+			{
+				Text: txt,
+			},
+		},
+	}
+}
+
+func ParseGlob(pattern string) Config {
+	return Config{
+		ParseOptions: []ParseOption{
+			{
+				Glob: pattern,
+			},
+		},
+	}
+}
+
+func ParseFiles(filenames ...string) Config {
+	return Config{
+		ParseOptions: []ParseOption{
+			{
+				Files: filenames,
+			},
+		},
+	}
+}
+
+func ParseFS(sys fs.FS, patterns ...string) Config {
+	return Config{
+		ParseOptions: []ParseOption{
+			{
+				FS:       sys,
+				Patterns: patterns,
+			},
+		},
+	}
+}
+
+func Funcs(fm template.FuncMap) Config {
+	return Config{
+		Funcs: fm,
+	}
+}
+
 // Config holds settings for statement generation, expression caching, logging, and template behavior.
 type Config struct {
 	Dialect              string
-	Placeholder          func(pos int, writer io.Writer) error
-	Templates            []func(t *template.Template) (*template.Template, error)
-	Log                  func(ctx context.Context, info Info)
+	Placeholder          Placeholder
+	Logger               Logger
 	ExpressionSize       int
 	ExpressionExpiration time.Duration
-	Hasher               func(any) (uint64, error)
+	Hasher               Hasher
+	Funcs                template.FuncMap
+	ParseOptions         []ParseOption
 }
 
 // With merges configs. Later configs override earlier ones.
 func (c Config) With(configs ...Config) Config {
-	var merged Config
+	merged := Config{
+		Funcs: make(template.FuncMap),
+	}
 
 	for _, override := range append([]Config{c}, configs...) {
 		if override.Dialect != "" {
@@ -115,12 +252,8 @@ func (c Config) With(configs ...Config) Config {
 			merged.Placeholder = override.Placeholder
 		}
 
-		if len(override.Templates) > 0 {
-			merged.Templates = append(merged.Templates, override.Templates...)
-		}
-
-		if override.Log != nil {
-			merged.Log = override.Log
+		if override.Logger != nil {
+			merged.Logger = override.Logger
 		}
 
 		if override.ExpressionExpiration != 0 {
@@ -133,6 +266,16 @@ func (c Config) With(configs ...Config) Config {
 
 		if override.Hasher != nil {
 			merged.Hasher = override.Hasher
+		}
+
+		if len(override.Funcs) > 0 {
+			for k, f := range override.Funcs {
+				merged.Funcs[k] = f
+			}
+		}
+
+		if len(override.ParseOptions) > 0 {
+			merged.ParseOptions = append(merged.ParseOptions, override.ParseOptions...)
 		}
 	}
 
@@ -153,13 +296,6 @@ func Postgres() Config {
 func Dialect(name string) Config {
 	return Config{
 		Dialect: name,
-	}
-}
-
-// Hasher injects a custom hash function for cache keys.
-func Hasher(fn func(param any) (uint64, error)) Config {
-	return Config{
-		Hasher: fn,
 	}
 }
 
@@ -190,117 +326,51 @@ func UnlimitedSizeCache(expiration time.Duration) Config {
 	return Cache(-1, expiration)
 }
 
-// Placeholder configures how argument placeholders are rendered in SQL statements.
-// For example, it can output ?, $1, or @p1 depending on the SQL dialect.
-func Placeholder(f func(pos int, writer io.Writer) error) Config {
-	return Config{
-		Placeholder: f,
-	}
+type Placeholder interface {
+	WritePlaceholder(pos int, writer io.Writer) error
+}
+
+type StaticPlaceholder string
+
+func (p StaticPlaceholder) WritePlaceholder(_ int, writer io.Writer) error {
+	_, err := writer.Write([]byte("?"))
+
+	return err
+}
+
+type PositionalPlaceholder string
+
+func (p PositionalPlaceholder) WritePlaceholder(pos int, writer io.Writer) error {
+	_, err := writer.Write([]byte(string(p) + strconv.Itoa(pos)))
+
+	return err
 }
 
 // Question is a placeholder format used by sqlite.
 func Question() Config {
-	return Placeholder(func(_ int, writer io.Writer) error {
-		_, err := writer.Write([]byte("?"))
-
-		return err
-	})
+	return Config{
+		Placeholder: StaticPlaceholder("?"),
+	}
 }
 
 // Dollar is a placeholder format used by postgres.
 func Dollar() Config {
-	return Placeholder(func(pos int, writer io.Writer) error {
-		_, err := writer.Write([]byte("$" + strconv.Itoa(pos)))
-
-		return err
-	})
+	return Config{
+		Placeholder: PositionalPlaceholder("$"),
+	}
 }
 
 // Colon is a placeholder format used by oracle.
 func Colon() Config {
-	return Placeholder(func(pos int, writer io.Writer) error {
-		_, err := writer.Write([]byte(":" + strconv.Itoa(pos)))
-
-		return err
-	})
+	return Config{
+		Placeholder: PositionalPlaceholder(":"),
+	}
 }
 
 // AtP is a placeholder format used by sql server.
 func AtP() Config {
-	return Placeholder(func(pos int, writer io.Writer) error {
-		_, err := writer.Write([]byte("@p" + strconv.Itoa(pos)))
-
-		return err
-	})
-}
-
-// Template defines a function that modifies a Go text/template before execution.
-func Template(f func(t *template.Template) (*template.Template, error)) Config {
 	return Config{
-		Templates: []func(t *template.Template) (*template.Template, error){
-			f,
-		},
-	}
-}
-
-// Name creates a Template config that defines a new named template.
-func Name(name string) Config {
-	return Template(func(t *template.Template) (*template.Template, error) {
-		return t.New(name), nil
-	})
-}
-
-// Parse returns a Template config that parses and adds the provided template text.
-func Parse(text string) Config {
-	return Template(func(t *template.Template) (*template.Template, error) {
-		return t.Parse(text)
-	})
-}
-
-// ParseFS returns a Template config that loads and parses templates from the given fs.FS using patterns.
-func ParseFS(fs fs.FS, patterns ...string) Config {
-	return Template(func(t *template.Template) (*template.Template, error) {
-		return t.ParseFS(fs, patterns...)
-	})
-}
-
-// ParseFiles returns a Template config that loads and parses templates from the specified files.
-func ParseFiles(filenames ...string) Config {
-	return Template(func(t *template.Template) (*template.Template, error) {
-		return t.ParseFiles(filenames...)
-	})
-}
-
-// ParseGlob returns a Template config that loads templates matching a glob pattern.
-func ParseGlob(pattern string) Config {
-	return Template(func(t *template.Template) (*template.Template, error) {
-		return t.ParseGlob(pattern)
-	})
-}
-
-// Funcs returns a Template config that registers the provided functions to the template.
-func Funcs(fm template.FuncMap) Config {
-	return Template(func(t *template.Template) (*template.Template, error) {
-		return t.Funcs(fm), nil
-	})
-}
-
-// Lookup returns a Template config that retrieves a named template from the template set.
-func Lookup(name string) Config {
-	return Template(func(t *template.Template) (*template.Template, error) {
-		t = t.Lookup(name)
-		if t == nil {
-			return nil, fmt.Errorf("template %s not found", name)
-		}
-
-		return t, nil
-	})
-}
-
-// Log defines a function used to log execution metadata for each SQL operation.
-func Log(l func(ctx context.Context, info Info)) Config {
-	return Config{
-		Log: l,
+		Placeholder: PositionalPlaceholder("@p"),
 	}
 }
 
@@ -322,10 +392,6 @@ type Expression[Dest any] struct {
 	Args     []any
 	Scanners []structscan.Scanner[Dest]
 }
-
-// Scanner defines a two-part function that produces a scan target and a function
-// to assign the scanned value into a destination structure.
-type Scanner[Dest any] func() (any, func(dest *Dest) error)
 
 // Raw marks SQL input to be used verbatim without modification by the template engine.
 type Raw string
@@ -403,7 +469,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 	config := Sqlite().With(configs...)
 
 	var (
-		t = template.New("").Funcs(template.FuncMap{
+		t = template.New("").Option("missingkey=invalid").Funcs(config.Funcs).Funcs(template.FuncMap{
 			"Dialect": func() string { return config.Dialect },
 			"Raw":     func(sql string) Raw { return Raw(sql) },
 		})
@@ -452,18 +518,35 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		"LoadLocation": time.LoadLocation,
 	})
 
-	typ := reflect.TypeFor[Dest]()
+	name := reflect.TypeFor[Dest]().Name()
 
-	if typ.Name() != "" {
+	if goodName(name) && config.Funcs[name] == nil {
 		t.Funcs(template.FuncMap{
-			typ.Name(): func() structscan.Schema[Dest] {
+			name: func() structscan.Schema[Dest] {
 				return schema
 			},
 		})
 	}
 
-	for _, tpl := range config.Templates {
-		t, err = tpl(t)
+	for _, p := range config.ParseOptions {
+		switch {
+		case p.New != "":
+			t = t.New(p.New)
+		case p.Lookup != "":
+			t = t.Lookup(p.Lookup)
+			if t == nil {
+				panic(fmt.Errorf("statement at %s: parse template: lookup %s", location, p.Lookup))
+			}
+		case p.Text != "":
+			t, err = t.Parse(p.Text)
+		case p.Glob != "":
+			t, err = t.ParseGlob(p.Glob)
+		case len(p.Files) > 0:
+			t, err = t.ParseFiles(p.Files...)
+		default:
+			t, err = t.ParseFS(p.FS, p.Patterns...)
+		}
+
 		if err != nil {
 			panic(fmt.Errorf("statement at %s: parse template: %w", location, err))
 		}
@@ -506,7 +589,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 					default:
 						r.args = append(r.args, arg)
 
-						return Raw(""), config.Placeholder(len(r.args), r.sqlWriter)
+						return Raw(""), config.Placeholder.WritePlaceholder(len(r.args), r.sqlWriter)
 					}
 				},
 			})
@@ -521,14 +604,10 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		cache = expirable.NewLRU[uint64, Expression[Dest]](config.ExpressionSize, nil, config.ExpressionExpiration)
 
 		if config.Hasher == nil {
-			hasher := datahash.New(xxhash.New, datahash.Options{})
-
-			config.Hasher = func(a any) (uint64, error) {
-				return hasher.Hash(a)
-			}
+			config.Hasher = datahash.New(xxhash.New, datahash.Options{})
 		}
 
-		_, err = config.Hasher(zero)
+		_, err = config.Hasher.Hash(zero)
 		if err != nil {
 			panic(fmt.Errorf("statement at %s: hashing param: %w", location, err))
 		}
@@ -539,22 +618,22 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		location: location,
 		cache:    cache,
 		pool:     pool,
-		log:      config.Log,
+		logger:   config.Logger,
 		exec:     exec,
 		hasher:   config.Hasher,
 	}
 }
 
 // statement is the internal implementation of Statement.
-// It holds configuration, compiled templates, a, expression cache (optional), and the execution function.
+// It holds configuration, compiled templates, an expression cache (optional), and the execution function.
 type statement[Param any, Dest any, Result any] struct {
 	name     string
 	location string
 	cache    *expirable.LRU[uint64, Expression[Dest]]
 	exec     func(ctx context.Context, db DB, expr Expression[Dest]) (Result, error)
 	pool     *sync.Pool
-	log      func(ctx context.Context, info Info)
-	hasher   func(any) (uint64, error)
+	logger   Logger
+	hasher   Hasher
 }
 
 // Exec renders the template with the given param, applies caching (if enabled),
@@ -566,11 +645,11 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 		cached bool
 	)
 
-	if s.log != nil {
+	if s.logger != nil {
 		now := time.Now()
 
 		defer func() {
-			s.log(ctx, Info{
+			s.logger.Log(ctx, Info{
 				Template: s.name,
 				Location: s.location,
 				Duration: time.Since(now),
@@ -583,7 +662,7 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 	}
 
 	if s.cache != nil {
-		hash, err = s.hasher(param)
+		hash, err = s.hasher.Hash(param)
 		if err != nil {
 			return result, fmt.Errorf("statement at %s: hashing param: %w", s.location, err)
 		}
@@ -769,4 +848,23 @@ func staticFunc[T any](t T) func() T {
 	return func() T {
 		return t
 	}
+}
+
+// from text/template.
+func goodName(name string) bool {
+	if name == "" {
+		return false
+	}
+
+	for i, r := range name {
+		switch {
+		case r == '_':
+		case i == 0 && !unicode.IsLetter(r):
+			return false
+		case !unicode.IsLetter(r) && !unicode.IsDigit(r):
+			return false
+		}
+	}
+
+	return true
 }

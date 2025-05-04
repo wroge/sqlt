@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
-	"fmt"
 	"iter"
+	"log/slog"
 	"math/big"
 	"net/url"
 	"os"
@@ -82,11 +82,7 @@ var (
 			},
 		}),
 		sqlt.ParseFiles("./testdata/queries.sql"),
-		sqlt.Log(func(ctx context.Context, info sqlt.Info) {
-			if info.Template == "query" {
-				fmt.Println(info.Template, info.SQL, info.Args)
-			}
-		}),
+		sqlt.Slog(slog.Default()),
 	)
 
 	create                       = sqlt.Exec[any](config, sqlt.Lookup("create"))
