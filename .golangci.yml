@@ -8,10 +8,8 @@ linters:
   disable:
     - wrapcheck
     - varnamelen
-    - tagliatelle
     - revive
     - paralleltest
-    - containedctx
     - mnd
     - lll
     - ireturn
@@ -25,9 +23,7 @@ linters:
     - err113
     - depguard
     - cyclop
-    - gocyclo
     - maintidx
-    - nestif
 
   exclusions:
     paths-except:

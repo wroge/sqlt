@@ -16,8 +16,8 @@ github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHk
 github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
 github.com/go-sqlt/datahash v0.0.10 h1:qXdEAmaOFj9ebA53UgnFiVql4rg47gfVGiOLE8FjQ7o=
 github.com/go-sqlt/datahash v0.0.10/go.mod h1:Cpa6ccoxe3PqndK5y84wyWbYORmHrdzLCnMiAsPyvoI=
-github.com/go-sqlt/structscan v0.0.3 h1:5CbglFaytW2EdBLtCFIzKxiI8kqgs3T2ALcvslbPkCI=
-github.com/go-sqlt/structscan v0.0.3/go.mod h1:Gqafn3Zs3MMxQv3pspuJmtn65ww35l6nD1lTK3oWwqI=
+github.com/go-sqlt/structscan v0.0.5 h1:lwSYbxlch75z66QEg/StgBfmGW4ATcf/ul9T3SYQK1Y=
+github.com/go-sqlt/structscan v0.0.5/go.mod h1:Gqafn3Zs3MMxQv3pspuJmtn65ww35l6nD1lTK3oWwqI=
 github.com/gohugoio/hashstructure v0.5.0 h1:G2fjSBU36RdwEJBWJ+919ERvOVqAg9tfcYp47K9swqg=
 github.com/gohugoio/hashstructure v0.5.0/go.mod h1:Ser0TniXuu/eauYmrwM4o64EBvySxNzITEOLlm4igec=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=

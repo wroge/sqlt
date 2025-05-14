@@ -5,13 +5,10 @@
 [![Coverage](https://img.shields.io/badge/Coverage-74.5%25-brightgreen)](https://github.com/go-sqlt/sqlt/actions)
 
 ```go
-import "github.com/go-sqlt/sqlt"
+go get -u github.com/go-sqlt/sqlt
 ```
 
-`sqlt` uses Go’s template engine to create a flexible, powerful, and type-safe SQL builder and struct mapper.  
-
-- [Website](https://go-sqlt.github.io)
-- [Go Doc](https://pkg.go.dev/github.com/go-sqlt/sqlt)
+`sqlt` uses Go’s template engine to create a flexible, powerful, and type-safe SQL builder and struct mapper.
 
 ## Example
 
@@ -37,22 +34,24 @@ type Data struct {
 	Time     time.Time
 	Big      *big.Int
 	URL      *url.URL
-	IntSlice []int32
+	IntSlice []int
 	JSON     map[string]any
 }
 
 var (
-	query = sqlt.All[any, Data](sqlt.Parse(`
-		SELECT
-			100                                    {{ Data.Int }}
-			, '200'                                {{ Data.String }}
-			, true                                 {{ Data.Bool }}
-			, '2025-05-01'                         {{ Data.Time.String (ParseTime "DateOnly" "UTC") }}
-			, '300'                                {{ Data.Big.Bytes UnmarshalText }}
-			, 'https://example.com/path?query=yes' {{ Data.URL.Bytes UnmarshalBinary }}
-			, '400,500,600'                        {{ Data.IntSlice.String (Split "," (ParseInt 10 64)) }}
-			, '{"hello":"world"}'                  {{ Data.JSON.Bytes UnmarshalJSON }}
-	`))
+	query = sqlt.All[string, Data](
+		sqlt.Parse(`
+			SELECT
+				100                                    {{ Scan "Int" }}
+				, '200'                                {{ Scan "String" }}
+				, true                                 {{ Scan "Bool" }}
+				, {{ . }}                         	   {{ Scan "Time" (ParseTimeInLocation DateOnly UTC) }}
+				, '300'                                {{ Scan "Big" UnmarshalText }}
+				, 'https://example.com/path?query=yes' {{ Scan "URL" UnmarshalBinary }}
+				, '400,500,600'                        {{ Scan "IntSlice" (Split "," (ParseInt 10 64)) }}
+				, '{"hello":"world"}'                  {{ Scan "JSON" UnmarshalJSON }}
+		`),
+	)
 )
 
 func main() {
@@ -61,12 +60,12 @@ func main() {
 		panic(err)
 	}
 
-	data, err := query.Exec(context.Background(), db, nil)
+	data, err := query.Exec(context.Background(), db, time.Now().Format(time.DateOnly))
 	if err != nil {
 		panic(err)
 	}
 
 	fmt.Println(data)
-	// [{100 0x140000112b0 true 2025-05-01 00:00:00 +0000 UTC 300 https://example.com/path?query=yes [400 500 600] map[hello:world]}]
+	// [{100 0x140000116e0 true 2025-05-14 00:00:00 +0000 UTC 300 https://example.com/path?query=yes [400 500 600] map[hello:world]}]
 }
 ```

@@ -139,28 +139,28 @@
 {{ end }}
 
 {{ define "query_columns" }}
-    p.number, 									{{ Schema.Number }}	
-    cast(p.number AS TEXT), 					{{ Schema.BigNumber.Bytes UnmarshalText }}	
-    p.number, 									{{ Schema.NumberP }}	
+    p.number, 									{{ Scan "Number" }}	
+    cast(p.number AS TEXT), 					{{ Scan "BigNumber" UnmarshalText }}	
+    p.number, 									{{ Scan "NumberP" }}	
     CONCAT('https://www.bisafans.de/pokedex/', 
-        printf('%03d', p.number) ,'.php'),      {{ Schema.Bisafans.Bytes UnmarshalBinary }}	
-    p.name, 							        {{ Schema.Name }}
-    p.height, 							        {{ Schema.Height }}	
-    p.height, 							        {{ Schema.HeightP }}	
-    p.weight, 							        {{ Schema.Weight }}
-    p.generation, 						        {{ Schema.Generation }}
-    p.generation, 						        {{ Schema.GenerationP }}
-    p.legendary, 						        {{ Schema.Legendary }}
-    p.legendary, 						        {{ Schema.LegendaryP }}
-    pt.type_names, 		                        {{ Schema.Types.String (Split ",") }}
-    c.name, 						            {{ Schema.Classification }}
-    pa.ability_names,	                        {{ Schema.Abilities.String (Split ",") }}
-    '2000-01-01',                               {{ Schema.SomeDate.String (ParseTime DateOnly UTC) }}
-    '2000-01-01',                               {{ Schema.SomeDateP.String (ParseTime DateOnly UTC) }}
-    p.today,                                    {{ Schema.Today }}
-    p.today,                                    {{ Schema.TodayP }}
-    JSON('{"hello": "world"}'),                 {{ Schema.Meta.Bytes UnmarshalJSON }}
-    JSON('{"hello": "world"}')                  {{ Schema.MetaBytes.Bytes }}
+        printf('%03d', p.number) ,'.php'),      {{ Scan "Bisafans" UnmarshalBinary }}	
+    p.name, 							        {{ Scan "Name" }}
+    p.height, 							        {{ Scan "Height" }}	
+    p.height, 							        {{ Scan "HeightP" }}	
+    p.weight, 							        {{ Scan "Weight" }}
+    p.generation, 						        {{ Scan "Generation" }}
+    p.generation, 						        {{ Scan "GenerationP" }}
+    p.legendary, 						        {{ Scan "Legendary" }}
+    p.legendary, 						        {{ Scan "LegendaryP" }}
+    pt.type_names, 		                        {{ Scan "Types" (Split ",") }}
+    c.name, 						            {{ Scan "Classification" }}
+    pa.ability_names,	                        {{ Scan "Abilities" (Split ",") }}
+    '2000-01-01',                               {{ Scan "SomeDate" (ParseTimeInLocation DateOnly UTC) }}
+    '2000-01-01',                               {{ Scan "SomeDateP" (ParseTimeInLocation DateOnly UTC) }}
+    p.today,                                    {{ Scan "Today" }}
+    p.today,                                    {{ Scan "TodayP" }}
+    JSON('{"hello": "world"}'),                 {{ Scan "Meta" UnmarshalJSON }}
+    JSON('{"hello": "world"}')                  {{ Scan "MetaBytes" }}
 {{ end }}
 
 {{ define "query" }}
