@@ -39,19 +39,17 @@ type Data struct {
 }
 
 var (
-	query = sqlt.All[string, Data](
-		sqlt.Parse(`
-			SELECT
-				100                                    {{ Scan "Int" }}
-				, '200'                                {{ Scan "String" }}
-				, true                                 {{ Scan "Bool" }}
-				, {{ . }}                              {{ Scan "Time" (ParseTimeInLocation DateOnly UTC) }}
-				, '300'                                {{ Scan "Big" UnmarshalText }}
-				, 'https://example.com/path?query=yes' {{ Scan "URL" UnmarshalBinary }}
-				, '400,500,600'                        {{ Scan "IntSlice" (Split "," (ParseInt 10 64)) }}
-				, '{"hello":"world"}'                  {{ Scan "JSON" UnmarshalJSON }}
-		`),
-	)
+	query = sqlt.All[string, Data](sqlt.Parse(`
+		SELECT
+			100                                    {{ Scan "Int" }}
+			, '200'                                {{ Scan "String" }}
+			, true                                 {{ Scan "Bool" }}
+			, {{ . }}                              {{ Scan "Time" (ParseTimeInLocation DateOnly UTC) }}
+			, '300'                                {{ Scan "Big" UnmarshalText }}
+			, 'https://example.com/path?query=yes' {{ Scan "URL" UnmarshalBinary }}
+			, '400,500,600'                        {{ Scan "IntSlice" (Split "," (ParseInt 10 64)) }}
+			, '{"hello":"world"}'                  {{ Scan "JSON" UnmarshalJSON }}
+	`))
 )
 
 func main() {
