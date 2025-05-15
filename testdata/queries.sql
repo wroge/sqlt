@@ -95,7 +95,7 @@
             , {{ now }}
         )
     {{ end }}
-    RETURNING number;
+    RETURNING {{ Raw "number" }}; {{ Atoi }}
 {{ end }}
 
 {{ define "insert_pokemon_types" }}

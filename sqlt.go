@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"runtime"
 	"slices"
 	"strconv"
@@ -28,55 +27,12 @@ type DB interface {
 	ExecContext(ctx context.Context, sql string, args ...any) (sql.Result, error)
 }
 
-type Logger interface {
-	Log(ctx context.Context, info Info)
-}
+type Logger func(ctx context.Context, info Info)
 
-func Slog(logger *slog.Logger) Config {
+func Log(l Logger) Config {
 	return Config{
-		Logger: StructuredLogger{
-			Logger: logger,
-			Message: func(i Info) (string, slog.Level, []slog.Attr) {
-				if i.Err != nil {
-					return i.Err.Error(), slog.LevelError, []slog.Attr{
-						slog.String("template", i.Template),
-						slog.String("location", i.Location),
-						slog.String("sql", i.SQL),
-						slog.Any("args", i.Args),
-						slog.Bool("cached", i.Cached),
-					}
-				}
-
-				msg := i.Location
-
-				if i.Template != "" {
-					msg = fmt.Sprintf("%s at %s", i.Template, i.Location)
-				}
-
-				return msg, slog.LevelInfo, []slog.Attr{
-					slog.Duration("duration", i.Duration),
-					slog.String("sql", i.SQL),
-					slog.Any("args", i.Args),
-					slog.Bool("cached", i.Cached),
-				}
-			},
-		},
+		Logger: l,
 	}
-}
-
-type StructuredLogger struct {
-	Logger  *slog.Logger
-	Message func(Info) (msg string, lvl slog.Level, attrs []slog.Attr)
-}
-
-func (l StructuredLogger) Log(ctx context.Context, info Info) {
-	msg, lvl, attrs := l.Message(info)
-
-	if msg == "" {
-		return
-	}
-
-	l.Logger.LogAttrs(ctx, lvl, msg, attrs...)
 }
 
 func New(name string) Config {
@@ -552,7 +508,7 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 		now := time.Now()
 
 		defer func() {
-			s.logger.Log(ctx, Info{
+			s.logger(ctx, Info{
 				Template: s.name,
 				Location: s.location,
 				Duration: time.Since(now),

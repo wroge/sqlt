@@ -6,7 +6,6 @@ import (
 	"encoding/csv"
 	"hash/fnv"
 	"iter"
-	"log/slog"
 	"math/big"
 	"net/url"
 	"os"
@@ -84,7 +83,7 @@ var (
 			},
 		}),
 		sqlt.ParseFiles("./testdata/queries.sql"),
-		sqlt.Slog(slog.Default()),
+		sqlt.Log(func(ctx context.Context, info sqlt.Info) {}),
 	)
 
 	create                       = sqlt.Exec[any](config, sqlt.Lookup("create"))
@@ -95,9 +94,9 @@ var (
 	insertPokemonTypes           = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_types"))
 	insertPokemonClassifications = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_classifications"))
 	insertPokemonAbilities       = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_abilities"))
-	query                        = sqlt.All[Query, Pokemon](config, sqlt.LimitedCache(100, datahash.New(fnv.New64a, datahash.Options{})), sqlt.Lookup("query"))
+	query                        = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query"))
 	queryFirst                   = sqlt.First[Query, Pokemon](config, sqlt.ExpiringCache(time.Second, datahash.New(fnv.New64a, datahash.Options{})), sqlt.Lookup("query"))
-	queryOne                     = sqlt.One[Query, Pokemon](config, sqlt.Lookup("query"))
+	queryOne                     = sqlt.One[Query, Pokemon](config, sqlt.LimitedCache(100, datahash.New(fnv.New64a, datahash.Options{})), sqlt.Lookup("query"))
 )
 
 func TestQueryPokemon(t *testing.T) {
@@ -206,6 +205,10 @@ func TestQueryPokemon(t *testing.T) {
 	rattata, err = queryOne.Exec(ctx, db, Query{
 		Classification: NewPointer("Mouse Pokémon"),
 		WeightRange:    slices.Values([]float64{3, 4}),
+		AbilityOneOf: map[string]struct{}{
+			"Run-away": {},
+			"Hustle":   {},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
