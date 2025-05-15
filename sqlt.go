@@ -17,8 +17,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/cespare/xxhash/v2"
-	"github.com/go-sqlt/datahash"
 	"github.com/go-sqlt/structscan"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/jba/templatecheck"
@@ -28,10 +26,6 @@ type DB interface {
 	QueryContext(ctx context.Context, sql string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, sql string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, sql string, args ...any) (sql.Result, error)
-}
-
-type Hasher interface {
-	Hash(value any) (uint64, error)
 }
 
 type Logger interface {
@@ -85,21 +79,11 @@ func (l StructuredLogger) Log(ctx context.Context, info Info) {
 	l.Logger.LogAttrs(ctx, lvl, msg, attrs...)
 }
 
-type ParseOption struct {
-	New      string
-	Lookup   string
-	Text     string
-	Files    []string
-	Glob     string
-	FS       fs.FS
-	Patterns []string
-}
-
 func New(name string) Config {
 	return Config{
-		ParseOptions: []ParseOption{
-			{
-				New: name,
+		Parsers: []Parser{
+			func(tpl *template.Template) (*template.Template, error) {
+				return tpl.New(name), nil
 			},
 		},
 	}
@@ -107,9 +91,14 @@ func New(name string) Config {
 
 func Lookup(name string) Config {
 	return Config{
-		ParseOptions: []ParseOption{
-			{
-				Lookup: name,
+		Parsers: []Parser{
+			func(tpl *template.Template) (*template.Template, error) {
+				t := tpl.Lookup(name)
+				if t == nil {
+					return nil, fmt.Errorf("template not found: %s", name)
+				}
+
+				return t, nil
 			},
 		},
 	}
@@ -117,9 +106,9 @@ func Lookup(name string) Config {
 
 func Parse(txt string) Config {
 	return Config{
-		ParseOptions: []ParseOption{
-			{
-				Text: txt,
+		Parsers: []Parser{
+			func(tpl *template.Template) (*template.Template, error) {
+				return tpl.Parse(txt)
 			},
 		},
 	}
@@ -127,9 +116,9 @@ func Parse(txt string) Config {
 
 func ParseGlob(pattern string) Config {
 	return Config{
-		ParseOptions: []ParseOption{
-			{
-				Glob: pattern,
+		Parsers: []Parser{
+			func(tpl *template.Template) (*template.Template, error) {
+				return tpl.ParseGlob(pattern)
 			},
 		},
 	}
@@ -137,9 +126,9 @@ func ParseGlob(pattern string) Config {
 
 func ParseFiles(filenames ...string) Config {
 	return Config{
-		ParseOptions: []ParseOption{
-			{
-				Files: filenames,
+		Parsers: []Parser{
+			func(tpl *template.Template) (*template.Template, error) {
+				return tpl.ParseFiles(filenames...)
 			},
 		},
 	}
@@ -147,10 +136,9 @@ func ParseFiles(filenames ...string) Config {
 
 func ParseFS(sys fs.FS, patterns ...string) Config {
 	return Config{
-		ParseOptions: []ParseOption{
-			{
-				FS:       sys,
-				Patterns: patterns,
+		Parsers: []Parser{
+			func(tpl *template.Template) (*template.Template, error) {
+				return tpl.ParseFS(sys, patterns...)
 			},
 		},
 	}
@@ -158,25 +146,26 @@ func ParseFS(sys fs.FS, patterns ...string) Config {
 
 func Funcs(fm template.FuncMap) Config {
 	return Config{
-		Funcs: fm,
+		Parsers: []Parser{
+			func(tpl *template.Template) (*template.Template, error) {
+				return tpl.Funcs(fm), nil
+			},
+		},
 	}
 }
 
+type Parser func(tpl *template.Template) (*template.Template, error)
+
 type Config struct {
-	Dialect              string
-	Placeholder          Placeholder
-	Logger               Logger
-	ExpressionSize       int
-	ExpressionExpiration time.Duration
-	Hasher               Hasher
-	Funcs                template.FuncMap
-	ParseOptions         []ParseOption
+	Dialect     string
+	Placeholder Placeholder
+	Logger      Logger
+	Cache       *Cache
+	Parsers     []Parser
 }
 
 func (c Config) With(configs ...Config) Config {
-	merged := Config{
-		Funcs: make(template.FuncMap),
-	}
+	merged := Config{}
 
 	for _, override := range append([]Config{c}, configs...) {
 		if override.Dialect != "" {
@@ -191,26 +180,12 @@ func (c Config) With(configs ...Config) Config {
 			merged.Logger = override.Logger
 		}
 
-		if override.ExpressionExpiration != 0 {
-			merged.ExpressionExpiration = override.ExpressionExpiration
+		if override.Cache != nil {
+			merged.Cache = override.Cache
 		}
 
-		if override.ExpressionSize != 0 {
-			merged.ExpressionSize = override.ExpressionSize
-		}
-
-		if override.Hasher != nil {
-			merged.Hasher = override.Hasher
-		}
-
-		if len(override.Funcs) > 0 {
-			for k, f := range override.Funcs {
-				merged.Funcs[k] = f
-			}
-		}
-
-		if len(override.ParseOptions) > 0 {
-			merged.ParseOptions = append(merged.ParseOptions, override.ParseOptions...)
+		if len(override.Parsers) > 0 {
+			merged.Parsers = append(merged.Parsers, override.Parsers...)
 		}
 	}
 
@@ -231,23 +206,38 @@ func Dialect(name string) Config {
 	}
 }
 
-func Cache(size int, exp time.Duration) Config {
-	return Config{
-		ExpressionSize:       size,
-		ExpressionExpiration: exp,
-	}
+type Hasher interface {
+	Hash(value any) (uint64, error)
+}
+
+type Cache struct {
+	Expiration time.Duration
+	Size       int
+	Hasher     Hasher
 }
 
 func NoCache() Config {
-	return Cache(0, 0)
+	return Config{
+		Cache: &Cache{},
+	}
 }
 
-func NoExpirationCache(size int) Config {
-	return Cache(size, -1)
+func LimitedCache(size int, hasher Hasher) Config {
+	return Config{
+		Cache: &Cache{
+			Size:   size,
+			Hasher: hasher,
+		},
+	}
 }
 
-func UnlimitedSizeCache(expiration time.Duration) Config {
-	return Cache(-1, expiration)
+func ExpiringCache(expiration time.Duration, hasher Hasher) Config {
+	return Config{
+		Cache: &Cache{
+			Expiration: expiration,
+			Hasher:     hasher,
+		},
+	}
 }
 
 type Placeholder interface {
@@ -374,7 +364,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		config   = Sqlite().With(configs...)
 		schema   = structscan.Describe[Dest]()
 
-		t = template.New("").Option("missingkey=invalid").Funcs(config.Funcs).Funcs(template.FuncMap{
+		t = template.New("").Option("missingkey=invalid").Funcs(template.FuncMap{
 			"Dialect": func() string { return config.Dialect },
 			"Raw":     func(sql string) Raw { return Raw(sql) },
 			"Scan": func(path string, converters ...structscan.Converter) (structscan.Scanner[Dest], error) {
@@ -448,25 +438,8 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		err error
 	)
 
-	for _, p := range config.ParseOptions {
-		switch {
-		case p.New != "":
-			t = t.New(p.New)
-		case p.Lookup != "":
-			t = t.Lookup(p.Lookup)
-			if t == nil {
-				panic(fmt.Errorf("statement at %s: parse template: lookup %s", location, p.Lookup))
-			}
-		case p.Text != "":
-			t, err = t.Parse(p.Text)
-		case p.Glob != "":
-			t, err = t.ParseGlob(p.Glob)
-		case len(p.Files) > 0:
-			t, err = t.ParseFiles(p.Files...)
-		default:
-			t, err = t.ParseFS(p.FS, p.Patterns...)
-		}
-
+	for _, p := range config.Parsers {
+		t, err = p(t)
 		if err != nil {
 			panic(fmt.Errorf("statement at %s: parse template: %w", location, err))
 		}
@@ -538,14 +511,10 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 
 	var cache *expirable.LRU[uint64, Expression[Dest]]
 
-	if config.ExpressionSize != 0 || config.ExpressionExpiration != 0 {
-		cache = expirable.NewLRU[uint64, Expression[Dest]](config.ExpressionSize, nil, config.ExpressionExpiration)
+	if config.Cache != nil && config.Cache.Hasher != nil {
+		cache = expirable.NewLRU[uint64, Expression[Dest]](config.Cache.Size, nil, config.Cache.Expiration)
 
-		if config.Hasher == nil {
-			config.Hasher = datahash.New(xxhash.New, datahash.Options{})
-		}
-
-		_, err = config.Hasher.Hash(zero)
+		_, err = config.Cache.Hasher.Hash(zero)
 		if err != nil {
 			panic(fmt.Errorf("statement at %s: hashing param: %w", location, err))
 		}
@@ -558,7 +527,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		pool:     pool,
 		logger:   config.Logger,
 		exec:     exec,
-		hasher:   config.Hasher,
+		hasher:   config.Cache.Hasher,
 	}
 }
 
