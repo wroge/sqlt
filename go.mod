@@ -4,6 +4,7 @@ go 1.24.2
 
 require (
 	github.com/Masterminds/sprig/v3 v3.3.0
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/go-sqlt/datahash v0.0.10
 	github.com/go-sqlt/structscan v0.0.7
 	github.com/hashicorp/golang-lru/v2 v2.0.7

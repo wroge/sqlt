@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/cespare/xxhash/v2"
+	"github.com/go-sqlt/datahash"
 	"github.com/go-sqlt/structscan"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/jba/templatecheck"
@@ -113,11 +115,13 @@ func Funcs(fm template.FuncMap) Config {
 type Parser func(tpl *template.Template) (*template.Template, error)
 
 type Config struct {
-	Dialect     string
-	Placeholder Placeholder
-	Logger      Logger
-	Cache       *Cache
-	Parsers     []Parser
+	Dialect              string
+	Placeholder          Placeholder
+	Logger               Logger
+	ExpressionSize       int
+	ExpressionExpiration time.Duration
+	Hasher               Hasher
+	Parsers              []Parser
 }
 
 func (c Config) With(configs ...Config) Config {
@@ -136,8 +140,16 @@ func (c Config) With(configs ...Config) Config {
 			merged.Logger = override.Logger
 		}
 
-		if override.Cache != nil {
-			merged.Cache = override.Cache
+		if override.ExpressionSize != 0 {
+			merged.ExpressionSize = override.ExpressionSize
+		}
+
+		if override.ExpressionExpiration != 0 {
+			merged.ExpressionExpiration = override.ExpressionExpiration
+		}
+
+		if override.Hasher != nil {
+			merged.Hasher = override.Hasher
 		}
 
 		if len(override.Parsers) > 0 {
@@ -166,33 +178,15 @@ type Hasher interface {
 	Hash(value any) (uint64, error)
 }
 
-type Cache struct {
-	Expiration time.Duration
-	Size       int
-	Hasher     Hasher
-}
-
-func NoCache() Config {
+func ExpressionSize(size int) Config {
 	return Config{
-		Cache: &Cache{},
+		ExpressionSize: size,
 	}
 }
 
-func LimitedCache(size int, hasher Hasher) Config {
+func ExpressionExpiration(expiration time.Duration) Config {
 	return Config{
-		Cache: &Cache{
-			Size:   size,
-			Hasher: hasher,
-		},
-	}
-}
-
-func ExpiringCache(expiration time.Duration, hasher Hasher) Config {
-	return Config{
-		Cache: &Cache{
-			Expiration: expiration,
-			Hasher:     hasher,
-		},
+		ExpressionExpiration: expiration,
 	}
 }
 
@@ -339,57 +333,65 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 				}
 			},
 
-			"Nullable":            structscan.Nullable,
-			"Default":             structscan.Default,
-			"UnmarshalJSON":       structscan.UnmarshalJSON,
-			"UnmarshalText":       structscan.UnmarshalText,
-			"UnmarshalBinary":     structscan.UnmarshalBinary,
+			"Nullable": structscan.Nullable,
+			"Default":  structscan.Default,
+
+			"UnmarshalJSON":   structscan.UnmarshalJSON,
+			"UnmarshalText":   structscan.UnmarshalText,
+			"UnmarshalBinary": structscan.UnmarshalBinary,
+
 			"ParseTime":           structscan.ParseTime,
 			"ParseTimeInLocation": structscan.ParseTimeInLocation,
-			"Atoi":                structscan.Atoi,
-			"ParseInt":            structscan.ParseInt,
-			"ParseUint":           structscan.ParseUint,
-			"ParseFloat":          structscan.ParseFloat,
-			"ParseBool":           structscan.ParseBool,
-			"ParseComplex":        structscan.ParseComplex,
-			"Trim":                structscan.Trim,
-			"TrimPrefix":          structscan.TrimPrefix,
-			"TrimSuffix":          structscan.TrimSuffix,
-			"Contains":            structscan.Contains,
-			"ContainsAny":         structscan.ContainsAny,
-			"HasPrefix":           structscan.HasPrefix,
-			"HasSuffix":           structscan.HasSuffix,
-			"EqualFold":           structscan.EqualFold,
-			"Index":               structscan.Index,
-			"ToLower":             structscan.ToLower,
-			"ToUpper":             structscan.ToUpper,
-			"Chain":               structscan.Chain,
-			"OneOf":               structscan.OneOf,
-			"Enum":                structscan.Enum,
-			"Cut":                 structscan.Cut,
-			"Split":               structscan.Split,
-			"DateTime":            staticFunc(time.DateTime),
-			"DateOnly":            staticFunc(time.DateOnly),
-			"TimeOnly":            staticFunc(time.TimeOnly),
-			"RFC3339":             staticFunc(time.RFC3339),
-			"RFC3339Nano":         staticFunc(time.RFC3339Nano),
-			"Layout":              staticFunc(time.Layout),
-			"ANSIC":               staticFunc(time.ANSIC),
-			"UnixDate":            staticFunc(time.UnixDate),
-			"RubyDate":            staticFunc(time.RubyDate),
-			"RFC822":              staticFunc(time.RFC822),
-			"RFC822Z":             staticFunc(time.RFC822Z),
-			"RFC850":              staticFunc(time.RFC850),
-			"RFC1123":             staticFunc(time.RFC1123),
-			"RFC1123Z":            staticFunc(time.RFC1123Z),
-			"Kitchen":             staticFunc(time.Kitchen),
-			"Stamp":               staticFunc(time.Stamp),
-			"StampMilli":          staticFunc(time.StampMilli),
-			"StampMicro":          staticFunc(time.StampMicro),
-			"StampNano":           staticFunc(time.StampNano),
-			"UTC":                 staticFunc(time.UTC),
-			"Local":               staticFunc(time.Local), //nolint:gosmopolitan
 			"LoadLocation":        time.LoadLocation,
+
+			"Atoi":         structscan.Atoi,
+			"ParseInt":     structscan.ParseInt,
+			"ParseUint":    structscan.ParseUint,
+			"ParseFloat":   structscan.ParseFloat,
+			"ParseBool":    structscan.ParseBool,
+			"ParseComplex": structscan.ParseComplex,
+
+			"Trim":        structscan.Trim,
+			"TrimPrefix":  structscan.TrimPrefix,
+			"TrimSuffix":  structscan.TrimSuffix,
+			"Contains":    structscan.Contains,
+			"ContainsAny": structscan.ContainsAny,
+			"HasPrefix":   structscan.HasPrefix,
+			"HasSuffix":   structscan.HasSuffix,
+			"EqualFold":   structscan.EqualFold,
+			"Index":       structscan.Index,
+			"ToLower":     structscan.ToLower,
+			"ToUpper":     structscan.ToUpper,
+
+			"Chain": structscan.Chain,
+
+			"OneOf": structscan.OneOf,
+			"Enum":  structscan.Enum,
+
+			"Cut":   structscan.Cut,
+			"Split": structscan.Split,
+
+			"DateTime":    valueFunc(time.DateTime),
+			"DateOnly":    valueFunc(time.DateOnly),
+			"TimeOnly":    valueFunc(time.TimeOnly),
+			"RFC3339":     valueFunc(time.RFC3339),
+			"RFC3339Nano": valueFunc(time.RFC3339Nano),
+			"Layout":      valueFunc(time.Layout),
+			"ANSIC":       valueFunc(time.ANSIC),
+			"UnixDate":    valueFunc(time.UnixDate),
+			"RubyDate":    valueFunc(time.RubyDate),
+			"RFC822":      valueFunc(time.RFC822),
+			"RFC822Z":     valueFunc(time.RFC822Z),
+			"RFC850":      valueFunc(time.RFC850),
+			"RFC1123":     valueFunc(time.RFC1123),
+			"RFC1123Z":    valueFunc(time.RFC1123Z),
+			"Kitchen":     valueFunc(time.Kitchen),
+			"Stamp":       valueFunc(time.Stamp),
+			"StampMilli":  valueFunc(time.StampMilli),
+			"StampMicro":  valueFunc(time.StampMicro),
+			"StampNano":   valueFunc(time.StampNano),
+			"UTC":         valueFunc(time.UTC),
+			"Local":       valueFunc(time.Local), //nolint:gosmopolitan
 		})
 		err error
 	)
@@ -406,7 +408,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		panic(fmt.Errorf("statement at %s: check template: %w", location, err))
 	}
 
-	if err = escapeNode(t, t.Root); err != nil {
+	if err = escapeNode(schema, t, t.Root); err != nil {
 		panic(fmt.Errorf("statement at %s: escape template: %w", location, err))
 	}
 
@@ -467,10 +469,14 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 
 	var cache *expirable.LRU[uint64, Expression[Dest]]
 
-	if config.Cache != nil && config.Cache.Hasher != nil {
-		cache = expirable.NewLRU[uint64, Expression[Dest]](config.Cache.Size, nil, config.Cache.Expiration)
+	if config.ExpressionSize > 0 || config.ExpressionExpiration > 0 {
+		cache = expirable.NewLRU[uint64, Expression[Dest]](config.ExpressionSize, nil, config.ExpressionExpiration)
 
-		_, err = config.Cache.Hasher.Hash(zero)
+		if config.Hasher == nil {
+			config.Hasher = datahash.New(xxhash.New, datahash.Options{})
+		}
+
+		_, err = config.Hasher.Hash(zero)
 		if err != nil {
 			panic(fmt.Errorf("statement at %s: hashing param: %w", location, err))
 		}
@@ -483,7 +489,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		pool:     pool,
 		logger:   config.Logger,
 		exec:     exec,
-		hasher:   config.Cache.Hasher,
+		hasher:   config.Hasher,
 	}
 }
 
@@ -559,14 +565,14 @@ func (s *statement[Param, Dest, Result]) Exec(ctx context.Context, db DB, param 
 }
 
 // Inspired by https://github.com/mhilton/sqltemplate/blob/main/escape.go.
-func escapeNode(t *template.Template, n parse.Node) error {
+func escapeNode[Dest any](s structscan.Schema[Dest], t *template.Template, n parse.Node) error {
 	switch v := n.(type) {
 	case *parse.ActionNode:
-		return escapeNode(t, v.Pipe)
+		return escapeNode(s, t, v.Pipe)
 	case *parse.IfNode:
 		return twoErrors(
-			escapeNode(t, v.List),
-			escapeNode(t, v.ElseList),
+			escapeNode(s, t, v.List),
+			escapeNode(s, t, v.ElseList),
 		)
 	case *parse.ListNode:
 		if v == nil {
@@ -574,7 +580,7 @@ func escapeNode(t *template.Template, n parse.Node) error {
 		}
 
 		for _, n := range v.Nodes {
-			if err := escapeNode(t, n); err != nil {
+			if err := escapeNode(s, t, n); err != nil {
 				return err
 			}
 		}
@@ -585,6 +591,14 @@ func escapeNode(t *template.Template, n parse.Node) error {
 
 		if len(v.Cmds) < 1 {
 			return nil
+		}
+
+		if len(v.Cmds[0].Args) > 0 && v.Cmds[0].Args[0].String() == "Scan" && len(v.Cmds[0].Args) > 0 {
+			if str, ok := v.Cmds[0].Args[1].(*parse.StringNode); ok {
+				if _, err := s.Field(str.Text); err != nil {
+					return err
+				}
+			}
 		}
 
 		cmd := v.Cmds[len(v.Cmds)-1]
@@ -598,13 +612,13 @@ func escapeNode(t *template.Template, n parse.Node) error {
 		})
 	case *parse.RangeNode:
 		return twoErrors(
-			escapeNode(t, v.List),
-			escapeNode(t, v.ElseList),
+			escapeNode(s, t, v.List),
+			escapeNode(s, t, v.ElseList),
 		)
 	case *parse.WithNode:
 		return twoErrors(
-			escapeNode(t, v.List),
-			escapeNode(t, v.ElseList),
+			escapeNode(s, t, v.List),
+			escapeNode(s, t, v.ElseList),
 		)
 	case *parse.TemplateNode:
 		tpl := t.Lookup(v.Name)
@@ -612,7 +626,7 @@ func escapeNode(t *template.Template, n parse.Node) error {
 			return fmt.Errorf("template %s not found", v.Name)
 		}
 
-		return escapeNode(tpl, tpl.Root)
+		return escapeNode(s, tpl, tpl.Root)
 	}
 
 	return nil
@@ -679,6 +693,12 @@ func (w *sqlWriter) String() string {
 	return string(w.data[:n])
 }
 
+func valueFunc[T any](t T) func() T {
+	return func() T {
+		return t
+	}
+}
+
 func twoErrors(err1, err2 error) error {
 	if err1 == nil {
 		return err2
@@ -689,10 +709,4 @@ func twoErrors(err1, err2 error) error {
 	}
 
 	return errors.Join(err1, err2)
-}
-
-func staticFunc[T any](t T) func() T {
-	return func() T {
-		return t
-	}
 }

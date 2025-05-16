@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
-	"hash/fnv"
 	"iter"
 	"math/big"
 	"net/url"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/Masterminds/sprig/v3"
-	"github.com/go-sqlt/datahash"
 	"github.com/go-sqlt/sqlt"
 	_ "modernc.org/sqlite"
 )
@@ -65,7 +63,6 @@ type Query struct {
 
 var (
 	config = sqlt.Sqlite().With(
-		sqlt.NoCache(),
 		sqlt.Funcs(sprig.TxtFuncMap()),
 		sqlt.Funcs(template.FuncMap{
 			"SetToSeq": func(m map[string]struct{}) iter.Seq2[int, string] {
@@ -95,8 +92,8 @@ var (
 	insertPokemonClassifications = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_classifications"))
 	insertPokemonAbilities       = sqlt.Exec[[][]string](config, sqlt.Lookup("insert_pokemon_abilities"))
 	query                        = sqlt.All[Query, Pokemon](config, sqlt.Lookup("query"))
-	queryFirst                   = sqlt.First[Query, Pokemon](config, sqlt.ExpiringCache(time.Second, datahash.New(fnv.New64a, datahash.Options{})), sqlt.Lookup("query"))
-	queryOne                     = sqlt.One[Query, Pokemon](config, sqlt.LimitedCache(100, datahash.New(fnv.New64a, datahash.Options{})), sqlt.Lookup("query"))
+	queryFirst                   = sqlt.First[Query, Pokemon](config, sqlt.ExpressionExpiration(time.Second), sqlt.Lookup("query"))
+	queryOne                     = sqlt.One[Query, Pokemon](config, sqlt.ExpressionSize(100), sqlt.Lookup("query"))
 )
 
 func TestQueryPokemon(t *testing.T) {

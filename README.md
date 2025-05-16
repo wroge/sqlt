@@ -64,6 +64,6 @@ func main() {
 	}
 
 	fmt.Println(data)
-	// [{100 0x140000116e0 true 2025-05-14 00:00:00 +0000 UTC 300 https://example.com/path?query=yes [400 500 600] map[hello:world]}]
+	// [{100 0x140000116a0 true 2025-05-16 00:00:00 +0000 UTC 300 https://example.com/path?query=yes [400 500 600] map[hello:world]}]
 }
 ```
