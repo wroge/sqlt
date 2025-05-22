@@ -287,7 +287,7 @@ func StaticPlaceholder(p string) Config {
 func PositionalPlaceholder(p string) Config {
 	return Config{
 		Placeholder: func(pos int, writer io.Writer) error {
-			_, err := writer.Write([]byte(string(p) + strconv.Itoa(pos)))
+			_, err := writer.Write([]byte(p + strconv.Itoa(pos)))
 
 			return err
 		},

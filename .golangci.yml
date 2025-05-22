@@ -19,11 +19,9 @@ linters:
     - nonamedreturns
     - forcetypeassert
     - exhaustruct
-    - exhaustive
     - err113
     - depguard
     - cyclop
-    - maintidx
 
   exclusions:
     paths-except:
