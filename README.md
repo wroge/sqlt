@@ -28,29 +28,27 @@ import (
 )
 
 type Data struct {
-	Int      int64
-	String   *string
-	Bool     bool
-	Time     time.Time
-	Big      *big.Int
-	URL      *url.URL
-	IntSlice []int
-	JSON     map[string]any
+	Int    int64
+	String string
+	Bool   bool
+	Time   time.Time
+	Big    *big.Int
+	URL    *url.URL
+	Slice  []string
+	JSON   map[string]any
 }
 
-var (
-	query = sqlt.All[string, Data](sqlt.Parse(`
-		SELECT
-			100                                    {{ Scan "Int" }}
-			, '200'                                {{ Scan "String" }}
-			, true                                 {{ Scan "Bool" }}
-			, {{ . }}                              {{ Scan "Time" (ParseTimeInLocation DateOnly UTC) }}
-			, '300'                                {{ Scan "Big" UnmarshalText }}
-			, 'https://example.com/path?query=yes' {{ Scan "URL" UnmarshalBinary }}
-			, '400,500,600'                        {{ Scan "IntSlice" (Split "," (ParseInt 10 64)) }}
-			, '{"hello":"world"}'                  {{ Scan "JSON" UnmarshalJSON }}
-	`))
-)
+var query = sqlt.All[string, Data](sqlt.Parse(`
+    SELECT
+        100                                    {{ Dest.Int.Int }}
+        , NULL                                 {{ Dest.String.String.Default "default" }}
+        , true                                 {{ Dest.Bool.Bool }}
+        , {{ . }}                              {{ Dest.Time.ParseTime DateOnly }}
+        , '300'                                {{ Dest.Big.UnmarshalText }}
+        , 'https://example.com/path?query=yes' {{ Dest.URL.UnmarshalBinary }}
+        , 'hello,world'                        {{ Dest.Slice.Split "," }}
+        , '{"hello":"world"}'                  {{ Dest.JSON.UnmarshalJSON }}
+`))
 
 func main() {
 	db, err := sql.Open("sqlite", ":memory:")
@@ -64,6 +62,6 @@ func main() {
 	}
 
 	fmt.Println(data)
-	// [{100 0x140000116a0 true 2025-05-16 00:00:00 +0000 UTC 300 https://example.com/path?query=yes [400 500 600] map[hello:world]}]
+	// [{100 default true 2025-05-22 00:00:00 +0000 UTC 300 https://example.com/path?query=yes [hello world] map[hello:world]}]
 }
 ```
