@@ -4,8 +4,8 @@ github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkp
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/go-sqlt/datahash v0.0.10 h1:qXdEAmaOFj9ebA53UgnFiVql4rg47gfVGiOLE8FjQ7o=
 github.com/go-sqlt/datahash v0.0.10/go.mod h1:Cpa6ccoxe3PqndK5y84wyWbYORmHrdzLCnMiAsPyvoI=
-github.com/go-sqlt/structscan v0.0.8 h1:I1E6S6esD3/uIoKdYXu7tE/xtT6WW2sc5cWAhVLrFYE=
-github.com/go-sqlt/structscan v0.0.8/go.mod h1:Gqafn3Zs3MMxQv3pspuJmtn65ww35l6nD1lTK3oWwqI=
+github.com/go-sqlt/structscan v0.0.10 h1:lEVoavsq5EVSj6eLnGcKLhyBu9u/0+pqSHbZyLloOcc=
+github.com/go-sqlt/structscan v0.0.10/go.mod h1:Gqafn3Zs3MMxQv3pspuJmtn65ww35l6nD1lTK3oWwqI=
 github.com/gohugoio/hashstructure v0.5.0 h1:G2fjSBU36RdwEJBWJ+919ERvOVqAg9tfcYp47K9swqg=
 github.com/gohugoio/hashstructure v0.5.0/go.mod h1:Ser0TniXuu/eauYmrwM4o64EBvySxNzITEOLlm4igec=
 github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e h1:ijClszYn+mADRFY17kjQEVQ1XRhq2/JR1M3sGqeJoxs=

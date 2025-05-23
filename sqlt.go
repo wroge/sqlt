@@ -1,5 +1,8 @@
 // Package sqlt provides a type-safe SQL builder and struct mapper using Go's text/template engine.
 //
+// Struct mapping is handled by the [structscan](https://pkg.go.dev/github.com/go-sqlt/structscan) package.
+// The Dest function returns a structscan.Struct[Dest], which provides a fluent API for field-based value extraction and transformation.
+//
 // Example:
 /*
 
