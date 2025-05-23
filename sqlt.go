@@ -31,19 +31,17 @@ type Data struct {
 	JSON   map[string]any
 }
 
-var (
-	query = sqlt.All[string, Data](sqlt.Parse(`
-		SELECT
-			100                                    {{ Dest.Int.Int }}
-			, NULL                                 {{ Dest.String.String.Default "default" }}
-			, true                                 {{ Dest.Bool.Bool }}
-			, {{ . }}                              {{ Dest.Time.ParseTime DateOnly }}
-			, '300'                                {{ Dest.Big.UnmarshalText }}
-			, 'https://example.com/path?query=yes' {{ Dest.URL.UnmarshalBinary }}
-			, 'hello,world'                        {{ Dest.Slice.Split "," }}
-			, '{"hello":"world"}'                  {{ Dest.JSON.UnmarshalJSON }}
-	`))
-)
+var query = sqlt.All[string, Data](sqlt.Parse(`
+	SELECT
+		100                                    {{ Scan.Int "Int" }}
+		, NULL                                 {{ Scan.DefaultString "String" "default" }}
+		, true                                 {{ Scan.Bool "Bool" }}
+		, {{ . }}                              {{ Scan.ParseTime "Time" DateOnly }}
+		, '300'                                {{ Scan.UnmarshalText "Big" }}
+		, 'https://example.com/path?query=yes' {{ Scan.UnmarshalBinary "URL" }}
+		, 'hello,world'                        {{ Scan.Split "Slice" "," }}
+		, '{"hello":"world"}'                  {{ Scan.UnmarshalJSON "JSON" }}
+`))
 
 func main() {
 	db, err := sql.Open("sqlite", ":memory:")
@@ -413,7 +411,7 @@ func newStmt[Param any, Dest any, Result any](exec func(ctx context.Context, db 
 		t = template.New("").Option("missingkey=invalid").Funcs(template.FuncMap{
 			"Dialect": func() string { return config.Dialect },
 			"Raw":     func(sql string) Raw { return Raw(sql) },
-			"Dest": func() structscan.Struct[Dest] {
+			"Scan": func() structscan.Struct[Dest] {
 				return schema
 			},
 
@@ -628,8 +626,8 @@ func escapeNode[Dest any](s structscan.Struct[Dest], t *template.Template, n par
 
 		if len(v.Cmds[0].Args) > 0 && v.Cmds[0].Args[0].String() == "Scan" && len(v.Cmds[0].Args) > 0 {
 			if str, ok := v.Cmds[0].Args[1].(*parse.StringNode); ok {
-				if _, ok := s[str.Text]; !ok {
-					return fmt.Errorf("field not found: %s", str.Text)
+				if _, err := s.Field(str.Text); err != nil {
+					return err
 				}
 			}
 		}
